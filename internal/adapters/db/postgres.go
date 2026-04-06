@@ -482,6 +482,21 @@ func (r *PostgresRepository) GetQueueItem(ctx context.Context, queueItemID strin
 	return item, err
 }
 
+func (r *PostgresRepository) GetQueueStartIdempotencyKey(ctx context.Context, queueItemID string) (string, error) {
+	var key string
+	err := r.pool.QueryRow(ctx, `
+		select idempotency_key
+		from outbox_events
+		where aggregate_type='session_queue_item' and aggregate_id=$1 and event_type='queue.start'
+		order by available_at desc, id desc
+		limit 1
+	`, queueItemID).Scan(&key)
+	if err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
 func (r *PostgresRepository) GetSession(ctx context.Context, sessionID string) (domain.Session, error) {
 	row := r.queryRow(ctx, `
 		select id, tenant_id, coalesce(owner_user_id,''), coalesce(agent_profile_id,''), channel_type, channel_scope_key, state, last_active_at, coalesce(acp_session_id,'')
@@ -490,6 +505,15 @@ func (r *PostgresRepository) GetSession(ctx context.Context, sessionID string) (
 	var s domain.Session
 	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPSessionID)
 	return s, err
+}
+
+func (r *PostgresRepository) UpdateSessionACPSessionID(ctx context.Context, sessionID, acpSessionID string) error {
+	_, err := r.exec(ctx, `
+		update sessions
+		set acp_session_id=$2, updated_at=now()
+		where id=$1 and coalesce(acp_session_id,'') <> $2
+	`, sessionID, acpSessionID)
+	return err
 }
 
 func (r *PostgresRepository) GetRouteDecision(ctx context.Context, queueItemID string) (domain.RouteDecision, error) {

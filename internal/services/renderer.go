@@ -33,8 +33,8 @@ func (r SlackRenderer) RenderRunEvent(_ context.Context, session domain.Session,
 			LogicalMessageID: "logical_" + evt.RunID + "_await",
 			PayloadJSON:      payload,
 		}}, nil
-	case "completed", "running":
-		text := evt.Text
+	case "completed", "running", "failed":
+		text := renderSlackRunText(evt)
 		if len(evt.Artifacts) > 0 {
 			text = appendArtifactSummary(text, evt.Artifacts)
 		}
@@ -188,8 +188,8 @@ func (r TelegramRenderer) RenderRunEvent(_ context.Context, session domain.Sessi
 			LogicalMessageID: "logical_" + evt.RunID + "_await",
 			PayloadJSON:      payload,
 		}}, nil
-	case "completed", "running":
-		text := evt.Text
+	case "completed", "running", "failed":
+		text := renderTelegramRunText(evt)
 		if len(evt.Artifacts) > 0 {
 			text = appendArtifactSummary(text, evt.Artifacts)
 		}
@@ -241,6 +241,20 @@ func (r TelegramRenderer) RenderRunEvent(_ context.Context, session domain.Sessi
 	default:
 		return nil, nil
 	}
+}
+
+func renderSlackRunText(evt domain.RunEvent) string {
+	if evt.Status == "failed" && evt.Text == openCodeAwaitBlockedReason {
+		return "This Slack route is backed by the OpenCode bridge, and that backend cannot pause for structured approval prompts. The request was stopped instead of leaving a broken pending interaction. Retry with a direct instruction, or use a route that supports native await/resume."
+	}
+	return evt.Text
+}
+
+func renderTelegramRunText(evt domain.RunEvent) string {
+	if evt.Status == "failed" && evt.Text == openCodeAwaitBlockedReason {
+		return "This Telegram route is backed by the OpenCode bridge, and that backend cannot pause for structured approval prompts. The request was stopped instead of leaving a broken pending interaction. Retry with a direct instruction, or use a route that supports native await/resume."
+	}
+	return evt.Text
 }
 
 func renderTelegramAwaitPayload(chatID, awaitID string, prompt []byte) ([]byte, error) {

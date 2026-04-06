@@ -9,49 +9,61 @@ import (
 )
 
 type Config struct {
-	ServiceName           string
-	HTTPAddr              string
-	AdminAddr             string
-	DatabaseURL           string
-	ACPBaseURL            string
-	ACPToken              string
-	DefaultACPAgentName   string
-	ValidateACPOnStartup  bool
-	ACPManifestCacheTTL   time.Duration
-	SlackSigningSecret    string
-	SlackBotToken         string
-	ObjectStorageBaseURL  string
-	WorkerPollInterval    time.Duration
-	ReconcilerInterval    time.Duration
-	OutboxClaimTimeout    time.Duration
-	QueueStartingTimeout  time.Duration
-	RunStaleTimeout       time.Duration
+	ServiceName            string
+	HTTPAddr               string
+	AdminAddr              string
+	DatabaseURL            string
+	ACPImplementation      string
+	ACPBaseURL             string
+	ACPToken               string
+	ACPCommand             string
+	ACPArgs                []string
+	ACPEnv                 []string
+	ACPWorkdir             string
+	ACPStartupTimeout      time.Duration
+	ACPRPCTimeout          time.Duration
+	DefaultACPAgentName    string
+	ValidateACPOnStartup   bool
+	ACPManifestCacheTTL    time.Duration
+	SlackSigningSecret     string
+	SlackBotToken          string
+	ObjectStorageBaseURL   string
+	WorkerPollInterval     time.Duration
+	ReconcilerInterval     time.Duration
+	OutboxClaimTimeout     time.Duration
+	QueueStartingTimeout   time.Duration
+	RunStaleTimeout        time.Duration
 	DeliverySendingTimeout time.Duration
-	DeliveryMaxAttempts   int
-	TelegramBotToken      string
-	TelegramWebhookSecret string
+	DeliveryMaxAttempts    int
+	TelegramBotToken       string
+	TelegramWebhookSecret  string
 	TelegramAllowedUserIDs []string
-	DefaultTenantID       string
-	DefaultAgentProfileID string
+	DefaultTenantID        string
+	DefaultAgentProfileID  string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		ServiceName:           env("SERVICE_NAME", "nexus-gateway"),
-		HTTPAddr:              env("HTTP_ADDR", ":8080"),
-		AdminAddr:             env("ADMIN_ADDR", ":8081"),
-		DatabaseURL:           env("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/nexus?sslmode=disable"),
-		ACPBaseURL:            env("ACP_BASE_URL", "http://localhost:8090"),
-		ACPToken:              os.Getenv("ACP_TOKEN"),
-		DefaultACPAgentName:   env("DEFAULT_ACP_AGENT_NAME", "default-agent"),
-		SlackSigningSecret:    env("SLACK_SIGNING_SECRET", "dev-secret"),
-		SlackBotToken:         os.Getenv("SLACK_BOT_TOKEN"),
-		TelegramBotToken:      os.Getenv("TELEGRAM_BOT_TOKEN"),
-		TelegramWebhookSecret: env("TELEGRAM_WEBHOOK_SECRET", "dev-telegram-secret"),
+		ServiceName:            env("SERVICE_NAME", "nexus-gateway"),
+		HTTPAddr:               env("HTTP_ADDR", ":8080"),
+		AdminAddr:              env("ADMIN_ADDR", ":8081"),
+		DatabaseURL:            env("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/nexus?sslmode=disable"),
+		ACPImplementation:      env("ACP_IMPLEMENTATION", "strict"),
+		ACPBaseURL:             env("ACP_BASE_URL", "http://localhost:8090"),
+		ACPToken:               os.Getenv("ACP_TOKEN"),
+		ACPCommand:             env("ACP_COMMAND", "opencode"),
+		ACPArgs:                csvEnv("ACP_ARGS"),
+		ACPEnv:                 prefixedEnv("ACP_ENV_"),
+		ACPWorkdir:             env("ACP_WORKDIR", mustGetwd()),
+		DefaultACPAgentName:    env("DEFAULT_ACP_AGENT_NAME", "default-agent"),
+		SlackSigningSecret:     env("SLACK_SIGNING_SECRET", "dev-secret"),
+		SlackBotToken:          os.Getenv("SLACK_BOT_TOKEN"),
+		TelegramBotToken:       os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramWebhookSecret:  env("TELEGRAM_WEBHOOK_SECRET", "dev-telegram-secret"),
 		TelegramAllowedUserIDs: csvEnv("TELEGRAM_ALLOWED_USER_IDS"),
-		ObjectStorageBaseURL:  env("OBJECT_STORAGE_BASE_URL", "file:///tmp/nexus-objects"),
-		DefaultTenantID:       env("DEFAULT_TENANT_ID", "tenant_default"),
-		DefaultAgentProfileID: env("DEFAULT_AGENT_PROFILE_ID", "agent_profile_default"),
+		ObjectStorageBaseURL:   env("OBJECT_STORAGE_BASE_URL", "file:///tmp/nexus-objects"),
+		DefaultTenantID:        env("DEFAULT_TENANT_ID", "tenant_default"),
+		DefaultAgentProfileID:  env("DEFAULT_AGENT_PROFILE_ID", "agent_profile_default"),
 	}
 
 	seconds, err := envInt("WORKER_POLL_SECONDS", 2)
@@ -94,7 +106,25 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("parse ACP_MANIFEST_CACHE_TTL_SECONDS: %w", err)
 	}
 	cfg.ACPManifestCacheTTL = time.Duration(cacheTTLSeconds) * time.Second
+	startupSeconds, err := envInt("ACP_STARTUP_TIMEOUT_SECONDS", 15)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse ACP_STARTUP_TIMEOUT_SECONDS: %w", err)
+	}
+	cfg.ACPStartupTimeout = time.Duration(startupSeconds) * time.Second
+	rpcSeconds, err := envInt("ACP_RPC_TIMEOUT_SECONDS", 120)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse ACP_RPC_TIMEOUT_SECONDS: %w", err)
+	}
+	cfg.ACPRPCTimeout = time.Duration(rpcSeconds) * time.Second
 	return cfg, nil
+}
+
+func mustGetwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return wd
 }
 
 func env(key, fallback string) string {
@@ -141,6 +171,20 @@ func csvEnv(key string) []string {
 		part = strings.TrimSpace(part)
 		if part != "" {
 			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func prefixedEnv(prefix string) []string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return nil
+	}
+	out := make([]string, 0)
+	for _, item := range os.Environ() {
+		if strings.HasPrefix(item, prefix) {
+			out = append(out, item[len(prefix):])
 		}
 	}
 	return out

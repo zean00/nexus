@@ -11,11 +11,11 @@ import (
 )
 
 type WorkerService struct {
-	Repo     ports.Repository
-	ACP      ports.ACPBridge
-	Catalog  *AgentCatalog
-	Renderer ports.Renderer
-	Channel  ports.ChannelAdapter
+	Repo      ports.Repository
+	ACP       ports.ACPBridge
+	Catalog   *AgentCatalog
+	Renderer  ports.Renderer
+	Channel   ports.ChannelAdapter
 	Renderers map[string]ports.Renderer
 	Channels  map[string]ports.ChannelAdapter
 }
@@ -87,6 +87,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	if err != nil {
 		return err
 	}
+	var currentCompat *domain.AgentCompatibility
 	if s.Catalog != nil {
 		compat, err := s.Catalog.Validate(ctx, route.ACPAgentName, false)
 		if err != nil {
@@ -95,6 +96,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 		if !compat.Compatible {
 			return fmt.Errorf("agent %s is incompatible: %v", route.ACPAgentName, compat.Reasons)
 		}
+		currentCompat = &compat
 	}
 	message, err := s.Repo.GetInboundMessage(ctx, queued.InboundMessageID)
 	if err != nil {
@@ -103,6 +105,11 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	acpSessionID, err := s.ACP.EnsureSession(ctx, session)
 	if err != nil {
 		return err
+	}
+	if acpSessionID != "" && acpSessionID != session.ACPSessionID {
+		if err := s.Repo.UpdateSessionACPSessionID(ctx, session.ID, acpSessionID); err != nil {
+			return err
+		}
 	}
 	session.ACPSessionID = acpSessionID
 	if err := s.Repo.UpdateQueueItemStatus(ctx, queued.ID, "starting"); err != nil {
@@ -123,6 +130,27 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	}
 	terminalStatus := ""
 	for _, runEvent := range stream {
+		originalStatus := runEvent.Status
+		runEvent = enforceCompatibility(runEvent, currentCompat, session.ChannelType)
+		if originalStatus == "awaiting" && runEvent.Status == "failed" && currentCompat != nil && currentCompat.ValidationMode == "opencode_bridge" {
+			_ = s.Repo.Audit(ctx, domain.AuditEvent{
+				ID:            fmt.Sprintf("audit_worker_opencode_await_block_%s_%d", run.ID, time.Now().UTC().UnixNano()),
+				TenantID:      session.TenantID,
+				SessionID:     session.ID,
+				RunID:         run.ID,
+				AggregateType: "run",
+				AggregateID:   run.ID,
+				EventType:     "worker.await_blocked_opencode_bridge",
+				PayloadJSON: mustJSON(map[string]any{
+					"agent_name":      route.ACPAgentName,
+					"validation_mode": currentCompat.ValidationMode,
+					"warning_count":   len(currentCompat.Warnings),
+					"original_status": originalStatus,
+					"terminal_status": runEvent.Status,
+				}),
+				CreatedAt: time.Now().UTC(),
+			})
+		}
 		if err := s.persistRunEvent(ctx, session, runEvent); err != nil {
 			return err
 		}
@@ -171,6 +199,23 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 		}
 	}
 	return nil
+}
+
+const openCodeAwaitBlockedReason = "opencode_bridge_structured_await_blocked"
+
+func enforceCompatibility(runEvent domain.RunEvent, compat *domain.AgentCompatibility, channelType string) domain.RunEvent {
+	if compat == nil {
+		return runEvent
+	}
+	if compat.ValidationMode != "opencode_bridge" || runEvent.Status != "awaiting" {
+		return runEvent
+	}
+	return domain.RunEvent{
+		RunID:     runEvent.RunID,
+		Status:    "failed",
+		Text:      openCodeAwaitBlockedReason,
+		Artifacts: runEvent.Artifacts,
+	}
 }
 
 func (s WorkerService) processDelivery(ctx context.Context, evt domain.OutboxEvent) error {

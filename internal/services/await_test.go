@@ -70,9 +70,13 @@ func (r *awaitRepo) MarkOutboxFailed(context.Context, string, error, time.Time) 
 func (r *awaitRepo) GetQueueItem(context.Context, string) (domain.QueueItem, error) {
 	return domain.QueueItem{}, nil
 }
+func (r *awaitRepo) GetQueueStartIdempotencyKey(context.Context, string) (string, error) {
+	return "", nil
+}
 func (r *awaitRepo) GetSession(context.Context, string) (domain.Session, error) {
 	return domain.Session{}, nil
 }
+func (r *awaitRepo) UpdateSessionACPSessionID(context.Context, string, string) error { return nil }
 func (r *awaitRepo) GetRouteDecision(context.Context, string) (domain.RouteDecision, error) {
 	return domain.RouteDecision{}, nil
 }
@@ -83,7 +87,9 @@ func (r *awaitRepo) GetRun(context.Context, string) (domain.Run, error) { return
 func (r *awaitRepo) GetRunByACP(context.Context, string) (domain.Run, error) {
 	return domain.Run{}, nil
 }
-func (r *awaitRepo) GetAwaitsForRun(context.Context, string, int) ([]domain.Await, error) { return nil, nil }
+func (r *awaitRepo) GetAwaitsForRun(context.Context, string, int) ([]domain.Await, error) {
+	return nil, nil
+}
 func (r *awaitRepo) GetAwaitResponses(context.Context, string, int) ([]domain.AwaitResponse, error) {
 	return nil, nil
 }
@@ -111,16 +117,24 @@ func (r *awaitRepo) GetLatestDeliveryByLogicalMessage(context.Context, string) (
 func (r *awaitRepo) MarkDeliverySent(context.Context, string, domain.DeliveryResult) error {
 	return nil
 }
-func (r *awaitRepo) MarkDeliverySending(context.Context, string) error { return nil }
+func (r *awaitRepo) MarkDeliverySending(context.Context, string) error       { return nil }
 func (r *awaitRepo) MarkDeliveryFailed(context.Context, string, error) error { return nil }
 func (r *awaitRepo) ListDeliveries(context.Context, domain.DeliveryListQuery) (domain.PagedResult[domain.OutboundDelivery], error) {
 	return domain.PagedResult[domain.OutboundDelivery]{}, nil
 }
-func (r *awaitRepo) CountMessages(context.Context, domain.MessageListQuery) (int, error) { return 0, nil }
-func (r *awaitRepo) CountArtifacts(context.Context, domain.ArtifactListQuery) (int, error) { return 0, nil }
-func (r *awaitRepo) CountDeliveries(context.Context, domain.DeliveryListQuery) (int, error) { return 0, nil }
-func (r *awaitRepo) CountSessions(context.Context, domain.SessionListQuery) (int, error) { return 0, nil }
-func (r *awaitRepo) CountRuns(context.Context, domain.RunListQuery) (int, error) { return 0, nil }
+func (r *awaitRepo) CountMessages(context.Context, domain.MessageListQuery) (int, error) {
+	return 0, nil
+}
+func (r *awaitRepo) CountArtifacts(context.Context, domain.ArtifactListQuery) (int, error) {
+	return 0, nil
+}
+func (r *awaitRepo) CountDeliveries(context.Context, domain.DeliveryListQuery) (int, error) {
+	return 0, nil
+}
+func (r *awaitRepo) CountSessions(context.Context, domain.SessionListQuery) (int, error) {
+	return 0, nil
+}
+func (r *awaitRepo) CountRuns(context.Context, domain.RunListQuery) (int, error)     { return 0, nil }
 func (r *awaitRepo) CountAwaits(context.Context, domain.AwaitListQuery) (int, error) { return 0, nil }
 func (r *awaitRepo) ListSessions(context.Context, domain.SessionListQuery) (domain.PagedResult[domain.Session], error) {
 	return domain.PagedResult[domain.Session]{}, nil
@@ -137,12 +151,14 @@ func (r *awaitRepo) ListAuditEvents(context.Context, domain.AuditEventListQuery)
 func (r *awaitRepo) ListStaleClaimedOutbox(context.Context, time.Time, int) ([]domain.OutboxEvent, error) {
 	return nil, nil
 }
-func (r *awaitRepo) RequeueOutbox(context.Context, string) error { return nil }
+func (r *awaitRepo) RequeueOutbox(context.Context, string) error                   { return nil }
 func (r *awaitRepo) RequeueQueueStartOutbox(context.Context, string, string) error { return nil }
 func (r *awaitRepo) ListStuckQueueItems(context.Context, time.Time, int) ([]domain.QueueItem, error) {
 	return nil, nil
 }
-func (r *awaitRepo) ListStaleRuns(context.Context, time.Time, int) ([]domain.Run, error) { return nil, nil }
+func (r *awaitRepo) ListStaleRuns(context.Context, time.Time, int) ([]domain.Run, error) {
+	return nil, nil
+}
 func (r *awaitRepo) ListExpiredAwaits(context.Context, time.Time, int) ([]domain.Await, error) {
 	return nil, nil
 }
@@ -168,8 +184,12 @@ func (r *awaitRepo) ListSurfaceSessions(context.Context, string, string, string,
 func (r *awaitRepo) CloseActiveSession(context.Context, string, string, string, string) (domain.Session, error) {
 	return domain.Session{}, nil
 }
-func (r *awaitRepo) IsTelegramUserAllowed(context.Context, string, string) (bool, error) { return false, nil }
-func (r *awaitRepo) CountTelegramUserAccess(context.Context, string, string) (int, error) { return 0, nil }
+func (r *awaitRepo) IsTelegramUserAllowed(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+func (r *awaitRepo) CountTelegramUserAccess(context.Context, string, string) (int, error) {
+	return 0, nil
+}
 func (r *awaitRepo) ListTelegramUserAccessPage(context.Context, domain.TelegramUserAccessListQuery) (domain.PagedResult[domain.TelegramUserAccess], error) {
 	return domain.PagedResult[domain.TelegramUserAccess]{}, nil
 }
@@ -182,15 +202,19 @@ func (r *awaitRepo) ListTelegramUserAccessByStatus(context.Context, string, stri
 func (r *awaitRepo) GetTelegramUserAccess(context.Context, string, string) (domain.TelegramUserAccess, error) {
 	return domain.TelegramUserAccess{}, nil
 }
-func (r *awaitRepo) UpsertTelegramUserAccess(context.Context, domain.TelegramUserAccess) error { return nil }
-func (r *awaitRepo) DeleteTelegramUserAccess(context.Context, string, string) error            { return nil }
+func (r *awaitRepo) UpsertTelegramUserAccess(context.Context, domain.TelegramUserAccess) error {
+	return nil
+}
+func (r *awaitRepo) DeleteTelegramUserAccess(context.Context, string, string) error { return nil }
 func (r *awaitRepo) RequestTelegramAccess(context.Context, domain.TelegramUserAccess) (domain.TelegramUserAccess, error) {
 	return domain.TelegramUserAccess{}, nil
 }
 func (r *awaitRepo) ResolveTelegramAccessRequest(context.Context, string, string, string, string) (domain.TelegramUserAccess, error) {
 	return domain.TelegramUserAccess{}, nil
 }
-func (r *awaitRepo) CountAuditEvents(context.Context, domain.AuditEventListQuery) (int, error) { return 0, nil }
+func (r *awaitRepo) CountAuditEvents(context.Context, domain.AuditEventListQuery) (int, error) {
+	return 0, nil
+}
 func (r *awaitRepo) Audit(context.Context, domain.AuditEvent) error { return nil }
 func (r *awaitRepo) ForceCancelRun(context.Context, string) error   { return nil }
 func (r *awaitRepo) RetryDelivery(context.Context, string) error    { return nil }

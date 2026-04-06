@@ -28,9 +28,9 @@ type ReconcilerObserver interface {
 }
 
 type Reconciler struct {
-	Repo   ports.Repository
-	ACP    ports.ACPBridge
-	Config ReconcilerConfig
+	Repo     ports.Repository
+	ACP      ports.ACPBridge
+	Config   ReconcilerConfig
 	Observer ReconcilerObserver
 }
 
@@ -85,18 +85,20 @@ func (r Reconciler) repairStuckQueueItems(ctx context.Context, now time.Time, li
 		return err
 	}
 	for _, item := range items {
-		snapshot, found, err := r.ACP.FindRunByIdempotencyKey(ctx, item.ID)
+		session, err := r.Repo.GetSession(ctx, item.SessionID)
+		if err != nil {
+			return err
+		}
+		idempotencyKey, err := r.Repo.GetQueueStartIdempotencyKey(ctx, item.ID)
+		if err != nil {
+			return err
+		}
+		snapshot, found, err := r.ACP.FindRunByIdempotencyKey(ctx, session, idempotencyKey)
 		if err != nil {
 			return err
 		}
 		if !found {
-			var session domain.Session
 			if err := r.Repo.InTx(ctx, func(ctx context.Context, repo ports.Repository) error {
-				var err error
-				session, err = repo.GetSession(ctx, item.SessionID)
-				if err != nil {
-					return err
-				}
 				if err := repo.UpdateQueueItemStatus(ctx, item.ID, "queued"); err != nil {
 					return err
 				}
@@ -134,14 +136,14 @@ func (r Reconciler) repairStuckQueueItems(ctx context.Context, now time.Time, li
 		if r.Observer != nil {
 			r.Observer.RecordQueueRepairRecovered()
 		}
-		session, err := r.Repo.GetSession(ctx, item.SessionID)
+		repairedSession, err := r.Repo.GetSession(ctx, item.SessionID)
 		if err != nil {
 			return err
 		}
 		_ = r.Repo.Audit(ctx, domain.AuditEvent{
 			ID:            fmt.Sprintf("audit_queue_repair_recovered_%s_%d", item.ID, now.UnixNano()),
-			TenantID:      session.TenantID,
-			SessionID:     session.ID,
+			TenantID:      repairedSession.TenantID,
+			SessionID:     repairedSession.ID,
 			RunID:         run.ID,
 			AggregateType: "session_queue_item",
 			AggregateID:   item.ID,

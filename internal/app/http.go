@@ -12,11 +12,16 @@ import (
 	"strings"
 	"time"
 
+	"nexus/internal/adapters/acp"
 	"nexus/internal/domain"
 	"nexus/internal/httpx"
 	"nexus/internal/ports"
 	"nexus/internal/services"
 )
+
+type acpRuntimeStatusProvider interface {
+	RuntimeStatus() acp.StdioRuntimeStatus
+}
 
 func (a *App) handleSlackWebhook(w http.ResponseWriter, r *http.Request) {
 	a.handleChannelWebhook(w, r, a.Slack)
@@ -357,6 +362,9 @@ func (a *App) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 		"health":    healthStatus(a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval),
 		"readiness": readinessStatus(a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval),
 		"persisted": persisted,
+	}
+	if status, ok := acpRuntimeStatus(a.ACP); ok {
+		data["acp_runtime"] = status
 	}
 	if summary, err := acpCompactSummary(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, a.Config.DefaultACPAgentName); err == nil {
 		data["acp"] = summary
@@ -1260,11 +1268,25 @@ func healthMeta(service string, catalog *services.AgentCatalog, runtime *Runtime
 				meta["default_agent"] = defaultAgentProbeMeta(defaultAgentName, compat)
 			}
 		}
+		if status, ok := acpRuntimeStatus(catalog.Bridge); ok {
+			meta["acp_runtime"] = status
+		}
 	}
 	if runtime != nil {
 		meta["runtime"] = runtime.Status()
 	}
 	return meta
+}
+
+func acpRuntimeStatus(bridge ports.ACPBridge) (acp.StdioRuntimeStatus, bool) {
+	if bridge == nil {
+		return acp.StdioRuntimeStatus{}, false
+	}
+	provider, ok := bridge.(acpRuntimeStatusProvider)
+	if !ok {
+		return acp.StdioRuntimeStatus{}, false
+	}
+	return provider.RuntimeStatus(), true
 }
 
 func defaultAgentProbeMeta(agentName string, compat domain.AgentCompatibility) map[string]any {
@@ -1297,6 +1319,9 @@ func healthStatus(catalog *services.AgentCatalog, runtime *RuntimeState, default
 			return "degraded"
 		}
 	}
+	if status, ok := acpRuntimeStatus(catalog.Bridge); ok && acpRuntimeUnhealthy(status) {
+		return "degraded"
+	}
 	return runtimeHealthStatus(runtime, workerInterval, reconcileInterval)
 }
 
@@ -1319,7 +1344,20 @@ func readinessStatus(catalog *services.AgentCatalog, runtime *RuntimeState, defa
 			return "not_ready"
 		}
 	}
+	if status, ok := acpRuntimeStatus(catalog.Bridge); ok && acpRuntimeUnhealthy(status) {
+		return "not_ready"
+	}
 	return runtimeReadinessStatus(runtime, workerInterval, reconcileInterval)
+}
+
+func acpRuntimeUnhealthy(status acp.StdioRuntimeStatus) bool {
+	if status.Implementation == "" || status.StartedAt.IsZero() {
+		return false
+	}
+	if status.LastError != "" {
+		return true
+	}
+	return !status.Running || !status.Initialized
 }
 
 func runtimeHealthStatus(runtime *RuntimeState, workerInterval, reconcileInterval time.Duration) string {
@@ -1381,6 +1419,22 @@ func writeMetrics(w http.ResponseWriter, ctx context.Context, service, tenantID 
 				fmt.Fprintf(&b, "nexus_acp_default_agent_ready{service=%q} %d\n", service, boolMetric(compat.Compatible))
 				fmt.Fprintf(&b, "nexus_acp_default_agent_reason_count{service=%q} %d\n", service, len(compat.Reasons))
 				fmt.Fprintf(&b, "nexus_acp_default_agent_warning_count{service=%q} %d\n", service, len(compat.Warnings))
+			}
+		}
+		if status, ok := acpRuntimeStatus(catalog.Bridge); ok {
+			fmt.Fprintf(&b, "nexus_acp_runtime_running{service=%q} %d\n", service, boolMetric(status.Running))
+			fmt.Fprintf(&b, "nexus_acp_runtime_initialized{service=%q} %d\n", service, boolMetric(status.Initialized))
+			fmt.Fprintf(&b, "nexus_acp_runtime_error{service=%q} %d\n", service, boolMetric(status.LastError != ""))
+			fmt.Fprintf(&b, "nexus_acp_runtime_permission_requests{service=%q} %d\n", service, status.CallbackCounts.PermissionRequests)
+			fmt.Fprintf(&b, "nexus_acp_runtime_fs_read_text_file{service=%q} %d\n", service, status.CallbackCounts.FSReadTextFile)
+			fmt.Fprintf(&b, "nexus_acp_runtime_fs_write_text_file{service=%q} %d\n", service, status.CallbackCounts.FSWriteTextFile)
+			fmt.Fprintf(&b, "nexus_acp_runtime_terminal_create{service=%q} %d\n", service, status.CallbackCounts.TerminalCreate)
+			fmt.Fprintf(&b, "nexus_acp_runtime_terminal_output{service=%q} %d\n", service, status.CallbackCounts.TerminalOutput)
+			fmt.Fprintf(&b, "nexus_acp_runtime_terminal_wait{service=%q} %d\n", service, status.CallbackCounts.TerminalWait)
+			fmt.Fprintf(&b, "nexus_acp_runtime_terminal_kill{service=%q} %d\n", service, status.CallbackCounts.TerminalKill)
+			fmt.Fprintf(&b, "nexus_acp_runtime_terminal_release{service=%q} %d\n", service, status.CallbackCounts.TerminalRelease)
+			if !status.StartedAt.IsZero() {
+				fmt.Fprintf(&b, "nexus_acp_runtime_started_unix{service=%q} %d\n", service, status.StartedAt.Unix())
 			}
 		}
 	}

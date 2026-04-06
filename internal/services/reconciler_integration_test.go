@@ -57,11 +57,11 @@ func TestReconcilerIntegrationWithPostgres(t *testing.T) {
 			t.Fatalf("expected stale outbox to be requeued, got %s", status)
 		}
 		page, err := repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
-			TenantID:       "tenant_default",
-			AggregateType:  "outbox_event",
-			AggregateID:    "delivery_stale_1",
-			EventType:      "reconciler.outbox_requeued",
-			CursorPage:     domain.CursorPage{Limit: 10},
+			TenantID:      "tenant_default",
+			AggregateType: "outbox_event",
+			AggregateID:   "delivery_stale_1",
+			EventType:     "reconciler.outbox_requeued",
+			CursorPage:    domain.CursorPage{Limit: 10},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -123,6 +123,7 @@ func TestReconcilerIntegrationWithPostgres(t *testing.T) {
 
 	t.Run("repairs stuck queue item when acp run exists", func(t *testing.T) {
 		seedReconcilerStuckQueueFixture(t, ctx, pool, "queue_found_1", false)
+		var requestedKey string
 		reconciler := Reconciler{
 			Repo: repo,
 			ACP: workerIntegrationACP{
@@ -131,6 +132,7 @@ func TestReconcilerIntegrationWithPostgres(t *testing.T) {
 					Status:   "running",
 				},
 				findRunFound: true,
+				requestedKey: &requestedKey,
 			},
 			Config: ReconcilerConfig{
 				OutboxClaimTimeout:     time.Hour,
@@ -157,6 +159,9 @@ func TestReconcilerIntegrationWithPostgres(t *testing.T) {
 		if run.SessionID != "session_stuck_1" || run.Status != "running" {
 			t.Fatalf("unexpected repaired run: %+v", run)
 		}
+		if requestedKey != "queue_found_1" {
+			t.Fatalf("expected queue repair lookup to use queue item idempotency key, got %q", requestedKey)
+		}
 		page, err := repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
 			TenantID:      "tenant_default",
 			AggregateType: "session_queue_item",
@@ -174,10 +179,12 @@ func TestReconcilerIntegrationWithPostgres(t *testing.T) {
 
 	t.Run("requeues stuck queue item when acp run is missing", func(t *testing.T) {
 		seedReconcilerStuckQueueFixture(t, ctx, pool, "queue_missing_1", true)
+		var requestedKey string
 		reconciler := Reconciler{
 			Repo: repo,
 			ACP: workerIntegrationACP{
 				findRunFound: false,
+				requestedKey: &requestedKey,
 			},
 			Config: ReconcilerConfig{
 				OutboxClaimTimeout:     time.Hour,
@@ -196,6 +203,9 @@ func TestReconcilerIntegrationWithPostgres(t *testing.T) {
 		}
 		if queueItem.Status != "queued" {
 			t.Fatalf("expected missing ACP run queue item to be requeued, got %+v", queueItem)
+		}
+		if requestedKey != "queue_missing_1:next" {
+			t.Fatalf("expected resumed queue repair lookup to use next-item idempotency key, got %q", requestedKey)
 		}
 		var outboxStatus string
 		if err := pool.QueryRow(ctx, `select status from outbox_events where aggregate_id='queue_missing_1' and event_type='queue.start' order by available_at desc, id desc limit 1`).Scan(&outboxStatus); err != nil {

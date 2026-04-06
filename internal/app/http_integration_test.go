@@ -21,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"nexus/internal/adapters/acp"
 	"nexus/internal/adapters/db"
 	"nexus/internal/adapters/slack"
 	"nexus/internal/adapters/storage"
@@ -32,9 +33,9 @@ import (
 )
 
 type appIntegrationACP struct {
-	startRun    string
-	startStatus string
-	startEvents []domain.RunEvent
+	startRun     string
+	startStatus  string
+	startEvents  []domain.RunEvent
 	resumeEvents []domain.RunEvent
 }
 
@@ -65,13 +66,13 @@ func (a appIntegrationACP) StartRun(_ context.Context, req domain.StartRunReques
 		}}
 	}
 	return domain.Run{
-			ID:          runID,
-			SessionID:   req.Session.ID,
-			ACPRunID:    "acp_" + runID,
-			Status:      status,
-			StartedAt:   now,
-			LastEventAt: now,
-		}, events, nil
+		ID:          runID,
+		SessionID:   req.Session.ID,
+		ACPRunID:    "acp_" + runID,
+		Status:      status,
+		StartedAt:   now,
+		LastEventAt: now,
+	}, events, nil
 }
 
 func (a appIntegrationACP) ResumeRun(context.Context, domain.Await, []byte) ([]domain.RunEvent, error) {
@@ -82,7 +83,11 @@ func (appIntegrationACP) GetRun(context.Context, string) (domain.RunStatusSnapsh
 	return domain.RunStatusSnapshot{}, nil
 }
 
-func (appIntegrationACP) FindRunByIdempotencyKey(context.Context, string) (domain.RunStatusSnapshot, bool, error) {
+func (appIntegrationACP) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+
+func (appIntegrationACP) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
 	return domain.RunStatusSnapshot{}, false, nil
 }
 
@@ -126,6 +131,68 @@ func (c *appIntegrationSlackChannel) SendAwaitPrompt(ctx context.Context, delive
 	return c.SendMessage(ctx, delivery)
 }
 
+type strictACPIntegrationServer struct {
+	server       *httptest.Server
+	sessionCount int
+	runCount     int
+}
+
+func newStrictACPIntegrationServer(t *testing.T) *strictACPIntegrationServer {
+	t.Helper()
+
+	state := &strictACPIntegrationServer{}
+	state.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/agents":
+			_, _ = w.Write([]byte(`[{
+				"name":"strict-agent",
+				"description":"Integration strict ACP agent",
+				"supports_await_resume":true,
+				"supports_structured_await":true,
+				"supports_streaming":true,
+				"supports_artifacts":true,
+				"healthy":true
+			}]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/sessions":
+			state.sessionCount++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode strict session body: %v", err)
+			}
+			if body["gateway_session_id"] == "" {
+				t.Fatalf("expected gateway_session_id in strict session body, got %+v", body)
+			}
+			_, _ = w.Write([]byte(`{"id":"ses_strict_integration_1"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/runs":
+			state.runCount++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode strict run body: %v", err)
+			}
+			if body["session_id"] != "ses_strict_integration_1" {
+				t.Fatalf("expected persisted strict session id in run body, got %+v", body)
+			}
+			if body["agent_name"] != "strict-agent" {
+				t.Fatalf("expected strict agent name in run body, got %+v", body)
+			}
+			message, _ := body["message"].(map[string]any)
+			if message["text"] != "<@BOT> strict integration" {
+				t.Fatalf("unexpected strict message body: %+v", body)
+			}
+			_, _ = w.Write([]byte(`{
+				"id":"strict_run_1",
+				"session_id":"ses_strict_integration_1",
+				"status":"completed",
+				"output":"strict integration complete"
+			}`))
+		default:
+			t.Fatalf("unexpected strict ACP request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	return state
+}
+
 func TestTelegramWebhookWorkerRoundTripIntegration(t *testing.T) {
 	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
 		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")
@@ -150,9 +217,9 @@ func TestTelegramWebhookWorkerRoundTripIntegration(t *testing.T) {
 
 	channel := &appIntegrationChannel{}
 	cfg := config.Config{
-		DefaultTenantID:       "tenant_default",
-		DefaultAgentProfileID: "agent_profile_default",
-		DefaultACPAgentName:   "agent_a",
+		DefaultTenantID:        "tenant_default",
+		DefaultAgentProfileID:  "agent_profile_default",
+		DefaultACPAgentName:    "agent_a",
 		TelegramAllowedUserIDs: []string{"123"},
 	}
 	renderers := map[string]ports.Renderer{
@@ -209,9 +276,9 @@ func TestTelegramWebhookWorkerRoundTripIntegration(t *testing.T) {
 	}
 
 	sessions, err := repo.ListSessions(ctx, domain.SessionListQuery{
-		TenantID:   "tenant_default",
+		TenantID:    "tenant_default",
 		ChannelType: "telegram",
-		CursorPage: domain.CursorPage{Limit: 10},
+		CursorPage:  domain.CursorPage{Limit: 10},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -413,6 +480,174 @@ func TestSlackWebhookWorkerRoundTripIntegration(t *testing.T) {
 	}
 }
 
+func TestSlackWebhookStrictACPRoundTripIntegration(t *testing.T) {
+	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
+		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")
+	}
+
+	ctx := context.Background()
+	dbURL := startAppPostgresContainer(t)
+	repo, err := db.New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(repo.Close)
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	applyAppMigrations(t, ctx, pool)
+	appMustExec(t, ctx, pool, `truncate table outbox_events, outbound_deliveries, audit_events, await_responses, awaits, runs, session_queue_items, artifacts, messages, channel_surface_state, session_aliases, telegram_user_access, sessions restart identity cascade`)
+
+	strictServer := newStrictACPIntegrationServer(t)
+	defer strictServer.server.Close()
+
+	strictBridge := acp.NewStrictClient(strictServer.server.URL, "strict-token")
+	strictBridge.HTTP = strictServer.server.Client()
+
+	channel := &appIntegrationSlackChannel{}
+	cfg := config.Config{
+		DefaultTenantID:       "tenant_default",
+		DefaultAgentProfileID: "agent_profile_default",
+		DefaultACPAgentName:   "strict-agent",
+		SlackSigningSecret:    "integration-secret",
+	}
+	renderers := map[string]ports.Renderer{
+		"slack": services.SlackRenderer{},
+	}
+	channels := map[string]ports.ChannelAdapter{
+		"slack": channel,
+	}
+	catalog := &services.AgentCatalog{
+		Bridge: strictBridge,
+		TTL:    time.Minute,
+	}
+	app := &App{
+		Config:  cfg,
+		Repo:    repo,
+		DB:      repo,
+		Catalog: catalog,
+		Inbound: services.InboundService{
+			Repo: repo,
+			Router: services.StaticRouter{
+				DefaultAgentProfileID: cfg.DefaultAgentProfileID,
+				DefaultACPAgentName:   cfg.DefaultACPAgentName,
+			},
+		},
+		Await: services.AwaitService{Repo: repo},
+		Worker: services.WorkerService{
+			Repo:      repo,
+			ACP:       strictBridge,
+			Catalog:   catalog,
+			Renderer:  renderers["slack"],
+			Channel:   channel,
+			Renderers: renderers,
+			Channels:  channels,
+		},
+		Slack:    slack.New(cfg.SlackSigningSecret, ""),
+		Channels: channels,
+	}
+
+	validateReq := httptest.NewRequest(http.MethodGet, "/admin/acp/validate?agent_name=strict-agent", nil)
+	validateRec := httptest.NewRecorder()
+	app.AdminHandler().ServeHTTP(validateRec, validateReq)
+	if validateRec.Code != http.StatusOK {
+		t.Fatalf("expected ACP validate OK, got status=%d body=%s", validateRec.Code, validateRec.Body.String())
+	}
+	var validatePayload struct {
+		Data struct {
+			Compatible     bool   `json:"compatible"`
+			ValidationMode string `json:"validation_mode"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(validateRec.Body).Decode(&validatePayload); err != nil {
+		t.Fatal(err)
+	}
+	if !validatePayload.Data.Compatible || validatePayload.Data.ValidationMode != "strict_acp" {
+		t.Fatalf("unexpected strict ACP validation payload: %+v", validatePayload.Data)
+	}
+
+	body := `{
+		"type":"event_callback",
+		"event_id":"evt_strict_slack_1",
+		"event":{
+			"type":"app_mention",
+			"user":"U123",
+			"text":"<@BOT> strict integration",
+			"channel":"C777",
+			"ts":"1712400000.000700"
+		}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/slack", strings.NewReader(body))
+	slackSign(req, []byte(body), cfg.SlackSigningSecret)
+	rec := httptest.NewRecorder()
+	app.GatewayHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected slack webhook accepted, got status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if err := app.Worker.ProcessOnce(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Worker.ProcessOnce(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	if strictServer.sessionCount != 1 || strictServer.runCount != 1 {
+		t.Fatalf("expected one strict ACP session and run, got sessions=%d runs=%d", strictServer.sessionCount, strictServer.runCount)
+	}
+
+	sessions, err := repo.ListSessions(ctx, domain.SessionListQuery{
+		TenantID:    "tenant_default",
+		ChannelType: "slack",
+		CursorPage:  domain.CursorPage{Limit: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions.Items) != 1 {
+		t.Fatalf("expected one strict slack session, got %+v", sessions.Items)
+	}
+	if sessions.Items[0].ACPSessionID != "ses_strict_integration_1" {
+		t.Fatalf("expected ACP session id to be persisted, got %+v", sessions.Items[0])
+	}
+	sessionID := sessions.Items[0].ID
+
+	run, err := repo.GetRun(ctx, "run_strict_run_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "completed" || run.ACPRunID != "strict_run_1" {
+		t.Fatalf("unexpected strict ACP run: %+v", run)
+	}
+
+	messages, err := repo.ListMessages(ctx, domain.MessageListQuery{
+		TenantID:   "tenant_default",
+		SessionID:  sessionID,
+		CursorPage: domain.CursorPage{Limit: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages.Items) != 2 || messages.Items[0].Text != "strict integration complete" {
+		t.Fatalf("unexpected strict ACP session messages: %+v", messages.Items)
+	}
+
+	if len(channel.sent) != 1 {
+		t.Fatalf("expected one outbound strict slack send, got %+v", channel.sent)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(channel.sent[0].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["channel"] != "C777" || payload["thread_ts"] != "1712400000.000700" || payload["text"] != "strict integration complete" {
+		t.Fatalf("unexpected outbound strict slack payload: %+v", payload)
+	}
+}
+
 func TestSlackAwaitResumeRoundTripIntegration(t *testing.T) {
 	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
 		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")
@@ -579,6 +814,173 @@ func TestSlackAwaitResumeRoundTripIntegration(t *testing.T) {
 	}
 	if finalPayload["text"] != "approved and completed" {
 		t.Fatalf("unexpected final payload: %+v", finalPayload)
+	}
+}
+
+func TestSlackOpenCodeAwaitBlockedIntegration(t *testing.T) {
+	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
+		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")
+	}
+
+	ctx := context.Background()
+	dbURL := startAppPostgresContainer(t)
+	repo, err := db.New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(repo.Close)
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	applyAppMigrations(t, ctx, pool)
+	appMustExec(t, ctx, pool, `truncate table outbox_events, outbound_deliveries, audit_events, await_responses, awaits, runs, session_queue_items, artifacts, messages, channel_surface_state, session_aliases, telegram_user_access, sessions restart identity cascade`)
+
+	channel := &appIntegrationSlackChannel{}
+	cfg := config.Config{
+		DefaultTenantID:       "tenant_default",
+		DefaultAgentProfileID: "agent_profile_default",
+		DefaultACPAgentName:   "build",
+		SlackSigningSecret:    "integration-secret",
+		WorkerPollInterval:    time.Second,
+		ReconcilerInterval:    time.Second,
+	}
+	renderers := map[string]ports.Renderer{
+		"slack": services.SlackRenderer{},
+	}
+	channels := map[string]ports.ChannelAdapter{
+		"slack": channel,
+	}
+	catalog := &services.AgentCatalog{
+		Bridge: testACPBridge{agents: []domain.AgentManifest{{
+			Name:                    "build",
+			Protocol:                "opencode",
+			Healthy:                 true,
+			SupportsAwaitResume:     false,
+			SupportsStructuredAwait: false,
+			SupportsStreaming:       true,
+			SupportsArtifacts:       true,
+		}}},
+		TTL: time.Minute,
+	}
+	app := &App{
+		Config:  cfg,
+		Repo:    repo,
+		DB:      repo,
+		Catalog: catalog,
+		Runtime: &RuntimeState{},
+		Inbound: services.InboundService{
+			Repo: repo,
+			Router: services.StaticRouter{
+				DefaultAgentProfileID: cfg.DefaultAgentProfileID,
+				DefaultACPAgentName:   cfg.DefaultACPAgentName,
+			},
+		},
+		Await: services.AwaitService{Repo: repo},
+		Worker: services.WorkerService{
+			Repo: repo,
+			ACP: appIntegrationACP{
+				startRun:    "run_opencode_block_1",
+				startStatus: "running",
+				startEvents: []domain.RunEvent{{
+					RunID:       "run_opencode_block_1",
+					Status:      "awaiting",
+					Text:        "needs approval",
+					AwaitSchema: []byte(`{"type":"object"}`),
+					AwaitPrompt: []byte(`{"title":"Approve?"}`),
+				}},
+			},
+			Catalog:   catalog,
+			Renderer:  renderers["slack"],
+			Channel:   channel,
+			Renderers: renderers,
+			Channels:  channels,
+		},
+		Slack:    slack.New(cfg.SlackSigningSecret, ""),
+		Channels: channels,
+	}
+
+	eventBody := `{
+		"type":"event_callback",
+		"event_id":"evt_slack_block_1",
+		"event":{
+			"type":"app_mention",
+			"user":"U123",
+			"text":"<@BOT> request that would pause",
+			"channel":"C345",
+			"ts":"1712400000.000300"
+		}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/slack", strings.NewReader(eventBody))
+	slackSign(req, []byte(eventBody), cfg.SlackSigningSecret)
+	rec := httptest.NewRecorder()
+	app.GatewayHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected slack webhook accepted, got status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if err := app.Worker.ProcessOnce(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Worker.ProcessOnce(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	awaits, err := repo.ListAwaits(ctx, domain.AwaitListQuery{
+		TenantID:   "tenant_default",
+		SessionID:  "evt_slack_block_1_session",
+		CursorPage: domain.CursorPage{Limit: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(awaits.Items) != 0 {
+		t.Fatalf("expected no persisted awaits for blocked OpenCode flow, got %+v", awaits.Items)
+	}
+	if len(channel.sent) != 1 {
+		t.Fatalf("expected one rendered failure delivery, got %+v", channel.sent)
+	}
+	var failurePayload map[string]any
+	if err := json.Unmarshal(channel.sent[0].PayloadJSON, &failurePayload); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := failurePayload["text"].(string)
+	if !strings.Contains(text, "Slack route") || !strings.Contains(text, "native await/resume") {
+		t.Fatalf("unexpected rendered failure payload: %+v", failurePayload)
+	}
+
+	auditPage, err := repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
+		TenantID:   "tenant_default",
+		RunID:      "run_opencode_block_1",
+		EventType:  "worker.await_blocked_opencode_bridge",
+		CursorPage: domain.CursorPage{Limit: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(auditPage.Items) != 1 {
+		t.Fatalf("expected one bridge-await-block audit event, got %+v", auditPage.Items)
+	}
+
+	runtimeReq := httptest.NewRequest(http.MethodGet, "/admin/runtime", nil)
+	runtimeRec := httptest.NewRecorder()
+	app.handleRuntimeStatus(runtimeRec, runtimeReq)
+	if runtimeRec.Code != http.StatusOK {
+		t.Fatalf("expected runtime status 200, got %d body=%s", runtimeRec.Code, runtimeRec.Body.String())
+	}
+	var runtimePayload struct {
+		Data struct {
+			Persisted map[string]int `json:"persisted"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(runtimeRec.Body).Decode(&runtimePayload); err != nil {
+		t.Fatal(err)
+	}
+	if runtimePayload.Data.Persisted["persisted_bridge_await_blocks"] != 1 {
+		t.Fatalf("expected persisted bridge await block count, got %+v", runtimePayload.Data.Persisted)
 	}
 }
 
@@ -754,6 +1156,181 @@ func TestTelegramAwaitResumeRoundTripIntegration(t *testing.T) {
 	}
 	if finalPayload["chat_id"] != "123" || finalPayload["text"] != "telegram approval complete" {
 		t.Fatalf("unexpected final telegram payload: %+v", finalPayload)
+	}
+}
+
+func TestTelegramOpenCodeAwaitBlockedIntegration(t *testing.T) {
+	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
+		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")
+	}
+
+	ctx := context.Background()
+	dbURL := startAppPostgresContainer(t)
+	repo, err := db.New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(repo.Close)
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	applyAppMigrations(t, ctx, pool)
+	appMustExec(t, ctx, pool, `truncate table outbox_events, outbound_deliveries, audit_events, await_responses, awaits, runs, session_queue_items, artifacts, messages, channel_surface_state, session_aliases, telegram_user_access, sessions restart identity cascade`)
+
+	channel := &appIntegrationChannel{}
+	cfg := config.Config{
+		DefaultTenantID:        "tenant_default",
+		DefaultAgentProfileID:  "agent_profile_default",
+		DefaultACPAgentName:    "build",
+		TelegramAllowedUserIDs: []string{"123"},
+		WorkerPollInterval:     time.Second,
+		ReconcilerInterval:     time.Second,
+	}
+	renderers := map[string]ports.Renderer{
+		"telegram": services.TelegramRenderer{},
+	}
+	channels := map[string]ports.ChannelAdapter{
+		"telegram": channel,
+	}
+	catalog := &services.AgentCatalog{
+		Bridge: testACPBridge{agents: []domain.AgentManifest{{
+			Name:                    "build",
+			Protocol:                "opencode",
+			Healthy:                 true,
+			SupportsAwaitResume:     false,
+			SupportsStructuredAwait: false,
+			SupportsStreaming:       true,
+			SupportsArtifacts:       true,
+		}}},
+		TTL: time.Minute,
+	}
+	app := &App{
+		Config:  cfg,
+		Repo:    repo,
+		DB:      repo,
+		Catalog: catalog,
+		Runtime: &RuntimeState{},
+		Inbound: services.InboundService{
+			Repo: repo,
+			Router: services.StaticRouter{
+				DefaultAgentProfileID: cfg.DefaultAgentProfileID,
+				DefaultACPAgentName:   cfg.DefaultACPAgentName,
+			},
+		},
+		Await: services.AwaitService{Repo: repo},
+		Worker: services.WorkerService{
+			Repo: repo,
+			ACP: appIntegrationACP{
+				startRun:    "run_tg_opencode_block_1",
+				startStatus: "running",
+				startEvents: []domain.RunEvent{{
+					RunID:       "run_tg_opencode_block_1",
+					Status:      "awaiting",
+					Text:        "needs approval",
+					AwaitSchema: []byte(`{"type":"object"}`),
+					AwaitPrompt: []byte(`{"title":"Approve?"}`),
+				}},
+			},
+			Catalog:   catalog,
+			Renderer:  renderers["telegram"],
+			Channel:   channel,
+			Renderers: renderers,
+			Channels:  channels,
+		},
+		Telegram: telegram.New("", ""),
+		Channels: channels,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/telegram", strings.NewReader(`{
+		"update_id": 3001,
+		"message": {
+			"message_id": 88,
+			"date": 1712400000,
+			"text": "request that would pause",
+			"chat": {"id": 123, "type": "private"},
+			"from": {"id": 123}
+		}
+	}`))
+	rec := httptest.NewRecorder()
+	app.GatewayHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected telegram webhook accepted, got status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if err := app.Worker.ProcessOnce(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Worker.ProcessOnce(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := repo.ListSessions(ctx, domain.SessionListQuery{
+		TenantID:    "tenant_default",
+		ChannelType: "telegram",
+		CursorPage:  domain.CursorPage{Limit: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions.Items) != 1 {
+		t.Fatalf("expected one telegram session, got %+v", sessions.Items)
+	}
+	awaits, err := repo.ListAwaits(ctx, domain.AwaitListQuery{
+		TenantID:   "tenant_default",
+		SessionID:  sessions.Items[0].ID,
+		CursorPage: domain.CursorPage{Limit: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(awaits.Items) != 0 {
+		t.Fatalf("expected no persisted awaits for blocked OpenCode telegram flow, got %+v", awaits.Items)
+	}
+	if len(channel.sent) != 1 {
+		t.Fatalf("expected one rendered telegram failure delivery, got %+v", channel.sent)
+	}
+	var failurePayload map[string]any
+	if err := json.Unmarshal(channel.sent[0].PayloadJSON, &failurePayload); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := failurePayload["text"].(string)
+	if !strings.Contains(text, "Telegram route") || !strings.Contains(text, "native await/resume") {
+		t.Fatalf("unexpected rendered telegram failure payload: %+v", failurePayload)
+	}
+
+	auditPage, err := repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
+		TenantID:   "tenant_default",
+		RunID:      "run_tg_opencode_block_1",
+		EventType:  "worker.await_blocked_opencode_bridge",
+		CursorPage: domain.CursorPage{Limit: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(auditPage.Items) != 1 {
+		t.Fatalf("expected one telegram bridge-await-block audit event, got %+v", auditPage.Items)
+	}
+
+	runtimeReq := httptest.NewRequest(http.MethodGet, "/admin/runtime", nil)
+	runtimeRec := httptest.NewRecorder()
+	app.handleRuntimeStatus(runtimeRec, runtimeReq)
+	if runtimeRec.Code != http.StatusOK {
+		t.Fatalf("expected runtime status 200, got %d body=%s", runtimeRec.Code, runtimeRec.Body.String())
+	}
+	var runtimePayload struct {
+		Data struct {
+			Persisted map[string]int `json:"persisted"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(runtimeRec.Body).Decode(&runtimePayload); err != nil {
+		t.Fatal(err)
+	}
+	if runtimePayload.Data.Persisted["persisted_bridge_await_blocks"] != 1 {
+		t.Fatalf("expected persisted bridge await block count, got %+v", runtimePayload.Data.Persisted)
 	}
 }
 

@@ -29,7 +29,7 @@ type App struct {
 	Catalog    *services.AgentCatalog
 	Worker     services.WorkerService
 	Reconciler services.Reconciler
-	ACP        acp.Client
+	ACP        ports.ACPBridge
 	Slack      slack.Adapter
 	Telegram   telegram.Adapter
 	Channels   map[string]ports.ChannelAdapter
@@ -242,7 +242,18 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		"slack":    slackAdapter,
 		"telegram": telegramAdapter,
 	}
-	acpClient := acp.New(cfg.ACPBaseURL, cfg.ACPToken)
+	acpClient := acp.NewBridge(acp.BridgeConfig{
+		Implementation:   cfg.ACPImplementation,
+		BaseURL:          cfg.ACPBaseURL,
+		Token:            cfg.ACPToken,
+		Command:          cfg.ACPCommand,
+		Args:             cfg.ACPArgs,
+		Env:              cfg.ACPEnv,
+		Workdir:          cfg.ACPWorkdir,
+		DefaultAgentName: cfg.DefaultACPAgentName,
+		StartupTimeout:   cfg.ACPStartupTimeout,
+		RPCTimeout:       cfg.ACPRPCTimeout,
+	})
 	artifactSvc := services.ArtifactService{Store: storage.New(cfg.ObjectStorageBaseURL)}
 	catalog := &services.AgentCatalog{
 		Bridge: acpClient,

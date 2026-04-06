@@ -196,21 +196,25 @@ type SessionDetail struct {
 }
 
 type AgentManifest struct {
-	Name                string   `json:"name"`
-	Description         string   `json:"description"`
-	InputContentTypes   []string `json:"input_content_types"`
-	OutputContentTypes  []string `json:"output_content_types"`
-	SupportsAwaitResume bool     `json:"supports_await_resume"`
-	SupportsStreaming   bool     `json:"supports_streaming"`
-	SupportsArtifacts   bool     `json:"supports_artifacts"`
-	Healthy             bool     `json:"healthy"`
+	Name                    string   `json:"name"`
+	Description             string   `json:"description"`
+	Protocol                string   `json:"protocol,omitempty"`
+	InputContentTypes       []string `json:"input_content_types"`
+	OutputContentTypes      []string `json:"output_content_types"`
+	SupportsAwaitResume     bool     `json:"supports_await_resume"`
+	SupportsStructuredAwait bool     `json:"supports_structured_await"`
+	SupportsStreaming       bool     `json:"supports_streaming"`
+	SupportsArtifacts       bool     `json:"supports_artifacts"`
+	Healthy                 bool     `json:"healthy"`
 }
 
 type AgentCompatibility struct {
-	AgentName  string        `json:"agent_name"`
-	Compatible bool          `json:"compatible"`
-	Reasons    []string      `json:"reasons"`
-	Manifest   AgentManifest `json:"manifest"`
+	AgentName      string        `json:"agent_name"`
+	Compatible     bool          `json:"compatible"`
+	ValidationMode string        `json:"validation_mode"`
+	Reasons        []string      `json:"reasons"`
+	Warnings       []string      `json:"warnings,omitempty"`
+	Manifest       AgentManifest `json:"manifest"`
 }
 
 type CursorPage struct {
@@ -271,13 +275,13 @@ type AwaitListQuery struct {
 
 type AuditEventListQuery struct {
 	CursorPage
-	TenantID       string
-	SessionID      string
-	RunID          string
-	AwaitID        string
-	AggregateType  string
-	AggregateID    string
-	EventType      string
+	TenantID      string
+	SessionID     string
+	RunID         string
+	AwaitID       string
+	AggregateType string
+	AggregateID   string
+	EventType     string
 }
 
 type TelegramUserAccessListQuery struct {
@@ -292,9 +296,9 @@ type PagedResult[T any] struct {
 }
 
 type AwaitDetail struct {
-	Await     Await            `json:"await"`
-	Responses []AwaitResponse  `json:"responses"`
-	Audit     []AuditEvent     `json:"audit"`
+	Await     Await           `json:"await"`
+	Responses []AwaitResponse `json:"responses"`
+	Audit     []AuditEvent    `json:"audit"`
 }
 
 type RunDetail struct {
@@ -331,11 +335,11 @@ type AuditEvent struct {
 }
 
 type RunStatusSnapshot struct {
-	ACPRunID  string          `json:"acp_run_id"`
-	Status    string          `json:"status"`
-	Output    string          `json:"output"`
-	Artifacts []Artifact      `json:"artifacts"`
-	Await     *AwaitSnapshot  `json:"await,omitempty"`
+	ACPRunID  string         `json:"acp_run_id"`
+	Status    string         `json:"status"`
+	Output    string         `json:"output"`
+	Artifacts []Artifact     `json:"artifacts"`
+	Await     *AwaitSnapshot `json:"await,omitempty"`
 }
 
 type AwaitSnapshot struct {
@@ -349,14 +353,14 @@ type SurfaceSession struct {
 }
 
 type TelegramUserAccess struct {
-	TenantID        string    `json:"tenant_id"`
-	TelegramUserID  string    `json:"telegram_user_id"`
-	DisplayName     string    `json:"display_name,omitempty"`
-	Allowed         bool      `json:"allowed"`
-	Status          string    `json:"status"`
-	AddedBy         string    `json:"added_by,omitempty"`
-	RequestedAt     time.Time `json:"requested_at"`
-	DecidedAt       *time.Time `json:"decided_at,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	TenantID       string     `json:"tenant_id"`
+	TelegramUserID string     `json:"telegram_user_id"`
+	DisplayName    string     `json:"display_name,omitempty"`
+	Allowed        bool       `json:"allowed"`
+	Status         string     `json:"status"`
+	AddedBy        string     `json:"added_by,omitempty"`
+	RequestedAt    time.Time  `json:"requested_at"`
+	DecidedAt      *time.Time `json:"decided_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }

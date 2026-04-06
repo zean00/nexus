@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	acpadapter "nexus/internal/adapters/acp"
 	"nexus/internal/config"
 	"nexus/internal/domain"
 	"nexus/internal/ports"
@@ -38,8 +39,9 @@ func (a *testChannelAdapter) SendAwaitPrompt(context.Context, domain.OutboundDel
 var _ ports.ChannelAdapter = (*testChannelAdapter)(nil)
 
 type testACPBridge struct {
-	agents      []domain.AgentManifest
-	discoverErr error
+	agents        []domain.AgentManifest
+	discoverErr   error
+	runtimeStatus acpadapter.StdioRuntimeStatus
 }
 
 func (b testACPBridge) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
@@ -60,10 +62,16 @@ func (b testACPBridge) ResumeRun(context.Context, domain.Await, []byte) ([]domai
 func (b testACPBridge) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
 	return domain.RunStatusSnapshot{}, nil
 }
+func (b testACPBridge) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
 func (b testACPBridge) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
 	return domain.RunStatusSnapshot{}, false, nil
 }
 func (b testACPBridge) CancelRun(context.Context, domain.Run) error { return nil }
+func (b testACPBridge) RuntimeStatus() acpadapter.StdioRuntimeStatus {
+	return b.runtimeStatus
+}
 
 var _ ports.ACPBridge = testACPBridge{}
 
@@ -155,6 +163,9 @@ func (r *appRepoStub) MarkOutboxDone(context.Context, string) error             
 func (r *appRepoStub) MarkOutboxFailed(context.Context, string, error, time.Time) error { return nil }
 func (r *appRepoStub) GetQueueItem(context.Context, string) (domain.QueueItem, error) {
 	return domain.QueueItem{}, nil
+}
+func (r *appRepoStub) GetQueueStartIdempotencyKey(context.Context, string) (string, error) {
+	return "", nil
 }
 func (r *appRepoStub) GetSession(context.Context, string) (domain.Session, error) {
 	return domain.Session{}, nil
@@ -723,6 +734,12 @@ func TestGatewayHealthEnvelope(t *testing.T) {
 				CachedAgentCount int  `json:"cached_agent_count"`
 				CacheValid       bool `json:"cache_valid"`
 			} `json:"catalog"`
+			ACPRuntime struct {
+				Implementation string `json:"implementation"`
+				Running        bool   `json:"running"`
+				Initialized    bool   `json:"initialized"`
+				LastError      string `json:"last_error"`
+			} `json:"acp_runtime"`
 		} `json:"meta"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
@@ -733,6 +750,9 @@ func TestGatewayHealthEnvelope(t *testing.T) {
 	}
 	if payload.Meta.Catalog.CachedAgentCount != 1 || !payload.Meta.Catalog.CacheValid {
 		t.Fatalf("unexpected gateway health catalog meta: %+v", payload.Meta.Catalog)
+	}
+	if payload.Meta.ACPRuntime.Implementation != "" || payload.Meta.ACPRuntime.Running || payload.Meta.ACPRuntime.Initialized || payload.Meta.ACPRuntime.LastError != "" {
+		t.Fatalf("expected empty acp runtime for non-stdio bridge, got %+v", payload.Meta.ACPRuntime)
 	}
 }
 
@@ -806,6 +826,49 @@ func TestGatewayHealthDegradedWhenCatalogFetchFailed(t *testing.T) {
 	}
 	if payload.Data.Status != "degraded" || payload.Meta.Catalog.LastFetchError != "acp unavailable" || payload.Meta.Catalog.CacheValid {
 		t.Fatalf("unexpected degraded health payload: %+v", payload)
+	}
+}
+
+func TestGatewayHealthDegradedWhenACPRuntimeErrored(t *testing.T) {
+	app := &App{
+		Catalog: &services.AgentCatalog{
+			Bridge: testACPBridge{
+				agents: []domain.AgentManifest{{Name: "agent_a", Healthy: true}},
+				runtimeStatus: acpadapter.StdioRuntimeStatus{
+					Implementation: "stdio",
+					Running:        false,
+					Initialized:    false,
+					StartedAt:      time.Now().UTC(),
+					LastError:      "stdio exited",
+				},
+			},
+			TTL: time.Minute,
+		},
+	}
+	if _, err := app.Catalog.List(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	app.GatewayHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var payload struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+		Meta struct {
+			ACPRuntime struct {
+				LastError string `json:"last_error"`
+			} `json:"acp_runtime"`
+		} `json:"meta"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.Status != "degraded" || payload.Meta.ACPRuntime.LastError != "stdio exited" {
+		t.Fatalf("unexpected acp-runtime health payload: %+v", payload)
 	}
 }
 
@@ -955,6 +1018,49 @@ func TestAdminReadinessNotReadyWhenCatalogFetchFailed(t *testing.T) {
 	}
 	if payload.Data.Status != "not_ready" || payload.Meta.Service != "admin" || payload.Meta.Catalog.LastFetchError != "acp unavailable" {
 		t.Fatalf("unexpected admin readiness payload: %+v", payload)
+	}
+}
+
+func TestAdminReadinessNotReadyWhenACPRuntimeStopped(t *testing.T) {
+	app := &App{
+		Catalog: &services.AgentCatalog{
+			Bridge: testACPBridge{
+				agents: []domain.AgentManifest{{Name: "agent_a", Healthy: true}},
+				runtimeStatus: acpadapter.StdioRuntimeStatus{
+					Implementation: "stdio",
+					Running:        false,
+					Initialized:    false,
+					StartedAt:      time.Now().UTC(),
+				},
+			},
+			TTL: time.Minute,
+		},
+	}
+	if _, err := app.Catalog.List(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	app.AdminHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	var payload struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+		Meta struct {
+			ACPRuntime struct {
+				Running     bool `json:"running"`
+				Initialized bool `json:"initialized"`
+			} `json:"acp_runtime"`
+		} `json:"meta"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.Status != "not_ready" || payload.Meta.ACPRuntime.Running || payload.Meta.ACPRuntime.Initialized {
+		t.Fatalf("unexpected acp-runtime readiness payload: %+v", payload)
 	}
 }
 
@@ -1158,6 +1264,35 @@ func TestHandleRuntimeStatus(t *testing.T) {
 			"admin.telegram_request_resolve_not_pending":     15,
 			"admin.telegram_request_resolve_internal_failed": 16,
 		}},
+		ACP: testACPBridge{runtimeStatus: acpadapter.StdioRuntimeStatus{
+			Implementation: "stdio",
+			Command:        "opencode",
+			Args:           []string{"acp"},
+			Running:        true,
+			Initialized:    true,
+			StartedAt:      time.Unix(1700000000, 0).UTC(),
+			AgentName:      "OpenCode",
+			AgentVersion:   "1.0.0",
+			CallbackCounts: struct {
+				PermissionRequests int `json:"permission_requests"`
+				FSReadTextFile     int `json:"fs_read_text_file"`
+				FSWriteTextFile    int `json:"fs_write_text_file"`
+				TerminalCreate     int `json:"terminal_create"`
+				TerminalOutput     int `json:"terminal_output"`
+				TerminalWait       int `json:"terminal_wait"`
+				TerminalKill       int `json:"terminal_kill"`
+				TerminalRelease    int `json:"terminal_release"`
+			}{
+				PermissionRequests: 2,
+				FSReadTextFile:     3,
+				FSWriteTextFile:    4,
+				TerminalCreate:     5,
+				TerminalOutput:     6,
+				TerminalWait:       7,
+				TerminalKill:       8,
+				TerminalRelease:    9,
+			},
+		}},
 		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{
 			{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
 			{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsStreaming: true, SupportsArtifacts: true},
@@ -1204,10 +1339,27 @@ func TestHandleRuntimeStatus(t *testing.T) {
 					To    string `json:"to"`
 				} `json:"recent_transitions"`
 			} `json:"runtime"`
-			Health    string         `json:"health"`
-			Readiness string         `json:"readiness"`
-			Persisted map[string]int `json:"persisted"`
-			ACP       struct {
+			Health     string         `json:"health"`
+			Readiness  string         `json:"readiness"`
+			Persisted  map[string]int `json:"persisted"`
+			ACPRuntime struct {
+				Implementation string `json:"implementation"`
+				Command        string `json:"command"`
+				Running        bool   `json:"running"`
+				Initialized    bool   `json:"initialized"`
+				AgentName      string `json:"agent_name"`
+				CallbackCounts struct {
+					PermissionRequests int `json:"permission_requests"`
+					FSReadTextFile     int `json:"fs_read_text_file"`
+					FSWriteTextFile    int `json:"fs_write_text_file"`
+					TerminalCreate     int `json:"terminal_create"`
+					TerminalOutput     int `json:"terminal_output"`
+					TerminalWait       int `json:"terminal_wait"`
+					TerminalKill       int `json:"terminal_kill"`
+					TerminalRelease    int `json:"terminal_release"`
+				} `json:"callback_counts"`
+			} `json:"acp_runtime"`
+			ACP struct {
 				AgentCount               int  `json:"agent_count"`
 				CompatibleCount          int  `json:"compatible_count"`
 				IncompatibleCount        int  `json:"incompatible_count"`
@@ -1242,6 +1394,19 @@ func TestHandleRuntimeStatus(t *testing.T) {
 	if payload.Data.Runtime.OutboxRequeueCount != 1 || payload.Data.Runtime.QueueRepairRecoveredCount != 1 || payload.Data.Runtime.QueueRepairRequeuedCount != 1 ||
 		payload.Data.Runtime.RunRefreshCount != 1 || payload.Data.Runtime.AwaitExpiryCount != 1 || payload.Data.Runtime.DeliveryRetryCount != 1 {
 		t.Fatalf("unexpected runtime lifecycle counters: %+v", payload.Data.Runtime)
+	}
+	if payload.Data.ACPRuntime.Implementation != "stdio" || payload.Data.ACPRuntime.Command != "opencode" || !payload.Data.ACPRuntime.Running || !payload.Data.ACPRuntime.Initialized || payload.Data.ACPRuntime.AgentName != "OpenCode" {
+		t.Fatalf("unexpected acp runtime status: %+v", payload.Data.ACPRuntime)
+	}
+	if payload.Data.ACPRuntime.CallbackCounts.PermissionRequests != 2 ||
+		payload.Data.ACPRuntime.CallbackCounts.FSReadTextFile != 3 ||
+		payload.Data.ACPRuntime.CallbackCounts.FSWriteTextFile != 4 ||
+		payload.Data.ACPRuntime.CallbackCounts.TerminalCreate != 5 ||
+		payload.Data.ACPRuntime.CallbackCounts.TerminalOutput != 6 ||
+		payload.Data.ACPRuntime.CallbackCounts.TerminalWait != 7 ||
+		payload.Data.ACPRuntime.CallbackCounts.TerminalKill != 8 ||
+		payload.Data.ACPRuntime.CallbackCounts.TerminalRelease != 9 {
+		t.Fatalf("unexpected acp runtime callback counts: %+v", payload.Data.ACPRuntime.CallbackCounts)
 	}
 	if len(payload.Data.Runtime.RecentTransitions) == 0 {
 		t.Fatalf("expected runtime transitions, got %+v", payload.Data.Runtime)
@@ -1307,11 +1472,38 @@ func TestGatewayMetricsEndpoint(t *testing.T) {
 		Config: config.Config{DefaultTenantID: "tenant_default", DefaultACPAgentName: "agent_bridge", WorkerPollInterval: time.Second, ReconcilerInterval: time.Second},
 		Repo:   repo,
 		Catalog: &services.AgentCatalog{
-			Bridge: testACPBridge{agents: []domain.AgentManifest{
-				{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
-				{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsStreaming: true, SupportsArtifacts: true},
-				{Name: "agent_bad", Healthy: false, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
-			}},
+			Bridge: testACPBridge{
+				agents: []domain.AgentManifest{
+					{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+					{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsStreaming: true, SupportsArtifacts: true},
+					{Name: "agent_bad", Healthy: false, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+				},
+				runtimeStatus: acpadapter.StdioRuntimeStatus{
+					Implementation: "stdio",
+					Running:        true,
+					Initialized:    true,
+					StartedAt:      time.Unix(1700000000, 0).UTC(),
+					CallbackCounts: struct {
+						PermissionRequests int `json:"permission_requests"`
+						FSReadTextFile     int `json:"fs_read_text_file"`
+						FSWriteTextFile    int `json:"fs_write_text_file"`
+						TerminalCreate     int `json:"terminal_create"`
+						TerminalOutput     int `json:"terminal_output"`
+						TerminalWait       int `json:"terminal_wait"`
+						TerminalKill       int `json:"terminal_kill"`
+						TerminalRelease    int `json:"terminal_release"`
+					}{
+						PermissionRequests: 2,
+						FSReadTextFile:     3,
+						FSWriteTextFile:    4,
+						TerminalCreate:     5,
+						TerminalOutput:     6,
+						TerminalWait:       7,
+						TerminalKill:       8,
+						TerminalRelease:    9,
+					},
+				},
+			},
 			TTL: time.Minute,
 		},
 		Runtime: &RuntimeState{},
@@ -1343,6 +1535,18 @@ func TestGatewayMetricsEndpoint(t *testing.T) {
 		`nexus_acp_default_agent_ready{service="gateway"} 1`,
 		`nexus_acp_default_agent_reason_count{service="gateway"} 0`,
 		`nexus_acp_default_agent_warning_count{service="gateway"} 2`,
+		`nexus_acp_runtime_running{service="gateway"} 1`,
+		`nexus_acp_runtime_initialized{service="gateway"} 1`,
+		`nexus_acp_runtime_error{service="gateway"} 0`,
+		`nexus_acp_runtime_permission_requests{service="gateway"} 2`,
+		`nexus_acp_runtime_fs_read_text_file{service="gateway"} 3`,
+		`nexus_acp_runtime_fs_write_text_file{service="gateway"} 4`,
+		`nexus_acp_runtime_terminal_create{service="gateway"} 5`,
+		`nexus_acp_runtime_terminal_output{service="gateway"} 6`,
+		`nexus_acp_runtime_terminal_wait{service="gateway"} 7`,
+		`nexus_acp_runtime_terminal_kill{service="gateway"} 8`,
+		`nexus_acp_runtime_terminal_release{service="gateway"} 9`,
+		`nexus_acp_runtime_started_unix{service="gateway"} 1700000000`,
 		`nexus_acp_compatible_agents{service="gateway"} 2`,
 		`nexus_acp_incompatible_agents{service="gateway"} 1`,
 		`nexus_acp_bridge_compatible_agents{service="gateway"} 1`,
@@ -2133,14 +2337,21 @@ func TestHandleTelegramTrustSummary(t *testing.T) {
 	if repo.auditQueries[1].AggregateType != "telegram_user" || repo.auditQueries[1].EventType != "admin.telegram_request_resolved" || repo.auditQueries[1].Limit != 1 {
 		t.Fatalf("unexpected trust summary resolution audit query: %+v", repo.auditQueries[1])
 	}
-	if repo.auditQueries[2].EventType != "admin.telegram_request_resolve_not_found" || repo.auditQueries[2].Limit != 1 {
-		t.Fatalf("unexpected not_found breakdown audit query: %+v", repo.auditQueries[2])
+	breakdownQueries := map[string]bool{}
+	for _, query := range repo.auditQueries[2:] {
+		if query.Limit != 1 {
+			t.Fatalf("unexpected breakdown audit query limit: %+v", query)
+		}
+		breakdownQueries[query.EventType] = true
 	}
-	if repo.auditQueries[3].EventType != "admin.telegram_request_resolve_not_pending" || repo.auditQueries[3].Limit != 1 {
-		t.Fatalf("unexpected not_pending breakdown audit query: %+v", repo.auditQueries[3])
-	}
-	if repo.auditQueries[4].EventType != "admin.telegram_request_resolve_internal_failed" || repo.auditQueries[4].Limit != 1 {
-		t.Fatalf("unexpected internal breakdown audit query: %+v", repo.auditQueries[4])
+	for _, eventType := range []string{
+		"admin.telegram_request_resolve_not_found",
+		"admin.telegram_request_resolve_not_pending",
+		"admin.telegram_request_resolve_internal_failed",
+	} {
+		if !breakdownQueries[eventType] {
+			t.Fatalf("missing breakdown audit query for %q: %+v", eventType, repo.auditQueries)
+		}
 	}
 	if payload.Data.NextCursors["pending_requests"] == "" || payload.Data.NextCursors["recent_decisions"] == "" || payload.Data.NextCursors["recent_failures"] != "more-failures" || payload.Data.NextCursors["recent_resolutions"] != "more-resolutions" || payload.Data.NextCursors["failure_not_found"] != "more-not-found" || payload.Data.NextCursors["failure_not_pending"] != "more-not-pending" {
 		t.Fatalf("unexpected next_cursors payload: %+v", payload.Data.NextCursors)

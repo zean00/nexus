@@ -35,7 +35,10 @@ func (b *catalogBridge) ResumeRun(context.Context, domain.Await, []byte) ([]doma
 func (b *catalogBridge) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
 	return domain.RunStatusSnapshot{}, nil
 }
-func (b *catalogBridge) FindRunByIdempotencyKey(context.Context, string) (domain.RunStatusSnapshot, bool, error) {
+func (b *catalogBridge) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (b *catalogBridge) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
 	return domain.RunStatusSnapshot{}, false, nil
 }
 func (b *catalogBridge) CancelRun(context.Context, domain.Run) error { return nil }

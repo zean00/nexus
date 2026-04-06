@@ -28,6 +28,7 @@ type workerIntegrationACP struct {
 	getRun       domain.RunStatusSnapshot
 	findRun      domain.RunStatusSnapshot
 	findRunFound bool
+	requestedKey *string
 }
 
 func (a workerIntegrationACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
@@ -50,7 +51,14 @@ func (a workerIntegrationACP) GetRun(context.Context, string) (domain.RunStatusS
 	return a.getRun, nil
 }
 
-func (a workerIntegrationACP) FindRunByIdempotencyKey(context.Context, string) (domain.RunStatusSnapshot, bool, error) {
+func (a workerIntegrationACP) FindRunByIdempotencyKey(ctx context.Context, _ domain.Session, key string) (domain.RunStatusSnapshot, bool, error) {
+	if a.requestedKey != nil {
+		*a.requestedKey = key
+	}
+	return a.findRun, a.findRunFound, nil
+}
+
+func (a workerIntegrationACP) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
 	return a.findRun, a.findRunFound, nil
 }
 
@@ -186,6 +194,13 @@ func TestWorkerServiceIntegrationWithPostgres(t *testing.T) {
 		}
 		if run.Status != "completed" || run.ACPRunID != "acp_run_start_1" {
 			t.Fatalf("unexpected created run: %+v", run)
+		}
+		session, err := repo.GetSession(ctx, "session_start_worker_1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if session.ACPSessionID != "acp_session_worker" {
+			t.Fatalf("expected persisted ACP session id, got %+v", session)
 		}
 		queueItem, err := repo.GetQueueItem(ctx, "queue_start_worker_1")
 		if err != nil {

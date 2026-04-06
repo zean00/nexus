@@ -36,3 +36,17 @@ go run ./cmd/migrator
 go run ./cmd/gateway
 go run ./cmd/worker
 ```
+
+## Live OpenCode Stdio Validation
+
+If `opencode` is available locally, the real stdio ACP integration suite can be run with:
+
+```bash
+NEXUS_INTEGRATION_OPENCODE=1 go test ./internal/adapters/acp -run 'TestStdioClientOpenCode(FileRead|FileWrite|Terminal)Integration' -v
+```
+
+This validates Nexus talking to `opencode acp` over native stdio JSON-RPC ACP for:
+
+- file read
+- file write
+- terminal execution

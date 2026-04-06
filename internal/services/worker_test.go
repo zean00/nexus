@@ -12,20 +12,24 @@ import (
 )
 
 type workerRepo struct {
-	outboxEvents       []domain.OutboxEvent
-	queueItem          domain.QueueItem
-	session            domain.Session
-	message            domain.Message
-	route              domain.RouteDecision
-	delivery           domain.OutboundDelivery
-	storedOutboundID   string
-	storedArtifacts    []domain.Artifact
-	storedArtifactsDir string
-	runStatusUpdated   bool
-	queueStatusUpdated bool
-	markedSending      []string
-	markedSent         []string
-	markedFailed       []string
+	outboxEvents        []domain.OutboxEvent
+	queueItem           domain.QueueItem
+	session             domain.Session
+	message             domain.Message
+	route               domain.RouteDecision
+	delivery            domain.OutboundDelivery
+	storedOutboundID    string
+	storedOutboundText  string
+	storedArtifacts     []domain.Artifact
+	storedArtifactsDir  string
+	storedAwaits        []domain.Await
+	updatedACPSessionID string
+	auditEvents         []domain.AuditEvent
+	runStatusUpdated    bool
+	queueStatusUpdated  bool
+	markedSending       []string
+	markedSent          []string
+	markedFailed        []string
 }
 
 func (r *workerRepo) InTx(ctx context.Context, fn func(context.Context, ports.Repository) error) error {
@@ -41,8 +45,9 @@ func (r *workerRepo) HasActiveRun(context.Context, string) (bool, error) { retur
 func (r *workerRepo) StoreInboundMessage(context.Context, domain.CanonicalInboundEvent, string) (string, error) {
 	return "", nil
 }
-func (r *workerRepo) StoreOutboundMessage(_ context.Context, _ domain.Session, _ string, _ string, _ []byte) (string, error) {
+func (r *workerRepo) StoreOutboundMessage(_ context.Context, _ domain.Session, _ string, text string, _ []byte) (string, error) {
 	r.storedOutboundID = "msg_out_1"
+	r.storedOutboundText = text
 	return r.storedOutboundID, nil
 }
 func (r *workerRepo) StoreArtifacts(_ context.Context, _ string, direction string, artifacts []domain.Artifact) error {
@@ -66,7 +71,10 @@ func (r *workerRepo) UpdateActiveQueueItemStatus(context.Context, string, string
 func (r *workerRepo) EnqueueNextQueueItem(context.Context, string) (*domain.OutboxEvent, error) {
 	return nil, nil
 }
-func (r *workerRepo) StoreAwait(context.Context, domain.Await) error { return nil }
+func (r *workerRepo) StoreAwait(_ context.Context, await domain.Await) error {
+	r.storedAwaits = append(r.storedAwaits, await)
+	return nil
+}
 func (r *workerRepo) ResolveAwait(context.Context, string, string, []byte) (domain.Await, error) {
 	return domain.Await{}, nil
 }
@@ -85,8 +93,18 @@ func (r *workerRepo) MarkOutboxFailed(context.Context, string, error, time.Time)
 func (r *workerRepo) GetQueueItem(context.Context, string) (domain.QueueItem, error) {
 	return r.queueItem, nil
 }
+func (r *workerRepo) GetQueueStartIdempotencyKey(context.Context, string) (string, error) {
+	return "", nil
+}
 func (r *workerRepo) GetSession(context.Context, string) (domain.Session, error) {
 	return r.session, nil
+}
+func (r *workerRepo) UpdateSessionACPSessionID(_ context.Context, sessionID, acpSessionID string) error {
+	if r.session.ID == sessionID {
+		r.session.ACPSessionID = acpSessionID
+	}
+	r.updatedACPSessionID = acpSessionID
+	return nil
 }
 func (r *workerRepo) GetRouteDecision(context.Context, string) (domain.RouteDecision, error) {
 	return r.route, nil
@@ -98,7 +116,9 @@ func (r *workerRepo) GetRun(context.Context, string) (domain.Run, error) { retur
 func (r *workerRepo) GetRunByACP(context.Context, string) (domain.Run, error) {
 	return domain.Run{}, nil
 }
-func (r *workerRepo) GetAwaitsForRun(context.Context, string, int) ([]domain.Await, error) { return nil, nil }
+func (r *workerRepo) GetAwaitsForRun(context.Context, string, int) ([]domain.Await, error) {
+	return nil, nil
+}
 func (r *workerRepo) GetAwaitResponses(context.Context, string, int) ([]domain.AwaitResponse, error) {
 	return nil, nil
 }
@@ -138,11 +158,19 @@ func (r *workerRepo) MarkDeliveryFailed(_ context.Context, deliveryID string, _ 
 func (r *workerRepo) ListDeliveries(context.Context, domain.DeliveryListQuery) (domain.PagedResult[domain.OutboundDelivery], error) {
 	return domain.PagedResult[domain.OutboundDelivery]{}, nil
 }
-func (r *workerRepo) CountMessages(context.Context, domain.MessageListQuery) (int, error) { return 0, nil }
-func (r *workerRepo) CountArtifacts(context.Context, domain.ArtifactListQuery) (int, error) { return 0, nil }
-func (r *workerRepo) CountDeliveries(context.Context, domain.DeliveryListQuery) (int, error) { return 0, nil }
-func (r *workerRepo) CountSessions(context.Context, domain.SessionListQuery) (int, error) { return 0, nil }
-func (r *workerRepo) CountRuns(context.Context, domain.RunListQuery) (int, error) { return 0, nil }
+func (r *workerRepo) CountMessages(context.Context, domain.MessageListQuery) (int, error) {
+	return 0, nil
+}
+func (r *workerRepo) CountArtifacts(context.Context, domain.ArtifactListQuery) (int, error) {
+	return 0, nil
+}
+func (r *workerRepo) CountDeliveries(context.Context, domain.DeliveryListQuery) (int, error) {
+	return 0, nil
+}
+func (r *workerRepo) CountSessions(context.Context, domain.SessionListQuery) (int, error) {
+	return 0, nil
+}
+func (r *workerRepo) CountRuns(context.Context, domain.RunListQuery) (int, error)     { return 0, nil }
 func (r *workerRepo) CountAwaits(context.Context, domain.AwaitListQuery) (int, error) { return 0, nil }
 func (r *workerRepo) ListSessions(context.Context, domain.SessionListQuery) (domain.PagedResult[domain.Session], error) {
 	return domain.PagedResult[domain.Session]{}, nil
@@ -159,12 +187,14 @@ func (r *workerRepo) ListAuditEvents(context.Context, domain.AuditEventListQuery
 func (r *workerRepo) ListStaleClaimedOutbox(context.Context, time.Time, int) ([]domain.OutboxEvent, error) {
 	return nil, nil
 }
-func (r *workerRepo) RequeueOutbox(context.Context, string) error { return nil }
+func (r *workerRepo) RequeueOutbox(context.Context, string) error                   { return nil }
 func (r *workerRepo) RequeueQueueStartOutbox(context.Context, string, string) error { return nil }
 func (r *workerRepo) ListStuckQueueItems(context.Context, time.Time, int) ([]domain.QueueItem, error) {
 	return nil, nil
 }
-func (r *workerRepo) ListStaleRuns(context.Context, time.Time, int) ([]domain.Run, error) { return nil, nil }
+func (r *workerRepo) ListStaleRuns(context.Context, time.Time, int) ([]domain.Run, error) {
+	return nil, nil
+}
 func (r *workerRepo) ListExpiredAwaits(context.Context, time.Time, int) ([]domain.Await, error) {
 	return nil, nil
 }
@@ -190,8 +220,12 @@ func (r *workerRepo) ListSurfaceSessions(context.Context, string, string, string
 func (r *workerRepo) CloseActiveSession(context.Context, string, string, string, string) (domain.Session, error) {
 	return domain.Session{}, nil
 }
-func (r *workerRepo) IsTelegramUserAllowed(context.Context, string, string) (bool, error) { return false, nil }
-func (r *workerRepo) CountTelegramUserAccess(context.Context, string, string) (int, error) { return 0, nil }
+func (r *workerRepo) IsTelegramUserAllowed(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+func (r *workerRepo) CountTelegramUserAccess(context.Context, string, string) (int, error) {
+	return 0, nil
+}
 func (r *workerRepo) ListTelegramUserAccessPage(context.Context, domain.TelegramUserAccessListQuery) (domain.PagedResult[domain.TelegramUserAccess], error) {
 	return domain.PagedResult[domain.TelegramUserAccess]{}, nil
 }
@@ -204,18 +238,25 @@ func (r *workerRepo) ListTelegramUserAccessByStatus(context.Context, string, str
 func (r *workerRepo) GetTelegramUserAccess(context.Context, string, string) (domain.TelegramUserAccess, error) {
 	return domain.TelegramUserAccess{}, nil
 }
-func (r *workerRepo) UpsertTelegramUserAccess(context.Context, domain.TelegramUserAccess) error { return nil }
-func (r *workerRepo) DeleteTelegramUserAccess(context.Context, string, string) error            { return nil }
+func (r *workerRepo) UpsertTelegramUserAccess(context.Context, domain.TelegramUserAccess) error {
+	return nil
+}
+func (r *workerRepo) DeleteTelegramUserAccess(context.Context, string, string) error { return nil }
 func (r *workerRepo) RequestTelegramAccess(context.Context, domain.TelegramUserAccess) (domain.TelegramUserAccess, error) {
 	return domain.TelegramUserAccess{}, nil
 }
 func (r *workerRepo) ResolveTelegramAccessRequest(context.Context, string, string, string, string) (domain.TelegramUserAccess, error) {
 	return domain.TelegramUserAccess{}, nil
 }
-func (r *workerRepo) CountAuditEvents(context.Context, domain.AuditEventListQuery) (int, error) { return 0, nil }
-func (r *workerRepo) Audit(context.Context, domain.AuditEvent) error { return nil }
-func (r *workerRepo) ForceCancelRun(context.Context, string) error   { return nil }
-func (r *workerRepo) RetryDelivery(context.Context, string) error    { return nil }
+func (r *workerRepo) CountAuditEvents(context.Context, domain.AuditEventListQuery) (int, error) {
+	return 0, nil
+}
+func (r *workerRepo) Audit(_ context.Context, event domain.AuditEvent) error {
+	r.auditEvents = append(r.auditEvents, event)
+	return nil
+}
+func (r *workerRepo) ForceCancelRun(context.Context, string) error { return nil }
+func (r *workerRepo) RetryDelivery(context.Context, string) error  { return nil }
 
 type workerACP struct{}
 
@@ -243,10 +284,77 @@ func (workerACP) ResumeRun(context.Context, domain.Await, []byte) ([]domain.RunE
 func (workerACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
 	return domain.RunStatusSnapshot{}, nil
 }
-func (workerACP) FindRunByIdempotencyKey(context.Context, string) (domain.RunStatusSnapshot, bool, error) {
+func (workerACP) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (workerACP) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
 	return domain.RunStatusSnapshot{}, false, nil
 }
 func (workerACP) CancelRun(context.Context, domain.Run) error { return nil }
+
+type awaitingWorkerACP struct{}
+
+func (awaitingWorkerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
+	return nil, nil
+}
+func (awaitingWorkerACP) EnsureSession(context.Context, domain.Session) (string, error) {
+	return "acp_session_1", nil
+}
+func (awaitingWorkerACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
+	return domain.Run{
+			ID:          "run_await_1",
+			SessionID:   "session_1",
+			Status:      "running",
+			StartedAt:   time.Now(),
+			LastEventAt: time.Now(),
+		}, []domain.RunEvent{{
+			RunID:       "run_await_1",
+			Status:      "awaiting",
+			Text:        "need approval",
+			AwaitSchema: []byte(`{"type":"object"}`),
+			AwaitPrompt: []byte(`{"text":"approve?"}`),
+		}}, nil
+}
+func (awaitingWorkerACP) ResumeRun(context.Context, domain.Await, []byte) ([]domain.RunEvent, error) {
+	return nil, nil
+}
+func (awaitingWorkerACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
+	return domain.RunStatusSnapshot{}, nil
+}
+func (awaitingWorkerACP) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (awaitingWorkerACP) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (awaitingWorkerACP) CancelRun(context.Context, domain.Run) error { return nil }
+
+type workerCatalogBridge struct {
+	agents []domain.AgentManifest
+}
+
+func (b workerCatalogBridge) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
+	return append([]domain.AgentManifest(nil), b.agents...), nil
+}
+func (workerCatalogBridge) EnsureSession(context.Context, domain.Session) (string, error) {
+	return "", nil
+}
+func (workerCatalogBridge) StartRun(context.Context, domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
+	return domain.Run{}, nil, nil
+}
+func (workerCatalogBridge) ResumeRun(context.Context, domain.Await, []byte) ([]domain.RunEvent, error) {
+	return nil, nil
+}
+func (workerCatalogBridge) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
+	return domain.RunStatusSnapshot{}, nil
+}
+func (workerCatalogBridge) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (workerCatalogBridge) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (workerCatalogBridge) CancelRun(context.Context, domain.Run) error { return nil }
 
 type noopRenderer struct{}
 
@@ -273,7 +381,7 @@ type telegramChannel struct {
 	sent []domain.OutboundDelivery
 }
 
-func (*telegramChannel) Channel() string { return "telegram" }
+func (*telegramChannel) Channel() string                                            { return "telegram" }
 func (*telegramChannel) VerifyInbound(context.Context, *http.Request, []byte) error { return nil }
 func (*telegramChannel) ParseInbound(context.Context, *http.Request, []byte, string) (domain.CanonicalInboundEvent, error) {
 	return domain.CanonicalInboundEvent{}, nil
@@ -306,11 +414,60 @@ func TestWorkerPersistsOutboundArtifacts(t *testing.T) {
 	if repo.storedOutboundID == "" {
 		t.Fatal("expected outbound message to be stored")
 	}
+	if repo.updatedACPSessionID != "acp_session_1" {
+		t.Fatalf("expected ACP session id to be persisted, got %q", repo.updatedACPSessionID)
+	}
 	if repo.storedArtifactsDir != "outbound" {
 		t.Fatalf("expected outbound artifacts, got %s", repo.storedArtifactsDir)
 	}
 	if len(repo.storedArtifacts) != 1 {
 		t.Fatalf("expected one stored artifact, got %d", len(repo.storedArtifacts))
+	}
+}
+
+func TestWorkerBlocksStructuredAwaitForOpenCodeBridge(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
+		queueItem:    domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
+		session:      domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "slack", ChannelScopeKey: "C1:T1"},
+		message:      domain.Message{MessageID: "msg_1", Text: "generate"},
+		route:        domain.RouteDecision{ACPAgentName: "build"},
+	}
+	worker := WorkerService{
+		Repo:     repo,
+		ACP:      awaitingWorkerACP{},
+		Renderer: noopRenderer{},
+		Channel:  noopChannel{},
+		Catalog: &AgentCatalog{
+			Bridge: workerCatalogBridge{agents: []domain.AgentManifest{{
+				Name:                    "build",
+				Protocol:                "opencode",
+				Healthy:                 true,
+				SupportsAwaitResume:     false,
+				SupportsStructuredAwait: false,
+				SupportsStreaming:       true,
+				SupportsArtifacts:       true,
+			}}},
+			TTL: time.Minute,
+		},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.storedAwaits) != 0 {
+		t.Fatalf("expected no persisted awaits for OpenCode bridge, got %+v", repo.storedAwaits)
+	}
+	if len(repo.auditEvents) != 1 || repo.auditEvents[0].EventType != "worker.await_blocked_opencode_bridge" {
+		t.Fatalf("expected await-blocked audit event, got %+v", repo.auditEvents)
+	}
+	if repo.storedOutboundID == "" {
+		t.Fatal("expected synthetic terminal outbound message to be stored")
+	}
+	if repo.storedOutboundText != openCodeAwaitBlockedReason {
+		t.Fatalf("unexpected outbound failure text: %q", repo.storedOutboundText)
+	}
+	if !repo.runStatusUpdated || !repo.queueStatusUpdated {
+		t.Fatalf("expected run and queue status updates, got run=%v queue=%v", repo.runStatusUpdated, repo.queueStatusUpdated)
 	}
 }
 

@@ -32,12 +32,16 @@ Health and readiness include:
 - current `readiness`
 - persisted recovery counters
 - compact ACP summary
+- stdio ACP subprocess status when the active ACP bridge exposes it
 
 Important runtime fields:
 
 - `data.acp.default_agent_ready`
 - `data.acp.default_agent_reason_count`
 - `data.acp.default_agent_warning_count`
+- `data.acp_runtime.running`
+- `data.acp_runtime.initialized`
+- `data.acp_runtime.callback_counts.*`
 - `data.persisted.*`
 
 ## ACP Endpoints
@@ -62,6 +66,7 @@ Key ACP concepts surfaced operationally:
 - bridge-compatible vs strict-compatible agents
 - default-agent validation
 - bridge-block totals and recent bridge-block events
+- stdio ACP subprocess runtime state when available
 
 ### Compatibility Modes
 
@@ -84,6 +89,31 @@ Current practical status in this repo:
 
 - OpenCode is validated and supported as `opencode_bridge`
 - no concrete external agent is currently documented here as fully verified `strict_acp`
+
+### Stdio ACP Runtime Notes
+
+When `ACP_IMPLEMENTATION=stdio`, the probe, runtime, and metrics surfaces also expose subprocess state:
+
+- process running / initialized
+- last subprocess error
+- startup time
+- callback counters for:
+  - permission requests
+  - filesystem reads / writes
+  - terminal create / output / wait / kill / release
+
+Observed current behavior with real `opencode acp` in this environment:
+
+- file-read tasks succeed
+- file-write tasks succeed
+- terminal tasks succeed
+- the ACP callback counters can still remain zero
+
+Interpretation:
+
+- zero callback counters do not necessarily mean the stdio ACP path is broken
+- they can mean the server completed the task without issuing client callback requests to Nexus
+- non-zero counters are still useful when debugging future ACP server behavior changes
 
 ## Telegram Trust Endpoints
 
@@ -138,6 +168,17 @@ Important ACP metrics:
 - `nexus_acp_degraded_agents`
 - `nexus_acp_warning_count`
 - `nexus_acp_bridge_block_count`
+- `nexus_acp_runtime_running`
+- `nexus_acp_runtime_initialized`
+- `nexus_acp_runtime_error`
+- `nexus_acp_runtime_permission_requests`
+- `nexus_acp_runtime_fs_read_text_file`
+- `nexus_acp_runtime_fs_write_text_file`
+- `nexus_acp_runtime_terminal_create`
+- `nexus_acp_runtime_terminal_output`
+- `nexus_acp_runtime_terminal_wait`
+- `nexus_acp_runtime_terminal_kill`
+- `nexus_acp_runtime_terminal_release`
 
 Important persisted operator-action metrics:
 

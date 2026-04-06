@@ -22,7 +22,8 @@ type ACPBridge interface {
 	StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, []domain.RunEvent, error)
 	ResumeRun(ctx context.Context, await domain.Await, payload []byte) ([]domain.RunEvent, error)
 	GetRun(ctx context.Context, acpRunID string) (domain.RunStatusSnapshot, error)
-	FindRunByIdempotencyKey(ctx context.Context, key string) (domain.RunStatusSnapshot, bool, error)
+	FindRunByIdempotencyKey(ctx context.Context, session domain.Session, idempotencyKey string) (domain.RunStatusSnapshot, bool, error)
+	FindLatestRunForSession(ctx context.Context, session domain.Session) (domain.RunStatusSnapshot, bool, error)
 	CancelRun(ctx context.Context, run domain.Run) error
 }
 
@@ -49,7 +50,9 @@ type Repository interface {
 	MarkOutboxDone(ctx context.Context, eventID string) error
 	MarkOutboxFailed(ctx context.Context, eventID string, err error, next time.Time) error
 	GetQueueItem(ctx context.Context, queueItemID string) (domain.QueueItem, error)
+	GetQueueStartIdempotencyKey(ctx context.Context, queueItemID string) (string, error)
 	GetSession(ctx context.Context, sessionID string) (domain.Session, error)
+	UpdateSessionACPSessionID(ctx context.Context, sessionID, acpSessionID string) error
 	GetRouteDecision(ctx context.Context, queueItemID string) (domain.RouteDecision, error)
 	GetInboundMessage(ctx context.Context, messageID string) (domain.Message, error)
 	GetDelivery(ctx context.Context, deliveryID string) (domain.OutboundDelivery, error)
