@@ -63,6 +63,28 @@ Key ACP concepts surfaced operationally:
 - default-agent validation
 - bridge-block totals and recent bridge-block events
 
+### Compatibility Modes
+
+The gateway currently distinguishes two ACP validation modes:
+
+- `strict_acp`
+- `opencode_bridge`
+
+`strict_acp` means an agent manifest is considered fully compatible only if it is:
+
+- healthy
+- not marked as `protocol: "opencode"`
+- `supports_await_resume = true`
+- `supports_streaming = true`
+- `supports_artifacts = true`
+
+`opencode_bridge` means the backend is usable through the OpenCode bridge, but not treated as native full ACP compatibility for structured await/resume semantics.
+
+Current practical status in this repo:
+
+- OpenCode is validated and supported as `opencode_bridge`
+- no concrete external agent is currently documented here as fully verified `strict_acp`
+
 ## Telegram Trust Endpoints
 
 Primary Telegram trust endpoints:
