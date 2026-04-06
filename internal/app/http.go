@@ -197,7 +197,7 @@ func (a *App) handleListCompatibleACPAgents(w http.ResponseWriter, r *http.Reque
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	httpx.OK(w, agents, acpListMeta(a.Catalog, refresh, len(agents)))
+	httpx.OK(w, agents, acpCompatibleListMeta(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, refresh, agents))
 }
 
 func (a *App) handleValidateACPAgent(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +208,7 @@ func (a *App) handleValidateACPAgent(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	httpx.OK(w, compat, acpValidateMeta(a.Catalog, agentName, refresh))
+	httpx.OK(w, compat, acpValidateMeta(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, agentName, refresh, compat))
 }
 
 func (a *App) handleListACPAgents(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +218,48 @@ func (a *App) handleListACPAgents(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	httpx.OK(w, agents, acpListMeta(a.Catalog, refresh, len(agents)))
+	httpx.OK(w, agents, acpListMeta(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, refresh, len(agents)))
+}
+
+func (a *App) handleACPAdminSummary(w http.ResponseWriter, r *http.Request) {
+	refresh := acpRefresh(r)
+	agents, err := a.Catalog.List(r.Context(), refresh)
+	if err != nil {
+		httpx.Error(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	compat, compatibleCount := acpCompatibilitySnapshot(agents)
+	data, err := acpAdminSummaryData(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, a.Config.DefaultACPAgentName, agents, compat)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	data["compatible_count"] = compatibleCount
+	data["incompatible_count"] = len(agents) - compatibleCount
+	httpx.OK(w, data, map[string]any{"refresh": refresh})
+}
+
+func (a *App) handleListACPBridgeBlocks(w http.ResponseWriter, r *http.Request) {
+	page, err := parsePage(r, 50, 200)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	query := buildAuditEventListQuery(r, a.Config.DefaultTenantID, page)
+	query.EventType = "worker.await_blocked_opencode_bridge"
+	events, err := a.Repo.ListAuditEvents(r.Context(), query)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	countQuery := query
+	countQuery.CursorPage = domain.CursorPage{}
+	totalCount, err := a.Repo.CountAuditEvents(r.Context(), countQuery)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.Page(w, http.StatusOK, events.Items, events.NextCursor, totalCount)
 }
 
 func (a *App) handleListRuns(w http.ResponseWriter, r *http.Request) {
@@ -309,13 +350,16 @@ func (a *App) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 	httpx.Page(w, http.StatusOK, deliveries.Items, deliveries.NextCursor, totalCount)
 }
 
-func (a *App) handleRuntimeStatus(w http.ResponseWriter, _ *http.Request) {
-	persisted, _ := persistentLifecycleCounts(context.Background(), a.Repo, a.Config.DefaultTenantID)
+func (a *App) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
+	persisted, _ := persistentLifecycleCounts(r.Context(), a.Repo, a.Config.DefaultTenantID)
 	data := map[string]any{
 		"runtime":   a.Runtime.Status(),
-		"health":    healthStatus(a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval),
-		"readiness": readinessStatus(a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval),
+		"health":    healthStatus(a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval),
+		"readiness": readinessStatus(a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval),
 		"persisted": persisted,
+	}
+	if summary, err := acpCompactSummary(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, a.Config.DefaultACPAgentName); err == nil {
+		data["acp"] = summary
 	}
 	httpx.OK(w, data, map[string]any{"service": "admin"})
 }
@@ -371,10 +415,10 @@ func (a *App) handleListTelegramDenials(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	events, err := a.Repo.ListAuditEvents(r.Context(), domain.AuditEventListQuery{
-		CursorPage:   page,
-		TenantID:     a.Config.DefaultTenantID,
+		CursorPage:    page,
+		TenantID:      a.Config.DefaultTenantID,
 		AggregateType: "telegram_user",
-		EventType:    "telegram.allowlist_denied",
+		EventType:     "telegram.allowlist_denied",
 	})
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -393,6 +437,43 @@ func (a *App) handleListTelegramDenials(w http.ResponseWriter, r *http.Request) 
 		"event_type":  "telegram.allowlist_denied",
 		"limit":       page.Limit,
 		"total_count": totalCount,
+	})
+}
+
+func (a *App) handleListTelegramFailures(w http.ResponseWriter, r *http.Request) {
+	page, err := parsePage(r, 50, 200)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	eventType, ok := telegramFailureEventType(queryString(r, "failure_type"))
+	if !ok {
+		httpx.Error(w, http.StatusBadRequest, "failure_type must be one of: all, not_found, not_pending, internal")
+		return
+	}
+	query := domain.AuditEventListQuery{
+		CursorPage:    page,
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "telegram_user",
+		EventType:     eventType,
+	}
+	events, err := a.Repo.ListAuditEvents(r.Context(), query)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	countQuery := query
+	countQuery.CursorPage = domain.CursorPage{}
+	totalCount, err := a.Repo.CountAuditEvents(r.Context(), countQuery)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{"items": events.Items, "next_cursor": events.NextCursor}, map[string]any{
+		"event_type":   eventType,
+		"failure_type": telegramFailureTypeLabel(eventType),
+		"limit":        page.Limit,
+		"total_count":  totalCount,
 	})
 }
 
@@ -423,7 +504,7 @@ func (a *App) handleTelegramTrustSummary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	sectionPage := telegramTrustSectionPage(r, pendingLimit, decisionLimit, failureLimit, resolutionLimit)
-	pendingPage, approvedPage, deniedPage, failures, resolutions, err := a.loadTelegramTrustSummaryPages(r.Context(), sectionPage)
+	pendingPage, approvedPage, deniedPage, failures, resolutions, failureBreakdown, err := a.loadTelegramTrustSummaryPages(r.Context(), sectionPage)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -434,7 +515,7 @@ func (a *App) handleTelegramTrustSummary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	recentDecisionsPage := paginateTelegramDecisions(approvedPage.Items, deniedPage.Items, decisionLimit)
-	httpx.OK(w, buildTelegramTrustSummaryData(pendingPage, approvedPage, deniedPage, failures, resolutions, recentDecisionsPage, decisionLimit, counts), telegramTrustSummaryMeta(page.Limit, pendingLimit, decisionLimit, failureLimit, resolutionLimit))
+	httpx.OK(w, buildTelegramTrustSummaryData(pendingPage, approvedPage, deniedPage, failures, resolutions, failureBreakdown, recentDecisionsPage, decisionLimit, counts), telegramTrustSummaryMeta(page.Limit, pendingLimit, decisionLimit, failureLimit, resolutionLimit))
 }
 
 func (a *App) handleTelegramTrustDecisions(w http.ResponseWriter, r *http.Request) {
@@ -589,8 +670,8 @@ func (a *App) handleListTelegramUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := a.Repo.ListTelegramUserAccessPage(r.Context(), domain.TelegramUserAccessListQuery{
-		TenantID:    a.Config.DefaultTenantID,
-		CursorPage:  page,
+		TenantID:   a.Config.DefaultTenantID,
+		CursorPage: page,
 	})
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -784,6 +865,25 @@ func (a *App) handleResolveTelegramRequest(w http.ResponseWriter, r *http.Reques
 				"error_code":       errorCode,
 			},
 		))
+		specificFailureType := "admin.telegram_request_resolve_internal_failed"
+		switch errorCode {
+		case "not_found":
+			specificFailureType = "admin.telegram_request_resolve_not_found"
+		case "not_pending":
+			specificFailureType = "admin.telegram_request_resolve_not_pending"
+		}
+		_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
+			a.Config.DefaultTenantID,
+			"audit_telegram_request_resolve_failed_"+errorCode+"_"+body.TelegramUserID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
+			body.TelegramUserID,
+			specificFailureType,
+			map[string]any{
+				"telegram_user_id": body.TelegramUserID,
+				"status":           body.Status,
+				"added_by":         body.AddedBy,
+				"error_code":       errorCode,
+			},
+		))
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
@@ -791,6 +891,17 @@ func (a *App) handleResolveTelegramRequest(w http.ResponseWriter, r *http.Reques
 		"audit_telegram_request_resolve_"+body.TelegramUserID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 		body.TelegramUserID,
 		"admin.telegram_request_resolved",
+		entry,
+	))
+	specificEventType := "admin.telegram_request_denied"
+	if entry.Status == "approved" {
+		specificEventType = "admin.telegram_request_approved"
+	}
+	_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
+		a.Config.DefaultTenantID,
+		"audit_telegram_request_"+entry.Status+"_"+body.TelegramUserID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
+		body.TelegramUserID,
+		specificEventType,
 		entry,
 	))
 	text := "Your Telegram access request has been denied."
@@ -953,7 +1064,7 @@ func acpAgentName(r *http.Request, fallback string) string {
 	return fallback
 }
 
-func acpListMeta(catalog *services.AgentCatalog, refresh bool, count int) map[string]any {
+func acpListMeta(ctx context.Context, catalog *services.AgentCatalog, repo ports.Repository, tenantID string, refresh bool, count int) map[string]any {
 	meta := map[string]any{
 		"refresh": refresh,
 		"count":   count,
@@ -962,25 +1073,193 @@ func acpListMeta(catalog *services.AgentCatalog, refresh bool, count int) map[st
 		status := catalog.Status()
 		meta["catalog"] = status
 	}
+	if blocks, err := acpBridgeBlocksMeta(ctx, repo, tenantID, 5); err == nil {
+		meta["bridge_blocks"] = blocks
+	}
 	return meta
 }
 
-func acpValidateMeta(catalog *services.AgentCatalog, agentName string, refresh bool) map[string]any {
+func acpCompatibleListMeta(ctx context.Context, catalog *services.AgentCatalog, repo ports.Repository, tenantID string, refresh bool, compat []domain.AgentCompatibility) map[string]any {
+	meta := acpListMeta(ctx, catalog, repo, tenantID, refresh, len(compat))
+	meta["compatibility"] = acpCompatibilitySummary(compat)
+	return meta
+}
+
+func acpValidateMeta(ctx context.Context, catalog *services.AgentCatalog, repo ports.Repository, tenantID, agentName string, refresh bool, compat domain.AgentCompatibility) map[string]any {
 	meta := map[string]any{
 		"agent_name": agentName,
 		"refresh":    refresh,
+		"compatibility": map[string]any{
+			"validation_mode": compat.ValidationMode,
+			"warning_count":   len(compat.Warnings),
+			"degraded":        len(compat.Warnings) > 0,
+			"reason_count":    len(compat.Reasons),
+		},
 	}
 	if catalog != nil {
 		status := catalog.Status()
 		meta["catalog"] = status
 	}
+	if blocks, err := acpBridgeBlocksMeta(ctx, repo, tenantID, 5); err == nil {
+		meta["bridge_blocks"] = blocks
+	}
 	return meta
 }
 
-func healthMeta(service string, catalog *services.AgentCatalog, runtime *RuntimeState) map[string]any {
+func acpBridgeBlocksMeta(ctx context.Context, repo ports.Repository, tenantID string, limit int) (map[string]any, error) {
+	total, events, err := acpBridgeBlockSnapshot(ctx, repo, tenantID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"total_count":   total,
+		"recent_events": events,
+	}, nil
+}
+
+func acpAdminSummaryData(ctx context.Context, catalog *services.AgentCatalog, repo ports.Repository, tenantID, defaultAgentName string, agents []domain.AgentManifest, compat []domain.AgentCompatibility) (map[string]any, error) {
+	summary := map[string]any{
+		"agent_count":   len(agents),
+		"agents":        agents,
+		"compatibility": acpCompatibilitySummary(compat),
+		"compatible":    compat,
+		"default_agent": defaultAgentName,
+	}
+	if catalog != nil {
+		summary["catalog"] = catalog.Status()
+	}
+	if defaultAgentName != "" {
+		for key, value := range defaultAgentSummaryMap(defaultAgentName, services.ValidateAgentCompatibility(agents, defaultAgentName)) {
+			summary[key] = value
+		}
+	}
+	blocks, err := acpBridgeBlocksMeta(ctx, repo, tenantID, 5)
+	if err != nil {
+		return nil, err
+	}
+	summary["bridge_blocks"] = blocks
+	return summary, nil
+}
+
+func acpCompactSummary(ctx context.Context, catalog *services.AgentCatalog, repo ports.Repository, tenantID, defaultAgentName string) (map[string]any, error) {
+	if catalog == nil {
+		return nil, nil
+	}
+	agents, err := catalog.List(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	compat, compatibleCount := acpCompatibilitySnapshot(agents)
+	summary := map[string]any{
+		"agent_count":        len(agents),
+		"compatible_count":   compatibleCount,
+		"incompatible_count": len(agents) - compatibleCount,
+		"compatibility":      acpCompatibilitySummary(compat),
+	}
+	if defaultAgentName != "" {
+		for key, value := range defaultAgentSummaryMap(defaultAgentName, services.ValidateAgentCompatibility(agents, defaultAgentName)) {
+			summary[key] = value
+		}
+	}
+	if status := catalog.Status(); status.CachedAgentCount > 0 || status.CacheValid || status.LastFetchError != "" || !status.LastFetchedAt.IsZero() || !status.ExpiresAt.IsZero() || status.LastRefresh {
+		summary["catalog"] = status
+	}
+	if blocks, _, err := acpBridgeBlockSnapshot(ctx, repo, tenantID, 0); err == nil {
+		summary["bridge_block_count"] = blocks
+	} else {
+		return nil, err
+	}
+	return summary, nil
+}
+
+func acpCompatibilitySnapshot(agents []domain.AgentManifest) ([]domain.AgentCompatibility, int) {
+	compat := make([]domain.AgentCompatibility, 0, len(agents))
+	compatibleCount := 0
+	for _, agent := range agents {
+		item := services.ValidateAgentCompatibility(agents, agent.Name)
+		if item.Compatible {
+			compatibleCount++
+		}
+		compat = append(compat, item)
+	}
+	return compat, compatibleCount
+}
+
+func acpBridgeBlockSnapshot(ctx context.Context, repo ports.Repository, tenantID string, limit int) (int, []domain.AuditEvent, error) {
+	if repo == nil || tenantID == "" {
+		return 0, nil, nil
+	}
+	total, err := repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
+		TenantID:  tenantID,
+		EventType: "worker.await_blocked_opencode_bridge",
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	if limit <= 0 {
+		return total, nil, nil
+	}
+	events, err := acpRecentBridgeBlocks(ctx, repo, tenantID, limit)
+	if err != nil {
+		return 0, nil, err
+	}
+	return total, events, nil
+}
+
+func defaultAgentSummaryMap(agentName string, compat domain.AgentCompatibility) map[string]any {
+	return map[string]any{
+		"default_agent":               agentName,
+		"default_validation":          compat,
+		"default_agent_ready":         compat.Compatible,
+		"default_agent_reason_count":  len(compat.Reasons),
+		"default_agent_warning_count": len(compat.Warnings),
+	}
+}
+
+func acpRecentBridgeBlocks(ctx context.Context, repo ports.Repository, tenantID string, limit int) ([]domain.AuditEvent, error) {
+	if repo == nil || tenantID == "" || limit <= 0 {
+		return nil, nil
+	}
+	page, err := repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
+		CursorPage: domain.CursorPage{Limit: limit},
+		TenantID:   tenantID,
+		EventType:  "worker.await_blocked_opencode_bridge",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
+}
+
+func acpCompatibilitySummary(items []domain.AgentCompatibility) map[string]any {
+	degraded := 0
+	bridge := 0
+	totalWarnings := 0
+	for _, item := range items {
+		if item.ValidationMode == "opencode_bridge" {
+			bridge++
+		}
+		if len(item.Warnings) > 0 {
+			degraded++
+			totalWarnings += len(item.Warnings)
+		}
+	}
+	return map[string]any{
+		"bridge_compatible_count": bridge,
+		"degraded_count":          degraded,
+		"warning_count":           totalWarnings,
+	}
+}
+
+func healthMeta(service string, catalog *services.AgentCatalog, runtime *RuntimeState, defaultAgentName string) map[string]any {
 	meta := map[string]any{"service": service}
 	if catalog != nil {
 		meta["catalog"] = catalog.Status()
+		if defaultAgentName != "" {
+			if compat, ok := catalog.CachedValidate(defaultAgentName); ok {
+				meta["default_agent"] = defaultAgentProbeMeta(defaultAgentName, compat)
+			}
+		}
 	}
 	if runtime != nil {
 		meta["runtime"] = runtime.Status()
@@ -988,7 +1267,18 @@ func healthMeta(service string, catalog *services.AgentCatalog, runtime *Runtime
 	return meta
 }
 
-func healthStatus(catalog *services.AgentCatalog, runtime *RuntimeState, workerInterval, reconcileInterval time.Duration) string {
+func defaultAgentProbeMeta(agentName string, compat domain.AgentCompatibility) map[string]any {
+	return map[string]any{
+		"name":            agentName,
+		"ready":           compat.Compatible,
+		"compatible":      compat.Compatible,
+		"validation_mode": compat.ValidationMode,
+		"reason_count":    len(compat.Reasons),
+		"warning_count":   len(compat.Warnings),
+	}
+}
+
+func healthStatus(catalog *services.AgentCatalog, runtime *RuntimeState, defaultAgentName string, workerInterval, reconcileInterval time.Duration) string {
 	if catalog == nil {
 		if runtime == nil {
 			return "ok"
@@ -1002,10 +1292,15 @@ func healthStatus(catalog *services.AgentCatalog, runtime *RuntimeState, workerI
 	if !status.CacheValid && !status.LastFetchedAt.IsZero() {
 		return "degraded"
 	}
+	if defaultAgentName != "" {
+		if compat, ok := catalog.CachedValidate(defaultAgentName); ok && !compat.Compatible {
+			return "degraded"
+		}
+	}
 	return runtimeHealthStatus(runtime, workerInterval, reconcileInterval)
 }
 
-func readinessStatus(catalog *services.AgentCatalog, runtime *RuntimeState, workerInterval, reconcileInterval time.Duration) string {
+func readinessStatus(catalog *services.AgentCatalog, runtime *RuntimeState, defaultAgentName string, workerInterval, reconcileInterval time.Duration) string {
 	if catalog == nil {
 		if runtime == nil {
 			return "ready"
@@ -1018,6 +1313,11 @@ func readinessStatus(catalog *services.AgentCatalog, runtime *RuntimeState, work
 	}
 	if !status.CacheValid && !status.LastFetchedAt.IsZero() {
 		return "not_ready"
+	}
+	if defaultAgentName != "" {
+		if compat, ok := catalog.CachedValidate(defaultAgentName); ok && !compat.Compatible {
+			return "not_ready"
+		}
 	}
 	return runtimeReadinessStatus(runtime, workerInterval, reconcileInterval)
 }
@@ -1057,9 +1357,9 @@ func runtimeStale(last time.Time, interval time.Duration) bool {
 	return time.Since(last) > interval*3
 }
 
-func writeMetrics(w http.ResponseWriter, ctx context.Context, service, tenantID string, repo ports.Repository, catalog *services.AgentCatalog, runtime *RuntimeState, workerInterval, reconcileInterval time.Duration) {
-	health := healthStatus(catalog, runtime, workerInterval, reconcileInterval)
-	readiness := readinessStatus(catalog, runtime, workerInterval, reconcileInterval)
+func writeMetrics(w http.ResponseWriter, ctx context.Context, service, tenantID string, repo ports.Repository, catalog *services.AgentCatalog, runtime *RuntimeState, defaultAgentName string, workerInterval, reconcileInterval time.Duration) {
+	health := healthStatus(catalog, runtime, defaultAgentName, workerInterval, reconcileInterval)
+	readiness := readinessStatus(catalog, runtime, defaultAgentName, workerInterval, reconcileInterval)
 	if runtime != nil {
 		runtime.RecordProbeStatus("health", health, time.Now().UTC())
 		runtime.RecordProbeStatus("readiness", readiness, time.Now().UTC())
@@ -1074,6 +1374,36 @@ func writeMetrics(w http.ResponseWriter, ctx context.Context, service, tenantID 
 		fmt.Fprintf(&b, "nexus_acp_catalog_last_fetch_error{service=%q} %d\n", service, boolMetric(status.LastFetchError != ""))
 		if !status.LastFetchedAt.IsZero() {
 			fmt.Fprintf(&b, "nexus_acp_catalog_last_fetched_unix{service=%q} %d\n", service, status.LastFetchedAt.Unix())
+		}
+		if defaultAgentName != "" {
+			if compat, ok := catalog.CachedValidate(defaultAgentName); ok {
+				fmt.Fprintf(&b, "nexus_acp_default_agent_compatible{service=%q} %d\n", service, boolMetric(compat.Compatible))
+				fmt.Fprintf(&b, "nexus_acp_default_agent_ready{service=%q} %d\n", service, boolMetric(compat.Compatible))
+				fmt.Fprintf(&b, "nexus_acp_default_agent_reason_count{service=%q} %d\n", service, len(compat.Reasons))
+				fmt.Fprintf(&b, "nexus_acp_default_agent_warning_count{service=%q} %d\n", service, len(compat.Warnings))
+			}
+		}
+	}
+	if acp, err := acpCompactSummary(ctx, catalog, repo, tenantID, ""); err == nil && acp != nil {
+		if count, ok := acp["compatible_count"].(int); ok {
+			fmt.Fprintf(&b, "nexus_acp_compatible_agents{service=%q} %d\n", service, count)
+		}
+		if count, ok := acp["incompatible_count"].(int); ok {
+			fmt.Fprintf(&b, "nexus_acp_incompatible_agents{service=%q} %d\n", service, count)
+		}
+		if count, ok := acp["bridge_block_count"].(int); ok {
+			fmt.Fprintf(&b, "nexus_acp_bridge_block_count{service=%q,tenant=%q} %d\n", service, tenantID, count)
+		}
+		if summary, ok := acp["compatibility"].(map[string]any); ok {
+			if count, ok := summary["bridge_compatible_count"].(int); ok {
+				fmt.Fprintf(&b, "nexus_acp_bridge_compatible_agents{service=%q} %d\n", service, count)
+			}
+			if count, ok := summary["degraded_count"].(int); ok {
+				fmt.Fprintf(&b, "nexus_acp_degraded_agents{service=%q} %d\n", service, count)
+			}
+			if count, ok := summary["warning_count"].(int); ok {
+				fmt.Fprintf(&b, "nexus_acp_warning_count{service=%q} %d\n", service, count)
+			}
 		}
 	}
 	if runtime != nil {
@@ -1140,23 +1470,39 @@ func writeMetrics(w http.ResponseWriter, ctx context.Context, service, tenantID 
 
 func persistentLifecycleCounts(ctx context.Context, repo ports.Repository, tenantID string) (map[string]int, error) {
 	counts := map[string]int{
-		"persisted_outbox_requeues":         0,
-		"persisted_queue_repairs_recovered": 0,
-		"persisted_queue_repairs_requeued":  0,
-		"persisted_run_refreshes":           0,
-		"persisted_await_expiries":          0,
-		"persisted_delivery_retries":        0,
+		"persisted_outbox_requeues":                       0,
+		"persisted_queue_repairs_recovered":               0,
+		"persisted_queue_repairs_requeued":                0,
+		"persisted_run_refreshes":                         0,
+		"persisted_await_expiries":                        0,
+		"persisted_delivery_retries":                      0,
+		"persisted_bridge_await_blocks":                   0,
+		"persisted_operator_run_cancels":                  0,
+		"persisted_operator_surface_switches":             0,
+		"persisted_operator_surface_closures":             0,
+		"persisted_operator_telegram_approvals":           0,
+		"persisted_operator_telegram_denials":             0,
+		"persisted_operator_telegram_resolve_not_found":   0,
+		"persisted_operator_telegram_resolve_not_pending": 0,
+		"persisted_operator_telegram_resolve_internal":    0,
 	}
 	if repo == nil || tenantID == "" {
 		return counts, nil
 	}
 	eventTypes := map[string]string{
-		"persisted_outbox_requeues":         "reconciler.outbox_requeued",
-		"persisted_queue_repairs_recovered": "reconciler.queue_repair_recovered",
-		"persisted_queue_repairs_requeued":  "reconciler.queue_repair_requeued",
-		"persisted_run_refreshes":           "reconciler.run_refreshed",
-		"persisted_await_expiries":          "reconciler.await_expired",
-		"persisted_delivery_retries":        "delivery.retry_requested",
+		"persisted_outbox_requeues":                       "reconciler.outbox_requeued",
+		"persisted_queue_repairs_recovered":               "reconciler.queue_repair_recovered",
+		"persisted_queue_repairs_requeued":                "reconciler.queue_repair_requeued",
+		"persisted_run_refreshes":                         "reconciler.run_refreshed",
+		"persisted_await_expiries":                        "reconciler.await_expired",
+		"persisted_delivery_retries":                      "delivery.retry_requested",
+		"persisted_bridge_await_blocks":                   "worker.await_blocked_opencode_bridge",
+		"persisted_operator_run_cancels":                  "admin.run_canceled",
+		"persisted_operator_surface_switches":             "admin.surface_session_switched",
+		"persisted_operator_surface_closures":             "admin.surface_session_closed",
+		"persisted_operator_telegram_resolve_not_found":   "admin.telegram_request_resolve_not_found",
+		"persisted_operator_telegram_resolve_not_pending": "admin.telegram_request_resolve_not_pending",
+		"persisted_operator_telegram_resolve_internal":    "admin.telegram_request_resolve_internal_failed",
 	}
 	for key, eventType := range eventTypes {
 		count, err := repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
@@ -1168,6 +1514,24 @@ func persistentLifecycleCounts(ctx context.Context, repo ports.Repository, tenan
 		}
 		counts[key] = count
 	}
+	approvalCount, err := repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
+		TenantID:      tenantID,
+		AggregateType: "telegram_user",
+		EventType:     "admin.telegram_request_approved",
+	})
+	if err != nil {
+		return counts, err
+	}
+	denialCount, err := repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
+		TenantID:      tenantID,
+		AggregateType: "telegram_user",
+		EventType:     "admin.telegram_request_denied",
+	})
+	if err != nil {
+		return counts, err
+	}
+	counts["persisted_operator_telegram_approvals"] = approvalCount
+	counts["persisted_operator_telegram_denials"] = denialCount
 	return counts, nil
 }
 
@@ -1253,22 +1617,28 @@ func buildAuditEventListQuery(r *http.Request, tenantID string, page domain.Curs
 }
 
 type telegramTrustSectionPages struct {
-	PendingAfter    string
-	DecisionAfter   string
-	FailureAfter    string
-	ResolutionAfter string
-	PendingLimit    int
-	DecisionLimit   int
-	FailureLimit    int
-	ResolutionLimit int
+	PendingAfter           string
+	DecisionAfter          string
+	FailureAfter           string
+	FailureNotFoundAfter   string
+	FailureNotPendingAfter string
+	FailureInternalAfter   string
+	ResolutionAfter        string
+	PendingLimit           int
+	DecisionLimit          int
+	FailureLimit           int
+	ResolutionLimit        int
 }
 
 type telegramTrustSummaryCounts struct {
-	Pending     int
-	Approved    int
-	Denied      int
-	Failures    int
-	Resolutions int
+	Pending           int
+	Approved          int
+	Denied            int
+	Failures          int
+	FailureNotFound   int
+	FailureNotPending int
+	FailureInternal   int
+	Resolutions       int
 }
 
 type telegramUserSummaryData struct {
@@ -1281,18 +1651,21 @@ type telegramUserSummaryData struct {
 
 func telegramTrustSectionPage(r *http.Request, pendingLimit, decisionLimit, failureLimit, resolutionLimit int) telegramTrustSectionPages {
 	return telegramTrustSectionPages{
-		PendingAfter:    queryString(r, "pending_after"),
-		DecisionAfter:   queryString(r, "decision_after"),
-		FailureAfter:    queryString(r, "failure_after"),
-		ResolutionAfter: queryString(r, "resolution_after"),
-		PendingLimit:    pendingLimit,
-		DecisionLimit:   decisionLimit,
-		FailureLimit:    failureLimit,
-		ResolutionLimit: resolutionLimit,
+		PendingAfter:           queryString(r, "pending_after"),
+		DecisionAfter:          queryString(r, "decision_after"),
+		FailureAfter:           queryString(r, "failure_after"),
+		FailureNotFoundAfter:   queryString(r, "failure_not_found_after"),
+		FailureNotPendingAfter: queryString(r, "failure_not_pending_after"),
+		FailureInternalAfter:   queryString(r, "failure_internal_after"),
+		ResolutionAfter:        queryString(r, "resolution_after"),
+		PendingLimit:           pendingLimit,
+		DecisionLimit:          decisionLimit,
+		FailureLimit:           failureLimit,
+		ResolutionLimit:        resolutionLimit,
 	}
 }
 
-func (a *App) loadTelegramTrustSummaryPages(ctx context.Context, page telegramTrustSectionPages) (domain.PagedResult[domain.TelegramUserAccess], domain.PagedResult[domain.TelegramUserAccess], domain.PagedResult[domain.TelegramUserAccess], domain.PagedResult[domain.AuditEvent], domain.PagedResult[domain.AuditEvent], error) {
+func (a *App) loadTelegramTrustSummaryPages(ctx context.Context, page telegramTrustSectionPages) (domain.PagedResult[domain.TelegramUserAccess], domain.PagedResult[domain.TelegramUserAccess], domain.PagedResult[domain.TelegramUserAccess], domain.PagedResult[domain.AuditEvent], domain.PagedResult[domain.AuditEvent], map[string]domain.PagedResult[domain.AuditEvent], error) {
 	pendingPage, err := a.Repo.ListTelegramUserAccessPage(ctx, domain.TelegramUserAccessListQuery{
 		TenantID: a.Config.DefaultTenantID,
 		Status:   "pending",
@@ -1302,11 +1675,11 @@ func (a *App) loadTelegramTrustSummaryPages(ctx context.Context, page telegramTr
 		},
 	})
 	if err != nil {
-		return domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.AuditEvent]{}, domain.PagedResult[domain.AuditEvent]{}, err
+		return domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.AuditEvent]{}, domain.PagedResult[domain.AuditEvent]{}, nil, err
 	}
 	approvedPage, deniedPage, err := a.loadTelegramDecisionPages(ctx, domain.CursorPage{Limit: page.DecisionLimit, After: page.DecisionAfter})
 	if err != nil {
-		return domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.AuditEvent]{}, domain.PagedResult[domain.AuditEvent]{}, err
+		return domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.AuditEvent]{}, domain.PagedResult[domain.AuditEvent]{}, nil, err
 	}
 	failures, err := a.Repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
 		CursorPage:    domain.CursorPage{Limit: page.FailureLimit, After: page.FailureAfter},
@@ -1315,7 +1688,7 @@ func (a *App) loadTelegramTrustSummaryPages(ctx context.Context, page telegramTr
 		EventType:     "admin.telegram_request_resolve_failed",
 	})
 	if err != nil {
-		return domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.AuditEvent]{}, domain.PagedResult[domain.AuditEvent]{}, err
+		return domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.AuditEvent]{}, domain.PagedResult[domain.AuditEvent]{}, nil, err
 	}
 	resolutions, err := a.Repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
 		CursorPage:    domain.CursorPage{Limit: page.ResolutionLimit, After: page.ResolutionAfter},
@@ -1324,9 +1697,36 @@ func (a *App) loadTelegramTrustSummaryPages(ctx context.Context, page telegramTr
 		EventType:     "admin.telegram_request_resolved",
 	})
 	if err != nil {
-		return domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.AuditEvent]{}, domain.PagedResult[domain.AuditEvent]{}, err
+		return domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.AuditEvent]{}, domain.PagedResult[domain.AuditEvent]{}, nil, err
 	}
-	return pendingPage, approvedPage, deniedPage, failures, resolutions, nil
+	failureBreakdown, err := a.loadTelegramFailureBreakdownPages(ctx, page)
+	if err != nil {
+		return domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.AuditEvent]{}, domain.PagedResult[domain.AuditEvent]{}, nil, err
+	}
+	return pendingPage, approvedPage, deniedPage, failures, resolutions, failureBreakdown, nil
+}
+
+func (a *App) loadTelegramFailureBreakdownPages(ctx context.Context, page telegramTrustSectionPages) (map[string]domain.PagedResult[domain.AuditEvent], error) {
+	queries := map[string]domain.CursorPage{
+		"not_found":   {Limit: page.FailureLimit, After: page.FailureNotFoundAfter},
+		"not_pending": {Limit: page.FailureLimit, After: page.FailureNotPendingAfter},
+		"internal":    {Limit: page.FailureLimit, After: page.FailureInternalAfter},
+	}
+	result := make(map[string]domain.PagedResult[domain.AuditEvent], len(queries))
+	for kind, cursor := range queries {
+		eventType, _ := telegramFailureEventType(kind)
+		items, err := a.Repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
+			CursorPage:    cursor,
+			TenantID:      a.Config.DefaultTenantID,
+			AggregateType: "telegram_user",
+			EventType:     eventType,
+		})
+		if err != nil {
+			return nil, err
+		}
+		result[kind] = items
+	}
+	return result, nil
 }
 
 func (a *App) loadTelegramDecisionPages(ctx context.Context, page domain.CursorPage) (domain.PagedResult[domain.TelegramUserAccess], domain.PagedResult[domain.TelegramUserAccess], error) {
@@ -1376,6 +1776,30 @@ func (a *App) loadTelegramTrustSummaryCounts(ctx context.Context) (telegramTrust
 	if err != nil {
 		return telegramTrustSummaryCounts{}, err
 	}
+	failureNotFound, err := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "telegram_user",
+		EventType:     "admin.telegram_request_resolve_not_found",
+	})
+	if err != nil {
+		return telegramTrustSummaryCounts{}, err
+	}
+	failureNotPending, err := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "telegram_user",
+		EventType:     "admin.telegram_request_resolve_not_pending",
+	})
+	if err != nil {
+		return telegramTrustSummaryCounts{}, err
+	}
+	failureInternal, err := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "telegram_user",
+		EventType:     "admin.telegram_request_resolve_internal_failed",
+	})
+	if err != nil {
+		return telegramTrustSummaryCounts{}, err
+	}
 	resolutions, err := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
 		TenantID:      a.Config.DefaultTenantID,
 		AggregateType: "telegram_user",
@@ -1385,45 +1809,62 @@ func (a *App) loadTelegramTrustSummaryCounts(ctx context.Context) (telegramTrust
 		return telegramTrustSummaryCounts{}, err
 	}
 	return telegramTrustSummaryCounts{
-		Pending:     pending,
-		Approved:    approved,
-		Denied:      denied,
-		Failures:    failures,
-		Resolutions: resolutions,
+		Pending:           pending,
+		Approved:          approved,
+		Denied:            denied,
+		Failures:          failures,
+		FailureNotFound:   failureNotFound,
+		FailureNotPending: failureNotPending,
+		FailureInternal:   failureInternal,
+		Resolutions:       resolutions,
 	}, nil
 }
 
-func buildTelegramTrustSummaryData(pendingPage, approvedPage, deniedPage domain.PagedResult[domain.TelegramUserAccess], failures, resolutions domain.PagedResult[domain.AuditEvent], recentDecisionsPage domain.PagedResult[domain.TelegramUserAccess], decisionLimit int, counts telegramTrustSummaryCounts) map[string]any {
+func buildTelegramTrustSummaryData(pendingPage, approvedPage, deniedPage domain.PagedResult[domain.TelegramUserAccess], failures, resolutions domain.PagedResult[domain.AuditEvent], failureBreakdown map[string]domain.PagedResult[domain.AuditEvent], recentDecisionsPage domain.PagedResult[domain.TelegramUserAccess], decisionLimit int, counts telegramTrustSummaryCounts) map[string]any {
 	return map[string]any{
 		"counts": map[string]int{
-			"pending":     counts.Pending,
-			"approved":    counts.Approved,
-			"denied":      counts.Denied,
-			"failures":    counts.Failures,
-			"resolutions": counts.Resolutions,
-			"decisions":   counts.Approved + counts.Denied,
+			"pending":             counts.Pending,
+			"approved":            counts.Approved,
+			"denied":              counts.Denied,
+			"failures":            counts.Failures,
+			"failure_not_found":   counts.FailureNotFound,
+			"failure_not_pending": counts.FailureNotPending,
+			"failure_internal":    counts.FailureInternal,
+			"resolutions":         counts.Resolutions,
+			"decisions":           counts.Approved + counts.Denied,
 		},
 		"has_more": map[string]bool{
-			"pending_requests":   pendingPage.NextCursor != "",
-			"recent_approved":    approvedPage.NextCursor != "",
-			"recent_denied":      deniedPage.NextCursor != "",
-			"recent_decisions":   recentDecisionsPage.NextCursor != "",
-			"recent_failures":    failures.NextCursor != "",
-			"recent_resolutions": resolutions.NextCursor != "",
+			"pending_requests":    pendingPage.NextCursor != "",
+			"recent_approved":     approvedPage.NextCursor != "",
+			"recent_denied":       deniedPage.NextCursor != "",
+			"recent_decisions":    recentDecisionsPage.NextCursor != "",
+			"recent_failures":     failures.NextCursor != "",
+			"failure_not_found":   failureBreakdown["not_found"].NextCursor != "",
+			"failure_not_pending": failureBreakdown["not_pending"].NextCursor != "",
+			"failure_internal":    failureBreakdown["internal"].NextCursor != "",
+			"recent_resolutions":  resolutions.NextCursor != "",
 		},
 		"next_cursors": map[string]string{
-			"pending_requests":   pendingPage.NextCursor,
-			"recent_approved":    approvedPage.NextCursor,
-			"recent_denied":      deniedPage.NextCursor,
-			"recent_decisions":   recentDecisionsPage.NextCursor,
-			"recent_failures":    failures.NextCursor,
-			"recent_resolutions": resolutions.NextCursor,
+			"pending_requests":    pendingPage.NextCursor,
+			"recent_approved":     approvedPage.NextCursor,
+			"recent_denied":       deniedPage.NextCursor,
+			"recent_decisions":    recentDecisionsPage.NextCursor,
+			"recent_failures":     failures.NextCursor,
+			"failure_not_found":   failureBreakdown["not_found"].NextCursor,
+			"failure_not_pending": failureBreakdown["not_pending"].NextCursor,
+			"failure_internal":    failureBreakdown["internal"].NextCursor,
+			"recent_resolutions":  resolutions.NextCursor,
 		},
-		"pending_requests":   pendingPage.Items,
-		"recent_approved":    trimTelegramUserAccessItems(approvedPage.Items, decisionLimit),
-		"recent_denied":      trimTelegramUserAccessItems(deniedPage.Items, decisionLimit),
-		"recent_decisions":   recentDecisionsPage.Items,
-		"recent_failures":    failures.Items,
+		"pending_requests": pendingPage.Items,
+		"recent_approved":  trimTelegramUserAccessItems(approvedPage.Items, decisionLimit),
+		"recent_denied":    trimTelegramUserAccessItems(deniedPage.Items, decisionLimit),
+		"recent_decisions": recentDecisionsPage.Items,
+		"recent_failures":  failures.Items,
+		"recent_failure_breakdown": map[string][]domain.AuditEvent{
+			"not_found":   failureBreakdown["not_found"].Items,
+			"not_pending": failureBreakdown["not_pending"].Items,
+			"internal":    failureBreakdown["internal"].Items,
+		},
 		"recent_resolutions": resolutions.Items,
 	}
 }
@@ -1641,12 +2082,45 @@ func telegramNoticeDeliveryWithKind(tenantID, sessionID, chatID, deliveryID, log
 	}
 }
 
+func telegramFailureEventType(kind string) (string, bool) {
+	switch kind {
+	case "", "all":
+		return "admin.telegram_request_resolve_failed", true
+	case "not_found":
+		return "admin.telegram_request_resolve_not_found", true
+	case "not_pending":
+		return "admin.telegram_request_resolve_not_pending", true
+	case "internal":
+		return "admin.telegram_request_resolve_internal_failed", true
+	default:
+		return "", false
+	}
+}
+
+func telegramFailureTypeLabel(eventType string) string {
+	switch eventType {
+	case "admin.telegram_request_resolve_not_found":
+		return "not_found"
+	case "admin.telegram_request_resolve_not_pending":
+		return "not_pending"
+	case "admin.telegram_request_resolve_internal_failed":
+		return "internal"
+	default:
+		return "all"
+	}
+}
+
 func isTelegramTrustEvent(eventType string) bool {
 	switch eventType {
 	case "telegram.access_requested",
 		"telegram.allowlist_denied",
 		"admin.telegram_request_resolved",
 		"admin.telegram_request_resolve_failed",
+		"admin.telegram_request_resolve_not_found",
+		"admin.telegram_request_resolve_not_pending",
+		"admin.telegram_request_resolve_internal_failed",
+		"admin.telegram_request_approved",
+		"admin.telegram_request_denied",
 		"admin.telegram_user_upserted",
 		"admin.telegram_user_upsert_failed",
 		"admin.telegram_user_deleted",
@@ -1683,6 +2157,16 @@ func mergeTelegramDecisionLists(approved, denied []domain.TelegramUserAccess, li
 		items = items[:limit]
 	}
 	return items
+}
+
+func filterAuditEventsByType(items []domain.AuditEvent, eventType string) []domain.AuditEvent {
+	filtered := make([]domain.AuditEvent, 0, len(items))
+	for _, item := range items {
+		if item.EventType == eventType {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 func trimTelegramUserAccessItems(items []domain.TelegramUserAccess, limit int) []domain.TelegramUserAccess {

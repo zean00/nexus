@@ -91,3 +91,14 @@ func (c *AgentCatalog) Status() AgentCatalogStatus {
 		CacheValid:       len(c.agents) > 0 && now.Before(c.expiresAt),
 	}
 }
+
+func (c *AgentCatalog) CachedValidate(agentName string) (domain.AgentCompatibility, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	if len(c.agents) == 0 || now.After(c.expiresAt) {
+		return domain.AgentCompatibility{}, false
+	}
+	return ValidateAgentCompatibility(c.agents, agentName), true
+}

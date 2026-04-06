@@ -22,7 +22,7 @@ type testChannelAdapter struct {
 	sent  []domain.OutboundDelivery
 }
 
-func (a testChannelAdapter) Channel() string { return a.event.Channel }
+func (a testChannelAdapter) Channel() string                                            { return a.event.Channel }
 func (a testChannelAdapter) VerifyInbound(context.Context, *http.Request, []byte) error { return nil }
 func (a testChannelAdapter) ParseInbound(context.Context, *http.Request, []byte, string) (domain.CanonicalInboundEvent, error) {
 	return a.event, nil
@@ -34,6 +34,7 @@ func (a *testChannelAdapter) SendMessage(_ context.Context, delivery domain.Outb
 func (a *testChannelAdapter) SendAwaitPrompt(context.Context, domain.OutboundDelivery) (domain.DeliveryResult, error) {
 	return domain.DeliveryResult{}, nil
 }
+
 var _ ports.ChannelAdapter = (*testChannelAdapter)(nil)
 
 type testACPBridge struct {
@@ -59,10 +60,11 @@ func (b testACPBridge) ResumeRun(context.Context, domain.Await, []byte) ([]domai
 func (b testACPBridge) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
 	return domain.RunStatusSnapshot{}, nil
 }
-func (b testACPBridge) FindRunByIdempotencyKey(context.Context, string) (domain.RunStatusSnapshot, bool, error) {
+func (b testACPBridge) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
 	return domain.RunStatusSnapshot{}, false, nil
 }
 func (b testACPBridge) CancelRun(context.Context, domain.Run) error { return nil }
+
 var _ ports.ACPBridge = testACPBridge{}
 
 type testRouter struct{}
@@ -73,33 +75,34 @@ func (testRouter) Route(context.Context, domain.CanonicalInboundEvent, domain.Se
 		ACPAgentName:   "agent_default",
 	}, nil
 }
+
 var _ ports.Router = testRouter{}
 
 type appRepoStub struct {
-	surfaceItems    []domain.SurfaceSession
-	switchedSession domain.Session
-	closedSession   domain.Session
-	notificationSession domain.Session
-	forcedCanceledRunID string
-	retriedDeliveryID   string
-	auditEvents     []domain.AuditEvent
-	deliveries      []domain.OutboundDelivery
-	telegramAllowed map[string]bool
-	telegramUsers   []domain.TelegramUserAccess
+	surfaceItems          []domain.SurfaceSession
+	switchedSession       domain.Session
+	closedSession         domain.Session
+	notificationSession   domain.Session
+	forcedCanceledRunID   string
+	retriedDeliveryID     string
+	auditEvents           []domain.AuditEvent
+	deliveries            []domain.OutboundDelivery
+	telegramAllowed       map[string]bool
+	telegramUsers         []domain.TelegramUserAccess
 	telegramAccessQueries []domain.TelegramUserAccessListQuery
-	auditPage       domain.PagedResult[domain.AuditEvent]
+	auditPage             domain.PagedResult[domain.AuditEvent]
 	auditPagesByEventType map[string]domain.PagedResult[domain.AuditEvent]
-	lastAuditQuery  domain.AuditEventListQuery
-	auditQueries    []domain.AuditEventListQuery
-	sessionDetail   domain.SessionDetail
-	runDetail       domain.RunDetail
-	awaitDetail     domain.AwaitDetail
-	upsertErr       error
-	deleteErr       error
-	deliveryCounts  map[string]int
-	runCounts       map[string]int
-	awaitCounts     map[string]int
-	auditCounts     map[string]int
+	lastAuditQuery        domain.AuditEventListQuery
+	auditQueries          []domain.AuditEventListQuery
+	sessionDetail         domain.SessionDetail
+	runDetail             domain.RunDetail
+	awaitDetail           domain.AwaitDetail
+	upsertErr             error
+	deleteErr             error
+	deliveryCounts        map[string]int
+	runCounts             map[string]int
+	awaitCounts           map[string]int
+	auditCounts           map[string]int
 }
 
 func (r *appRepoStub) InTx(ctx context.Context, fn func(context.Context, ports.Repository) error) error {
@@ -118,34 +121,53 @@ func (r *appRepoStub) StoreInboundMessage(context.Context, domain.CanonicalInbou
 func (r *appRepoStub) StoreOutboundMessage(context.Context, domain.Session, string, string, []byte) (string, error) {
 	return "", nil
 }
-func (r *appRepoStub) StoreArtifacts(context.Context, string, string, []domain.Artifact) error { return nil }
+func (r *appRepoStub) StoreArtifacts(context.Context, string, string, []domain.Artifact) error {
+	return nil
+}
 func (r *appRepoStub) EnqueueMessage(context.Context, domain.CanonicalInboundEvent, domain.Session, domain.RouteDecision, string, bool) (domain.QueueItem, *domain.OutboxEvent, error) {
 	return domain.QueueItem{}, nil, nil
 }
-func (r *appRepoStub) CreateRun(context.Context, domain.Run) error { return nil }
-func (r *appRepoStub) UpdateRunStatus(context.Context, string, string) error { return nil }
-func (r *appRepoStub) UpdateQueueItemStatus(context.Context, string, string) error { return nil }
+func (r *appRepoStub) CreateRun(context.Context, domain.Run) error                       { return nil }
+func (r *appRepoStub) UpdateRunStatus(context.Context, string, string) error             { return nil }
+func (r *appRepoStub) UpdateQueueItemStatus(context.Context, string, string) error       { return nil }
 func (r *appRepoStub) UpdateActiveQueueItemStatus(context.Context, string, string) error { return nil }
-func (r *appRepoStub) EnqueueNextQueueItem(context.Context, string) (*domain.OutboxEvent, error) { return nil, nil }
+func (r *appRepoStub) EnqueueNextQueueItem(context.Context, string) (*domain.OutboxEvent, error) {
+	return nil, nil
+}
 func (r *appRepoStub) StoreAwait(context.Context, domain.Await) error { return nil }
 func (r *appRepoStub) ResolveAwait(context.Context, string, string, []byte) (domain.Await, error) {
 	return domain.Await{}, nil
 }
-func (r *appRepoStub) GetAwait(context.Context, string) (domain.Await, error) { return domain.Await{}, nil }
-func (r *appRepoStub) EnqueueAwaitResume(context.Context, domain.ResumeRequest, string) error { return nil }
+func (r *appRepoStub) GetAwait(context.Context, string) (domain.Await, error) {
+	return domain.Await{}, nil
+}
+func (r *appRepoStub) EnqueueAwaitResume(context.Context, domain.ResumeRequest, string) error {
+	return nil
+}
 func (r *appRepoStub) EnqueueDelivery(_ context.Context, delivery domain.OutboundDelivery) error {
 	r.deliveries = append(r.deliveries, delivery)
 	return nil
 }
-func (r *appRepoStub) ClaimOutbox(context.Context, time.Time, int) ([]domain.OutboxEvent, error) { return nil, nil }
-func (r *appRepoStub) MarkOutboxDone(context.Context, string) error { return nil }
+func (r *appRepoStub) ClaimOutbox(context.Context, time.Time, int) ([]domain.OutboxEvent, error) {
+	return nil, nil
+}
+func (r *appRepoStub) MarkOutboxDone(context.Context, string) error                     { return nil }
 func (r *appRepoStub) MarkOutboxFailed(context.Context, string, error, time.Time) error { return nil }
-func (r *appRepoStub) GetQueueItem(context.Context, string) (domain.QueueItem, error) { return domain.QueueItem{}, nil }
-func (r *appRepoStub) GetSession(context.Context, string) (domain.Session, error) { return domain.Session{}, nil }
+func (r *appRepoStub) GetQueueItem(context.Context, string) (domain.QueueItem, error) {
+	return domain.QueueItem{}, nil
+}
+func (r *appRepoStub) GetSession(context.Context, string) (domain.Session, error) {
+	return domain.Session{}, nil
+}
+func (r *appRepoStub) UpdateSessionACPSessionID(context.Context, string, string) error {
+	return nil
+}
 func (r *appRepoStub) GetRouteDecision(context.Context, string) (domain.RouteDecision, error) {
 	return domain.RouteDecision{}, nil
 }
-func (r *appRepoStub) GetInboundMessage(context.Context, string) (domain.Message, error) { return domain.Message{}, nil }
+func (r *appRepoStub) GetInboundMessage(context.Context, string) (domain.Message, error) {
+	return domain.Message{}, nil
+}
 func (r *appRepoStub) GetDelivery(context.Context, string) (domain.OutboundDelivery, error) {
 	return domain.OutboundDelivery{}, nil
 }
@@ -153,20 +175,32 @@ func (r *appRepoStub) GetLatestDeliveryByLogicalMessage(context.Context, string)
 	return nil, nil
 }
 func (r *appRepoStub) GetRun(context.Context, string) (domain.Run, error) { return domain.Run{}, nil }
-func (r *appRepoStub) GetRunByACP(context.Context, string) (domain.Run, error) { return domain.Run{}, nil }
-func (r *appRepoStub) GetAwaitsForRun(context.Context, string, int) ([]domain.Await, error) { return nil, nil }
-func (r *appRepoStub) GetAwaitResponses(context.Context, string, int) ([]domain.AwaitResponse, error) { return nil, nil }
-func (r *appRepoStub) MarkDeliverySent(context.Context, string, domain.DeliveryResult) error { return nil }
-func (r *appRepoStub) MarkDeliverySending(context.Context, string) error { return nil }
+func (r *appRepoStub) GetRunByACP(context.Context, string) (domain.Run, error) {
+	return domain.Run{}, nil
+}
+func (r *appRepoStub) GetAwaitsForRun(context.Context, string, int) ([]domain.Await, error) {
+	return nil, nil
+}
+func (r *appRepoStub) GetAwaitResponses(context.Context, string, int) ([]domain.AwaitResponse, error) {
+	return nil, nil
+}
+func (r *appRepoStub) MarkDeliverySent(context.Context, string, domain.DeliveryResult) error {
+	return nil
+}
+func (r *appRepoStub) MarkDeliverySending(context.Context, string) error       { return nil }
 func (r *appRepoStub) MarkDeliveryFailed(context.Context, string, error) error { return nil }
 func (r *appRepoStub) ListMessages(context.Context, domain.MessageListQuery) (domain.PagedResult[domain.Message], error) {
 	return domain.PagedResult[domain.Message]{}, nil
 }
-func (r *appRepoStub) CountMessages(context.Context, domain.MessageListQuery) (int, error) { return 1, nil }
+func (r *appRepoStub) CountMessages(context.Context, domain.MessageListQuery) (int, error) {
+	return 1, nil
+}
 func (r *appRepoStub) ListArtifacts(context.Context, domain.ArtifactListQuery) (domain.PagedResult[domain.Artifact], error) {
 	return domain.PagedResult[domain.Artifact]{}, nil
 }
-func (r *appRepoStub) CountArtifacts(context.Context, domain.ArtifactListQuery) (int, error) { return 1, nil }
+func (r *appRepoStub) CountArtifacts(context.Context, domain.ArtifactListQuery) (int, error) {
+	return 1, nil
+}
 func (r *appRepoStub) ListDeliveries(context.Context, domain.DeliveryListQuery) (domain.PagedResult[domain.OutboundDelivery], error) {
 	return domain.PagedResult[domain.OutboundDelivery]{}, nil
 }
@@ -179,7 +213,9 @@ func (r *appRepoStub) CountDeliveries(_ context.Context, query domain.DeliveryLi
 func (r *appRepoStub) ListSessions(context.Context, domain.SessionListQuery) (domain.PagedResult[domain.Session], error) {
 	return domain.PagedResult[domain.Session]{}, nil
 }
-func (r *appRepoStub) CountSessions(context.Context, domain.SessionListQuery) (int, error) { return 1, nil }
+func (r *appRepoStub) CountSessions(context.Context, domain.SessionListQuery) (int, error) {
+	return 1, nil
+}
 func (r *appRepoStub) ListRuns(context.Context, domain.RunListQuery) (domain.PagedResult[domain.Run], error) {
 	return domain.PagedResult[domain.Run]{}, nil
 }
@@ -225,14 +261,20 @@ func (r *appRepoStub) GetRunDetail(context.Context, string, int) (domain.RunDeta
 func (r *appRepoStub) GetAwaitDetail(context.Context, string, int) (domain.AwaitDetail, error) {
 	return r.awaitDetail, nil
 }
-func (r *appRepoStub) ListStaleClaimedOutbox(context.Context, time.Time, int) ([]domain.OutboxEvent, error) { return nil, nil }
-func (r *appRepoStub) RequeueOutbox(context.Context, string) error { return nil }
+func (r *appRepoStub) ListStaleClaimedOutbox(context.Context, time.Time, int) ([]domain.OutboxEvent, error) {
+	return nil, nil
+}
+func (r *appRepoStub) RequeueOutbox(context.Context, string) error                   { return nil }
 func (r *appRepoStub) RequeueQueueStartOutbox(context.Context, string, string) error { return nil }
 func (r *appRepoStub) ListStuckQueueItems(context.Context, time.Time, int) ([]domain.QueueItem, error) {
 	return nil, nil
 }
-func (r *appRepoStub) ListStaleRuns(context.Context, time.Time, int) ([]domain.Run, error) { return nil, nil }
-func (r *appRepoStub) ListExpiredAwaits(context.Context, time.Time, int) ([]domain.Await, error) { return nil, nil }
+func (r *appRepoStub) ListStaleRuns(context.Context, time.Time, int) ([]domain.Run, error) {
+	return nil, nil
+}
+func (r *appRepoStub) ListExpiredAwaits(context.Context, time.Time, int) ([]domain.Await, error) {
+	return nil, nil
+}
 func (r *appRepoStub) ListStaleDeliveries(context.Context, time.Time, int, int) ([]domain.OutboundDelivery, error) {
 	return nil, nil
 }
@@ -397,8 +439,8 @@ func TestHandleChannelWebhookRejectsUnauthorizedTelegramUser(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/telegram", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	adapter := &testChannelAdapter{event: domain.CanonicalInboundEvent{
-		Channel: "telegram",
-		Sender:  domain.Sender{ChannelUserID: "999"},
+		Channel:      "telegram",
+		Sender:       domain.Sender{ChannelUserID: "999"},
 		Conversation: domain.Conversation{ChannelConversationID: "chat123"},
 	}}
 	app.handleChannelWebhook(rec, req, adapter)
@@ -452,10 +494,10 @@ func TestHandleChannelWebhookDoesNotDuplicatePendingTelegramRequest(t *testing.T
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/telegram", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	adapter := &testChannelAdapter{event: domain.CanonicalInboundEvent{
-		Channel:      "telegram",
+		Channel:         "telegram",
 		ProviderEventID: "evt_repeat_1",
-		Sender:       domain.Sender{ChannelUserID: "999"},
-		Conversation: domain.Conversation{ChannelConversationID: "chat123"},
+		Sender:          domain.Sender{ChannelUserID: "999"},
+		Conversation:    domain.Conversation{ChannelConversationID: "chat123"},
 	}}
 	app.handleChannelWebhook(rec, req, adapter)
 	if rec.Code != http.StatusAccepted {
@@ -586,11 +628,11 @@ func TestHandleChannelWebhookAwaitResponseEnvelope(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/slack", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	adapter := &testChannelAdapter{event: domain.CanonicalInboundEvent{
-		TenantID:     "tenant_default",
-		Channel:      "slack",
-		Interaction:  "await_response",
-		Sender:       domain.Sender{ChannelUserID: "123"},
-		Metadata:     domain.Metadata{AwaitID: "await_123", ResumePayload: []byte(`{"choice":"yes"}`)},
+		TenantID:    "tenant_default",
+		Channel:     "slack",
+		Interaction: "await_response",
+		Sender:      domain.Sender{ChannelUserID: "123"},
+		Metadata:    domain.Metadata{AwaitID: "await_123", ResumePayload: []byte(`{"choice":"yes"}`)},
 	}}
 	app.handleChannelWebhook(rec, req, adapter)
 	if rec.Code != http.StatusOK {
@@ -805,8 +847,9 @@ func TestAdminHealthDegradedWhenCatalogCacheExpired(t *testing.T) {
 
 func TestGatewayReadinessEnvelope(t *testing.T) {
 	app := &App{
+		Config: config.Config{DefaultACPAgentName: "agent_a"},
 		Catalog: &services.AgentCatalog{
-			Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_a", Healthy: true}}},
+			Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_a", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true}}},
 			TTL:    time.Minute,
 		},
 	}
@@ -824,7 +867,12 @@ func TestGatewayReadinessEnvelope(t *testing.T) {
 			Status string `json:"status"`
 		} `json:"data"`
 		Meta struct {
-			Service string `json:"service"`
+			Service      string `json:"service"`
+			DefaultAgent struct {
+				Name       string `json:"name"`
+				Ready      bool   `json:"ready"`
+				Compatible bool   `json:"compatible"`
+			} `json:"default_agent"`
 		} `json:"meta"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
@@ -832,6 +880,48 @@ func TestGatewayReadinessEnvelope(t *testing.T) {
 	}
 	if payload.Data.Status != "ready" || payload.Meta.Service != "gateway" {
 		t.Fatalf("unexpected gateway readiness payload: %+v", payload)
+	}
+	if payload.Meta.DefaultAgent.Name != "agent_a" || !payload.Meta.DefaultAgent.Ready || !payload.Meta.DefaultAgent.Compatible {
+		t.Fatalf("unexpected gateway readiness default agent meta: %+v", payload.Meta.DefaultAgent)
+	}
+}
+
+func TestGatewayHealthDegradedWhenDefaultAgentIncompatible(t *testing.T) {
+	app := &App{
+		Config: config.Config{DefaultACPAgentName: "agent_bad"},
+		Catalog: &services.AgentCatalog{
+			Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_bad", Healthy: true, SupportsAwaitResume: false, SupportsStreaming: true, SupportsArtifacts: true}}},
+			TTL:    time.Minute,
+		},
+	}
+	if _, err := app.Catalog.List(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	app.GatewayHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var payload struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+		Meta struct {
+			DefaultAgent struct {
+				Name         string `json:"name"`
+				Ready        bool   `json:"ready"`
+				Compatible   bool   `json:"compatible"`
+				ReasonCount  int    `json:"reason_count"`
+				WarningCount int    `json:"warning_count"`
+			} `json:"default_agent"`
+		} `json:"meta"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.Status != "degraded" || payload.Meta.DefaultAgent.Name != "agent_bad" || payload.Meta.DefaultAgent.Ready || payload.Meta.DefaultAgent.Compatible || payload.Meta.DefaultAgent.ReasonCount == 0 {
+		t.Fatalf("unexpected incompatible default-agent health payload: %+v", payload)
 	}
 }
 
@@ -898,6 +988,43 @@ func TestGatewayReadinessNotReadyWhenCatalogCacheExpired(t *testing.T) {
 	}
 }
 
+func TestGatewayReadinessNotReadyWhenDefaultAgentIncompatible(t *testing.T) {
+	app := &App{
+		Config: config.Config{DefaultACPAgentName: "agent_bad"},
+		Catalog: &services.AgentCatalog{
+			Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_bad", Healthy: true, SupportsAwaitResume: false, SupportsStreaming: true, SupportsArtifacts: true}}},
+			TTL:    time.Minute,
+		},
+	}
+	if _, err := app.Catalog.List(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	app.GatewayHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	var payload struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+		Meta struct {
+			DefaultAgent struct {
+				Name       string `json:"name"`
+				Ready      bool   `json:"ready"`
+				Compatible bool   `json:"compatible"`
+			} `json:"default_agent"`
+		} `json:"meta"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.Status != "not_ready" || payload.Meta.DefaultAgent.Name != "agent_bad" || payload.Meta.DefaultAgent.Ready || payload.Meta.DefaultAgent.Compatible {
+		t.Fatalf("unexpected incompatible default-agent readiness payload: %+v", payload)
+	}
+}
+
 func TestGatewayHealthDegradedWhenWorkerLoopErrored(t *testing.T) {
 	app := &App{
 		Config:  config.Config{WorkerPollInterval: time.Second, ReconcilerInterval: time.Second},
@@ -959,7 +1086,7 @@ func TestAdminReadinessNotReadyWhenWorkerLoopStale(t *testing.T) {
 
 func TestProbeTransitionsAreRecordedInRuntimeMeta(t *testing.T) {
 	app := &App{
-		Config: config.Config{WorkerPollInterval: time.Second, ReconcilerInterval: time.Second},
+		Config:  config.Config{WorkerPollInterval: time.Second, ReconcilerInterval: time.Second},
 		Runtime: &RuntimeState{},
 	}
 	app.Runtime.MarkWorkerRun(time.Now().UTC())
@@ -1013,16 +1140,34 @@ func TestProbeTransitionsAreRecordedInRuntimeMeta(t *testing.T) {
 
 func TestHandleRuntimeStatus(t *testing.T) {
 	app := &App{
-		Config:  config.Config{DefaultTenantID: "tenant_default", WorkerPollInterval: time.Second, ReconcilerInterval: time.Second},
-		Repo:    &appRepoStub{auditCounts: map[string]int{
-			"reconciler.outbox_requeued":        2,
-			"reconciler.queue_repair_recovered": 6,
-			"reconciler.queue_repair_requeued":  7,
-			"reconciler.run_refreshed":          3,
-			"reconciler.await_expired":          4,
-			"delivery.retry_requested":          5,
+		Config: config.Config{DefaultTenantID: "tenant_default", WorkerPollInterval: time.Second, ReconcilerInterval: time.Second},
+		Repo: &appRepoStub{auditCounts: map[string]int{
+			"reconciler.outbox_requeued":                     2,
+			"reconciler.queue_repair_recovered":              6,
+			"reconciler.queue_repair_requeued":               7,
+			"reconciler.run_refreshed":                       3,
+			"reconciler.await_expired":                       4,
+			"delivery.retry_requested":                       5,
+			"worker.await_blocked_opencode_bridge":           8,
+			"admin.run_canceled":                             9,
+			"admin.surface_session_switched":                 10,
+			"admin.surface_session_closed":                   11,
+			"admin.telegram_request_approved":                12,
+			"admin.telegram_request_denied":                  13,
+			"admin.telegram_request_resolve_not_found":       14,
+			"admin.telegram_request_resolve_not_pending":     15,
+			"admin.telegram_request_resolve_internal_failed": 16,
 		}},
+		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{
+			{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_bad", Healthy: false, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+		}}, TTL: time.Minute},
 		Runtime: &RuntimeState{},
+	}
+	app.Config.DefaultACPAgentName = "agent_bridge"
+	if _, err := app.Catalog.List(context.Background(), true); err != nil {
+		t.Fatal(err)
 	}
 	app.Runtime.MarkWorkerRun(time.Now().UTC())
 	app.Runtime.MarkReconcileRun(time.Now().UTC())
@@ -1045,23 +1190,41 @@ func TestHandleRuntimeStatus(t *testing.T) {
 	var payload struct {
 		Data struct {
 			Runtime struct {
-				LastWorkerError    string `json:"last_worker_error"`
-				LastHealthStatus   string `json:"last_health_status"`
-				LastReadinessStatus string `json:"last_readiness_status"`
-				OutboxRequeueCount int `json:"outbox_requeue_count"`
-				QueueRepairRecoveredCount int `json:"queue_repair_recovered_count"`
-				QueueRepairRequeuedCount int `json:"queue_repair_requeued_count"`
-				RunRefreshCount int `json:"run_refresh_count"`
-				AwaitExpiryCount int `json:"await_expiry_count"`
-				DeliveryRetryCount int `json:"delivery_retry_count"`
-				RecentTransitions  []struct {
+				LastWorkerError           string `json:"last_worker_error"`
+				LastHealthStatus          string `json:"last_health_status"`
+				LastReadinessStatus       string `json:"last_readiness_status"`
+				OutboxRequeueCount        int    `json:"outbox_requeue_count"`
+				QueueRepairRecoveredCount int    `json:"queue_repair_recovered_count"`
+				QueueRepairRequeuedCount  int    `json:"queue_repair_requeued_count"`
+				RunRefreshCount           int    `json:"run_refresh_count"`
+				AwaitExpiryCount          int    `json:"await_expiry_count"`
+				DeliveryRetryCount        int    `json:"delivery_retry_count"`
+				RecentTransitions         []struct {
 					Probe string `json:"probe"`
 					To    string `json:"to"`
 				} `json:"recent_transitions"`
 			} `json:"runtime"`
-			Health    string `json:"health"`
-			Readiness string `json:"readiness"`
+			Health    string         `json:"health"`
+			Readiness string         `json:"readiness"`
 			Persisted map[string]int `json:"persisted"`
+			ACP       struct {
+				AgentCount               int  `json:"agent_count"`
+				CompatibleCount          int  `json:"compatible_count"`
+				IncompatibleCount        int  `json:"incompatible_count"`
+				BridgeBlockCount         int  `json:"bridge_block_count"`
+				DefaultAgentReady        bool `json:"default_agent_ready"`
+				DefaultAgentReasonCount  int  `json:"default_agent_reason_count"`
+				DefaultAgentWarningCount int  `json:"default_agent_warning_count"`
+				DefaultValidation        struct {
+					ValidationMode string `json:"validation_mode"`
+					Compatible     bool   `json:"compatible"`
+				} `json:"default_validation"`
+				Compatibility struct {
+					BridgeCompatibleCount int `json:"bridge_compatible_count"`
+					DegradedCount         int `json:"degraded_count"`
+					WarningCount          int `json:"warning_count"`
+				} `json:"compatibility"`
+			} `json:"acp"`
 		} `json:"data"`
 		Meta struct {
 			Service string `json:"service"`
@@ -1088,8 +1251,32 @@ func TestHandleRuntimeStatus(t *testing.T) {
 		payload.Data.Persisted["persisted_queue_repairs_requeued"] != 7 ||
 		payload.Data.Persisted["persisted_run_refreshes"] != 3 ||
 		payload.Data.Persisted["persisted_await_expiries"] != 4 ||
-		payload.Data.Persisted["persisted_delivery_retries"] != 5 {
+		payload.Data.Persisted["persisted_delivery_retries"] != 5 ||
+		payload.Data.Persisted["persisted_bridge_await_blocks"] != 8 ||
+		payload.Data.Persisted["persisted_operator_run_cancels"] != 9 ||
+		payload.Data.Persisted["persisted_operator_surface_switches"] != 10 ||
+		payload.Data.Persisted["persisted_operator_surface_closures"] != 11 ||
+		payload.Data.Persisted["persisted_operator_telegram_approvals"] != 12 ||
+		payload.Data.Persisted["persisted_operator_telegram_denials"] != 13 ||
+		payload.Data.Persisted["persisted_operator_telegram_resolve_not_found"] != 14 ||
+		payload.Data.Persisted["persisted_operator_telegram_resolve_not_pending"] != 15 ||
+		payload.Data.Persisted["persisted_operator_telegram_resolve_internal"] != 16 {
 		t.Fatalf("unexpected persisted counters: %+v", payload.Data.Persisted)
+	}
+	if payload.Data.ACP.AgentCount != 3 || payload.Data.ACP.CompatibleCount != 2 || payload.Data.ACP.IncompatibleCount != 1 || payload.Data.ACP.BridgeBlockCount != 8 {
+		t.Fatalf("unexpected runtime acp summary: %+v", payload.Data.ACP)
+	}
+	if !payload.Data.ACP.DefaultAgentReady {
+		t.Fatalf("expected default_agent_ready=true, got %+v", payload.Data.ACP)
+	}
+	if payload.Data.ACP.DefaultAgentReasonCount != 0 || payload.Data.ACP.DefaultAgentWarningCount != 2 {
+		t.Fatalf("unexpected runtime default-agent counts: %+v", payload.Data.ACP)
+	}
+	if payload.Data.ACP.DefaultValidation.ValidationMode != "opencode_bridge" || !payload.Data.ACP.DefaultValidation.Compatible {
+		t.Fatalf("unexpected runtime default acp validation: %+v", payload.Data.ACP.DefaultValidation)
+	}
+	if payload.Data.ACP.Compatibility.BridgeCompatibleCount != 1 || payload.Data.ACP.Compatibility.DegradedCount != 1 || payload.Data.ACP.Compatibility.WarningCount != 2 {
+		t.Fatalf("unexpected runtime acp compatibility summary: %+v", payload.Data.ACP.Compatibility)
 	}
 }
 
@@ -1099,20 +1286,33 @@ func TestGatewayMetricsEndpoint(t *testing.T) {
 		runCounts:      map[string]int{"starting": 1, "running": 2, "awaiting": 4},
 		awaitCounts:    map[string]int{"pending": 5},
 		auditCounts: map[string]int{
-			"reconciler.outbox_requeued":        2,
-			"reconciler.queue_repair_recovered": 6,
-			"reconciler.queue_repair_requeued":  7,
-			"reconciler.run_refreshed":          3,
-			"reconciler.await_expired":          4,
-			"delivery.retry_requested":          5,
+			"reconciler.outbox_requeued":                     2,
+			"reconciler.queue_repair_recovered":              6,
+			"reconciler.queue_repair_requeued":               7,
+			"reconciler.run_refreshed":                       3,
+			"reconciler.await_expired":                       4,
+			"delivery.retry_requested":                       5,
+			"worker.await_blocked_opencode_bridge":           8,
+			"admin.run_canceled":                             9,
+			"admin.surface_session_switched":                 10,
+			"admin.surface_session_closed":                   11,
+			"admin.telegram_request_approved":                12,
+			"admin.telegram_request_denied":                  13,
+			"admin.telegram_request_resolve_not_found":       14,
+			"admin.telegram_request_resolve_not_pending":     15,
+			"admin.telegram_request_resolve_internal_failed": 16,
 		},
 	}
 	app := &App{
-		Config: config.Config{DefaultTenantID: "tenant_default", WorkerPollInterval: time.Second, ReconcilerInterval: time.Second},
+		Config: config.Config{DefaultTenantID: "tenant_default", DefaultACPAgentName: "agent_bridge", WorkerPollInterval: time.Second, ReconcilerInterval: time.Second},
 		Repo:   repo,
 		Catalog: &services.AgentCatalog{
-			Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_a", Healthy: true}}},
-			TTL:    time.Minute,
+			Bridge: testACPBridge{agents: []domain.AgentManifest{
+				{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+				{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsStreaming: true, SupportsArtifacts: true},
+				{Name: "agent_bad", Healthy: false, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+			}},
+			TTL: time.Minute,
 		},
 		Runtime: &RuntimeState{},
 	}
@@ -1139,6 +1339,15 @@ func TestGatewayMetricsEndpoint(t *testing.T) {
 		`nexus_health_status{service="gateway"} 1`,
 		`nexus_readiness_status{service="gateway"} 1`,
 		`nexus_acp_catalog_cache_valid{service="gateway"} 1`,
+		`nexus_acp_default_agent_compatible{service="gateway"} 1`,
+		`nexus_acp_default_agent_ready{service="gateway"} 1`,
+		`nexus_acp_default_agent_reason_count{service="gateway"} 0`,
+		`nexus_acp_default_agent_warning_count{service="gateway"} 2`,
+		`nexus_acp_compatible_agents{service="gateway"} 2`,
+		`nexus_acp_incompatible_agents{service="gateway"} 1`,
+		`nexus_acp_bridge_compatible_agents{service="gateway"} 1`,
+		`nexus_acp_degraded_agents{service="gateway"} 1`,
+		`nexus_acp_warning_count{service="gateway"} 2`,
 		`nexus_worker_error{service="gateway"} 0`,
 		`nexus_outbox_requeues_total{service="gateway"} 1`,
 		`nexus_await_expiries_total{service="gateway"} 1`,
@@ -1153,12 +1362,22 @@ func TestGatewayMetricsEndpoint(t *testing.T) {
 		`nexus_sending_deliveries{service="gateway",tenant="tenant_default"} 1`,
 		`nexus_pending_awaits{service="gateway",tenant="tenant_default"} 5`,
 		`nexus_active_runs{service="gateway",tenant="tenant_default"} 7`,
+		`nexus_acp_bridge_block_count{service="gateway",tenant="tenant_default"} 8`,
 		`nexus_persisted_outbox_requeues_total{service="gateway",tenant="tenant_default"} 2`,
 		`nexus_persisted_queue_repairs_recovered_total{service="gateway",tenant="tenant_default"} 6`,
 		`nexus_persisted_queue_repairs_requeued_total{service="gateway",tenant="tenant_default"} 7`,
 		`nexus_persisted_run_refreshes_total{service="gateway",tenant="tenant_default"} 3`,
 		`nexus_persisted_await_expiries_total{service="gateway",tenant="tenant_default"} 4`,
 		`nexus_persisted_delivery_retries_total{service="gateway",tenant="tenant_default"} 5`,
+		`nexus_persisted_bridge_await_blocks_total{service="gateway",tenant="tenant_default"} 8`,
+		`nexus_persisted_operator_run_cancels_total{service="gateway",tenant="tenant_default"} 9`,
+		`nexus_persisted_operator_surface_switches_total{service="gateway",tenant="tenant_default"} 10`,
+		`nexus_persisted_operator_surface_closures_total{service="gateway",tenant="tenant_default"} 11`,
+		`nexus_persisted_operator_telegram_approvals_total{service="gateway",tenant="tenant_default"} 12`,
+		`nexus_persisted_operator_telegram_denials_total{service="gateway",tenant="tenant_default"} 13`,
+		`nexus_persisted_operator_telegram_resolve_not_found_total{service="gateway",tenant="tenant_default"} 14`,
+		`nexus_persisted_operator_telegram_resolve_not_pending_total{service="gateway",tenant="tenant_default"} 15`,
+		`nexus_persisted_operator_telegram_resolve_internal_total{service="gateway",tenant="tenant_default"} 16`,
 		`nexus_metrics_repo_error{service="gateway"} 0`,
 	} {
 		if !strings.Contains(body, want) {
@@ -1221,8 +1440,8 @@ func TestHandleListTelegramUsers(t *testing.T) {
 	}
 	var payload struct {
 		Items      []domain.TelegramUserAccess `json:"items"`
-		NextCursor string                     `json:"next_cursor"`
-		TotalCount int                        `json:"total_count"`
+		NextCursor string                      `json:"next_cursor"`
+		TotalCount int                         `json:"total_count"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
@@ -1456,6 +1675,130 @@ func TestHandleListAuditEvents(t *testing.T) {
 	}
 }
 
+func TestHandleListACPBridgeBlocks(t *testing.T) {
+	repo := &appRepoStub{
+		auditPage: domain.PagedResult[domain.AuditEvent]{
+			Items: []domain.AuditEvent{{
+				EventType: "worker.await_blocked_opencode_bridge",
+				RunID:     "run_1",
+				SessionID: "session_1",
+			}},
+		},
+		auditCounts: map[string]int{
+			"worker.await_blocked_opencode_bridge": 1,
+		},
+	}
+	app := &App{
+		Config: config.Config{DefaultTenantID: "tenant_default"},
+		Repo:   repo,
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/acp/bridge-blocks?run_id=run_1&session_id=session_1&limit=10", nil)
+	rec := httptest.NewRecorder()
+	app.handleListACPBridgeBlocks(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var payload struct {
+		Items      []domain.AuditEvent `json:"items"`
+		NextCursor string              `json:"next_cursor"`
+		TotalCount int                 `json:"total_count"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].EventType != "worker.await_blocked_opencode_bridge" || payload.TotalCount != 1 {
+		t.Fatalf("unexpected bridge blocks payload: %+v", payload)
+	}
+	if repo.lastAuditQuery.EventType != "worker.await_blocked_opencode_bridge" || repo.lastAuditQuery.RunID != "run_1" || repo.lastAuditQuery.SessionID != "session_1" {
+		t.Fatalf("unexpected bridge blocks query: %+v", repo.lastAuditQuery)
+	}
+}
+
+func TestHandleACPAdminSummary(t *testing.T) {
+	repo := &appRepoStub{
+		auditCounts: map[string]int{
+			"worker.await_blocked_opencode_bridge": 2,
+		},
+		auditPagesByEventType: map[string]domain.PagedResult[domain.AuditEvent]{
+			"worker.await_blocked_opencode_bridge": {
+				Items: []domain.AuditEvent{{EventType: "worker.await_blocked_opencode_bridge", RunID: "run_1"}},
+			},
+		},
+	}
+	app := &App{
+		Config: config.Config{DefaultTenantID: "tenant_default", DefaultACPAgentName: "agent_bridge"},
+		Repo:   repo,
+		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{
+			{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_bad", Healthy: false, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+		}}, TTL: time.Minute},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/acp/summary?refresh=true", nil)
+	rec := httptest.NewRecorder()
+	app.handleACPAdminSummary(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var payload struct {
+		Data struct {
+			AgentCount               int                         `json:"agent_count"`
+			CompatibleCount          int                         `json:"compatible_count"`
+			IncompatibleCount        int                         `json:"incompatible_count"`
+			DefaultAgentReady        bool                        `json:"default_agent_ready"`
+			DefaultAgentReasonCount  int                         `json:"default_agent_reason_count"`
+			DefaultAgentWarningCount int                         `json:"default_agent_warning_count"`
+			DefaultAgent             string                      `json:"default_agent"`
+			Agents                   []domain.AgentManifest      `json:"agents"`
+			Compatible               []domain.AgentCompatibility `json:"compatible"`
+			DefaultValidation        domain.AgentCompatibility   `json:"default_validation"`
+			Catalog                  struct {
+				CachedAgentCount int  `json:"cached_agent_count"`
+				CacheValid       bool `json:"cache_valid"`
+			} `json:"catalog"`
+			Compatibility struct {
+				BridgeCompatibleCount int `json:"bridge_compatible_count"`
+				DegradedCount         int `json:"degraded_count"`
+				WarningCount          int `json:"warning_count"`
+			} `json:"compatibility"`
+			BridgeBlocks struct {
+				TotalCount   int                 `json:"total_count"`
+				RecentEvents []domain.AuditEvent `json:"recent_events"`
+			} `json:"bridge_blocks"`
+		} `json:"data"`
+		Meta struct {
+			Refresh bool `json:"refresh"`
+		} `json:"meta"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Meta.Refresh || payload.Data.AgentCount != 3 || payload.Data.CompatibleCount != 2 || payload.Data.IncompatibleCount != 1 {
+		t.Fatalf("unexpected acp summary counts: %+v", payload)
+	}
+	if !payload.Data.DefaultAgentReady {
+		t.Fatalf("expected default_agent_ready=true, got %+v", payload.Data)
+	}
+	if payload.Data.DefaultAgentReasonCount != 0 || payload.Data.DefaultAgentWarningCount != 2 {
+		t.Fatalf("unexpected default-agent summary counts: %+v", payload.Data)
+	}
+	if payload.Data.DefaultAgent != "agent_bridge" || payload.Data.DefaultValidation.ValidationMode != "opencode_bridge" || !payload.Data.DefaultValidation.Compatible {
+		t.Fatalf("unexpected default agent validation: %+v", payload.Data.DefaultValidation)
+	}
+	if len(payload.Data.Agents) != 3 || len(payload.Data.Compatible) != 3 {
+		t.Fatalf("unexpected acp summary agent lists: %+v", payload.Data)
+	}
+	if payload.Data.Catalog.CachedAgentCount != 3 || !payload.Data.Catalog.CacheValid {
+		t.Fatalf("unexpected acp summary catalog: %+v", payload.Data.Catalog)
+	}
+	if payload.Data.Compatibility.BridgeCompatibleCount != 1 || payload.Data.Compatibility.DegradedCount != 1 || payload.Data.Compatibility.WarningCount != 2 {
+		t.Fatalf("unexpected acp summary compatibility: %+v", payload.Data.Compatibility)
+	}
+	if payload.Data.BridgeBlocks.TotalCount != 2 || len(payload.Data.BridgeBlocks.RecentEvents) != 1 || payload.Data.BridgeBlocks.RecentEvents[0].RunID != "run_1" {
+		t.Fatalf("unexpected acp summary bridge blocks: %+v", payload.Data.BridgeBlocks)
+	}
+}
+
 func TestHandleListSessionsIncludesTotalCount(t *testing.T) {
 	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: &appRepoStub{}}
 	req := httptest.NewRequest(http.MethodGet, "/admin/sessions?state=open", nil)
@@ -1577,6 +1920,59 @@ func TestHandleListTelegramDenials(t *testing.T) {
 	}
 }
 
+func TestHandleListTelegramFailures(t *testing.T) {
+	app := &App{
+		Config: config.Config{DefaultTenantID: "tenant_default"},
+		Repo: &appRepoStub{
+			auditPagesByEventType: map[string]domain.PagedResult[domain.AuditEvent]{
+				"admin.telegram_request_resolve_not_pending": {
+					Items: []domain.AuditEvent{{EventType: "admin.telegram_request_resolve_not_pending", AggregateID: "123"}},
+				},
+			},
+			auditCounts: map[string]int{
+				"admin.telegram_request_resolve_not_pending": 1,
+			},
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/telegram/failures?failure_type=not_pending", nil)
+	rec := httptest.NewRecorder()
+	app.handleListTelegramFailures(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var payload struct {
+		Data struct {
+			Items      []domain.AuditEvent `json:"items"`
+			NextCursor string              `json:"next_cursor"`
+		} `json:"data"`
+		Meta struct {
+			EventType   string `json:"event_type"`
+			FailureType string `json:"failure_type"`
+			Limit       int    `json:"limit"`
+			TotalCount  int    `json:"total_count"`
+		} `json:"meta"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Data.Items) != 1 || payload.Data.Items[0].EventType != "admin.telegram_request_resolve_not_pending" {
+		t.Fatalf("unexpected telegram failure payload: %+v", payload)
+	}
+	if payload.Meta.EventType != "admin.telegram_request_resolve_not_pending" || payload.Meta.FailureType != "not_pending" || payload.Meta.TotalCount != 1 || payload.Meta.Limit != 50 {
+		t.Fatalf("unexpected telegram failure meta: %+v", payload.Meta)
+	}
+}
+
+func TestHandleListTelegramFailuresRejectsInvalidType(t *testing.T) {
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: &appRepoStub{}}
+	req := httptest.NewRequest(http.MethodGet, "/admin/telegram/failures?failure_type=bogus", nil)
+	rec := httptest.NewRecorder()
+	app.handleListTelegramFailures(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
 func TestHandleListAwaits(t *testing.T) {
 	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: &appRepoStub{}}
 	req := httptest.NewRequest(http.MethodGet, "/admin/awaits?status=pending", nil)
@@ -1613,10 +2009,25 @@ func TestHandleTelegramTrustSummary(t *testing.T) {
 		auditPagesByEventType: map[string]domain.PagedResult[domain.AuditEvent]{
 			"admin.telegram_request_resolve_failed": {
 				Items: []domain.AuditEvent{
-					{EventType: "admin.telegram_request_resolve_failed", AggregateID: "denied_1"},
-					{EventType: "admin.telegram_request_resolve_failed", AggregateID: "pending_2"},
+					{EventType: "admin.telegram_request_resolve_not_found", AggregateID: "denied_1"},
+					{EventType: "admin.telegram_request_resolve_not_pending", AggregateID: "pending_2"},
 				},
 				NextCursor: "more-failures",
+			},
+			"admin.telegram_request_resolve_not_found": {
+				Items: []domain.AuditEvent{
+					{EventType: "admin.telegram_request_resolve_not_found", AggregateID: "denied_1"},
+				},
+				NextCursor: "more-not-found",
+			},
+			"admin.telegram_request_resolve_not_pending": {
+				Items: []domain.AuditEvent{
+					{EventType: "admin.telegram_request_resolve_not_pending", AggregateID: "pending_2"},
+				},
+				NextCursor: "more-not-pending",
+			},
+			"admin.telegram_request_resolve_internal_failed": {
+				Items: []domain.AuditEvent{},
 			},
 			"admin.telegram_request_resolved": {
 				Items: []domain.AuditEvent{
@@ -1625,6 +2036,13 @@ func TestHandleTelegramTrustSummary(t *testing.T) {
 				},
 				NextCursor: "more-resolutions",
 			},
+		},
+		auditCounts: map[string]int{
+			"admin.telegram_request_resolve_failed":          2,
+			"admin.telegram_request_resolve_not_found":       1,
+			"admin.telegram_request_resolve_not_pending":     1,
+			"admin.telegram_request_resolve_internal_failed": 0,
+			"admin.telegram_request_resolved":                2,
 		},
 	}
 	app := &App{
@@ -1639,15 +2057,16 @@ func TestHandleTelegramTrustSummary(t *testing.T) {
 	}
 	var payload struct {
 		Data struct {
-			Counts            map[string]int              `json:"counts"`
-			HasMore           map[string]bool             `json:"has_more"`
-			NextCursors       map[string]string           `json:"next_cursors"`
-			PendingRequests   []domain.TelegramUserAccess `json:"pending_requests"`
-			RecentApproved    []domain.TelegramUserAccess `json:"recent_approved"`
-			RecentDenied      []domain.TelegramUserAccess `json:"recent_denied"`
-			RecentDecisions   []domain.TelegramUserAccess `json:"recent_decisions"`
-			RecentFailures    []domain.AuditEvent         `json:"recent_failures"`
-			RecentResolutions []domain.AuditEvent         `json:"recent_resolutions"`
+			Counts                 map[string]int                 `json:"counts"`
+			HasMore                map[string]bool                `json:"has_more"`
+			NextCursors            map[string]string              `json:"next_cursors"`
+			PendingRequests        []domain.TelegramUserAccess    `json:"pending_requests"`
+			RecentApproved         []domain.TelegramUserAccess    `json:"recent_approved"`
+			RecentDenied           []domain.TelegramUserAccess    `json:"recent_denied"`
+			RecentDecisions        []domain.TelegramUserAccess    `json:"recent_decisions"`
+			RecentFailures         []domain.AuditEvent            `json:"recent_failures"`
+			RecentFailureBreakdown map[string][]domain.AuditEvent `json:"recent_failure_breakdown"`
+			RecentResolutions      []domain.AuditEvent            `json:"recent_resolutions"`
 		} `json:"data"`
 		Meta struct {
 			Limit           int `json:"limit"`
@@ -1672,23 +2091,29 @@ func TestHandleTelegramTrustSummary(t *testing.T) {
 	if len(payload.Data.RecentDecisions) != 2 || payload.Data.RecentDecisions[0].TelegramUserID != "approved_1" || payload.Data.RecentDecisions[1].TelegramUserID != "denied_1" {
 		t.Fatalf("unexpected recent decisions payload: %+v", payload.Data.RecentDecisions)
 	}
-	if len(payload.Data.RecentFailures) != 1 || payload.Data.RecentFailures[0].EventType != "admin.telegram_request_resolve_failed" {
+	if len(payload.Data.RecentFailures) != 1 || payload.Data.RecentFailures[0].EventType != "admin.telegram_request_resolve_not_found" {
 		t.Fatalf("unexpected recent failures payload: %+v", payload.Data.RecentFailures)
+	}
+	if len(payload.Data.RecentFailureBreakdown["not_found"]) != 1 || payload.Data.RecentFailureBreakdown["not_found"][0].EventType != "admin.telegram_request_resolve_not_found" {
+		t.Fatalf("unexpected not_found failure breakdown: %+v", payload.Data.RecentFailureBreakdown)
+	}
+	if len(payload.Data.RecentFailureBreakdown["not_pending"]) != 1 || payload.Data.RecentFailureBreakdown["not_pending"][0].EventType != "admin.telegram_request_resolve_not_pending" || len(payload.Data.RecentFailureBreakdown["internal"]) != 0 {
+		t.Fatalf("unexpected failure breakdown payload: %+v", payload.Data.RecentFailureBreakdown)
 	}
 	if len(payload.Data.RecentResolutions) != 1 || payload.Data.RecentResolutions[0].EventType != "admin.telegram_request_resolved" {
 		t.Fatalf("unexpected recent resolutions payload: %+v", payload.Data.RecentResolutions)
 	}
-	if payload.Data.Counts["pending"] != 2 || payload.Data.Counts["approved"] != 2 || payload.Data.Counts["denied"] != 1 || payload.Data.Counts["failures"] != 2 || payload.Data.Counts["resolutions"] != 2 || payload.Data.Counts["decisions"] != 3 {
+	if payload.Data.Counts["pending"] != 2 || payload.Data.Counts["approved"] != 2 || payload.Data.Counts["denied"] != 1 || payload.Data.Counts["failures"] != 2 || payload.Data.Counts["failure_not_found"] != 1 || payload.Data.Counts["failure_not_pending"] != 1 || payload.Data.Counts["failure_internal"] != 0 || payload.Data.Counts["resolutions"] != 2 || payload.Data.Counts["decisions"] != 3 {
 		t.Fatalf("unexpected trust summary counts: %+v", payload.Data.Counts)
 	}
-	if !payload.Data.HasMore["pending_requests"] || !payload.Data.HasMore["recent_failures"] || !payload.Data.HasMore["recent_resolutions"] || !payload.Data.HasMore["recent_decisions"] {
+	if !payload.Data.HasMore["pending_requests"] || !payload.Data.HasMore["recent_failures"] || !payload.Data.HasMore["recent_resolutions"] || !payload.Data.HasMore["recent_decisions"] || !payload.Data.HasMore["failure_not_found"] || !payload.Data.HasMore["failure_not_pending"] {
 		t.Fatalf("expected has_more metadata for truncated sections, got %+v", payload.Data.HasMore)
 	}
-	if payload.Data.HasMore["recent_denied"] || payload.Data.HasMore["recent_approved"] {
+	if payload.Data.HasMore["recent_denied"] || payload.Data.HasMore["recent_approved"] || payload.Data.HasMore["failure_internal"] {
 		t.Fatalf("did not expect has_more for fully returned sections, got %+v", payload.Data.HasMore)
 	}
-	if len(repo.auditQueries) != 2 {
-		t.Fatalf("expected two audit queries, got %+v", repo.auditQueries)
+	if len(repo.auditQueries) != 5 {
+		t.Fatalf("expected five audit queries, got %+v", repo.auditQueries)
 	}
 	if len(repo.telegramAccessQueries) != 3 {
 		t.Fatalf("expected three telegram access queries, got %+v", repo.telegramAccessQueries)
@@ -1708,7 +2133,16 @@ func TestHandleTelegramTrustSummary(t *testing.T) {
 	if repo.auditQueries[1].AggregateType != "telegram_user" || repo.auditQueries[1].EventType != "admin.telegram_request_resolved" || repo.auditQueries[1].Limit != 1 {
 		t.Fatalf("unexpected trust summary resolution audit query: %+v", repo.auditQueries[1])
 	}
-	if payload.Data.NextCursors["pending_requests"] == "" || payload.Data.NextCursors["recent_decisions"] == "" || payload.Data.NextCursors["recent_failures"] != "more-failures" || payload.Data.NextCursors["recent_resolutions"] != "more-resolutions" {
+	if repo.auditQueries[2].EventType != "admin.telegram_request_resolve_not_found" || repo.auditQueries[2].Limit != 1 {
+		t.Fatalf("unexpected not_found breakdown audit query: %+v", repo.auditQueries[2])
+	}
+	if repo.auditQueries[3].EventType != "admin.telegram_request_resolve_not_pending" || repo.auditQueries[3].Limit != 1 {
+		t.Fatalf("unexpected not_pending breakdown audit query: %+v", repo.auditQueries[3])
+	}
+	if repo.auditQueries[4].EventType != "admin.telegram_request_resolve_internal_failed" || repo.auditQueries[4].Limit != 1 {
+		t.Fatalf("unexpected internal breakdown audit query: %+v", repo.auditQueries[4])
+	}
+	if payload.Data.NextCursors["pending_requests"] == "" || payload.Data.NextCursors["recent_decisions"] == "" || payload.Data.NextCursors["recent_failures"] != "more-failures" || payload.Data.NextCursors["recent_resolutions"] != "more-resolutions" || payload.Data.NextCursors["failure_not_found"] != "more-not-found" || payload.Data.NextCursors["failure_not_pending"] != "more-not-pending" {
 		t.Fatalf("unexpected next_cursors payload: %+v", payload.Data.NextCursors)
 	}
 	if payload.Meta.Limit != 10 || payload.Meta.PendingLimit != 1 || payload.Meta.DecisionLimit != 2 || payload.Meta.FailureLimit != 1 || payload.Meta.ResolutionLimit != 1 {
@@ -1846,8 +2280,8 @@ func TestHandleListTelegramRequests(t *testing.T) {
 	}
 	var payload struct {
 		Items      []domain.TelegramUserAccess `json:"items"`
-		NextCursor string                     `json:"next_cursor"`
-		TotalCount int                        `json:"total_count"`
+		NextCursor string                      `json:"next_cursor"`
+		TotalCount int                         `json:"total_count"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
@@ -1865,8 +2299,8 @@ func TestHandleResolveTelegramRequest(t *testing.T) {
 		telegramUsers: []domain.TelegramUserAccess{{TelegramUserID: "123", Status: "pending"}},
 	}
 	app := &App{
-		Config:   config.Config{DefaultTenantID: "tenant_default"},
-		Repo:     repo,
+		Config: config.Config{DefaultTenantID: "tenant_default"},
+		Repo:   repo,
 	}
 	req := httptest.NewRequest(http.MethodPost, "/admin/telegram/requests/resolve", strings.NewReader(`{"telegram_user_id":"123","status":"approved","added_by":"admin"}`))
 	rec := httptest.NewRecorder()
@@ -1886,8 +2320,8 @@ func TestHandleResolveTelegramRequest(t *testing.T) {
 	if payload.Data.Status != "approved" || !payload.Data.Allowed || payload.Meta.Action != "telegram_request_resolved" {
 		t.Fatalf("expected approved telegram request payload, got %+v", payload)
 	}
-	if len(repo.auditEvents) != 1 || repo.auditEvents[0].EventType != "admin.telegram_request_resolved" {
-		t.Fatalf("expected resolve audit event, got %+v", repo.auditEvents)
+	if len(repo.auditEvents) != 2 || repo.auditEvents[0].EventType != "admin.telegram_request_resolved" || repo.auditEvents[1].EventType != "admin.telegram_request_approved" {
+		t.Fatalf("expected generic and approval resolve audit events, got %+v", repo.auditEvents)
 	}
 	if len(repo.deliveries) != 1 {
 		t.Fatalf("expected telegram resolution notification delivery, got %d", len(repo.deliveries))
@@ -1909,8 +2343,8 @@ func TestHandleResolveTelegramRequestNotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
-	if len(repo.auditEvents) != 1 || repo.auditEvents[0].EventType != "admin.telegram_request_resolve_failed" {
-		t.Fatalf("expected failed resolve audit event, got %+v", repo.auditEvents)
+	if len(repo.auditEvents) != 2 || repo.auditEvents[0].EventType != "admin.telegram_request_resolve_failed" || repo.auditEvents[1].EventType != "admin.telegram_request_resolve_not_found" {
+		t.Fatalf("expected generic and not_found resolve audit events, got %+v", repo.auditEvents)
 	}
 }
 
@@ -1928,8 +2362,8 @@ func TestHandleResolveTelegramRequestAlreadyResolved(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d", rec.Code)
 	}
-	if len(repo.auditEvents) != 1 || repo.auditEvents[0].EventType != "admin.telegram_request_resolve_failed" {
-		t.Fatalf("expected failed resolve audit event on conflict, got %+v", repo.auditEvents)
+	if len(repo.auditEvents) != 2 || repo.auditEvents[0].EventType != "admin.telegram_request_resolve_failed" || repo.auditEvents[1].EventType != "admin.telegram_request_resolve_not_pending" {
+		t.Fatalf("expected generic and not_pending resolve audit events on conflict, got %+v", repo.auditEvents)
 	}
 	if len(repo.deliveries) != 0 {
 		t.Fatalf("expected no deliveries on conflict, got %+v", repo.deliveries)
@@ -2025,7 +2459,13 @@ func TestHandleListSurfaceSessions(t *testing.T) {
 
 func TestHandleListACPAgents(t *testing.T) {
 	app := &App{
-		Config:  config.Config{DefaultACPAgentName: "agent_a"},
+		Config: config.Config{DefaultTenantID: "tenant_default", DefaultACPAgentName: "agent_a"},
+		Repo: &appRepoStub{
+			auditCounts: map[string]int{"worker.await_blocked_opencode_bridge": 3},
+			auditPagesByEventType: map[string]domain.PagedResult[domain.AuditEvent]{
+				"worker.await_blocked_opencode_bridge": {Items: []domain.AuditEvent{{EventType: "worker.await_blocked_opencode_bridge", RunID: "run_1"}}},
+			},
+		},
 		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_a", Healthy: true}, {Name: "agent_b", Healthy: false}}}, TTL: time.Minute},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/admin/acp/agents?refresh=true", nil)
@@ -2037,8 +2477,12 @@ func TestHandleListACPAgents(t *testing.T) {
 	var payload struct {
 		Data []domain.AgentManifest `json:"data"`
 		Meta struct {
-			Refresh bool `json:"refresh"`
-			Count   int  `json:"count"`
+			Refresh      bool `json:"refresh"`
+			Count        int  `json:"count"`
+			BridgeBlocks struct {
+				TotalCount   int                 `json:"total_count"`
+				RecentEvents []domain.AuditEvent `json:"recent_events"`
+			} `json:"bridge_blocks"`
 			Catalog struct {
 				CachedAgentCount int    `json:"cached_agent_count"`
 				LastFetchError   string `json:"last_fetch_error"`
@@ -2055,12 +2499,26 @@ func TestHandleListACPAgents(t *testing.T) {
 	if payload.Meta.Catalog.CachedAgentCount != 2 || !payload.Meta.Catalog.CacheValid || payload.Meta.Catalog.LastFetchError != "" {
 		t.Fatalf("unexpected acp catalog meta: %+v", payload.Meta.Catalog)
 	}
+	if payload.Meta.BridgeBlocks.TotalCount != 3 {
+		t.Fatalf("unexpected acp bridge block meta: %+v", payload.Meta.BridgeBlocks)
+	}
+	if len(payload.Meta.BridgeBlocks.RecentEvents) != 1 || payload.Meta.BridgeBlocks.RecentEvents[0].RunID != "run_1" {
+		t.Fatalf("unexpected recent bridge block events: %+v", payload.Meta.BridgeBlocks.RecentEvents)
+	}
 }
 
 func TestHandleListCompatibleACPAgents(t *testing.T) {
 	app := &App{
+		Config: config.Config{DefaultTenantID: "tenant_default"},
+		Repo: &appRepoStub{
+			auditCounts: map[string]int{"worker.await_blocked_opencode_bridge": 4},
+			auditPagesByEventType: map[string]domain.PagedResult[domain.AuditEvent]{
+				"worker.await_blocked_opencode_bridge": {Items: []domain.AuditEvent{{EventType: "worker.await_blocked_opencode_bridge", SessionID: "session_1"}}},
+			},
+		},
 		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{
-			{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsStreaming: true, SupportsArtifacts: true},
 			{Name: "agent_bad", Healthy: true, SupportsAwaitResume: false, SupportsStreaming: true, SupportsArtifacts: true},
 		}}, TTL: time.Minute},
 	}
@@ -2073,8 +2531,17 @@ func TestHandleListCompatibleACPAgents(t *testing.T) {
 	var payload struct {
 		Data []domain.AgentCompatibility `json:"data"`
 		Meta struct {
-			Refresh bool `json:"refresh"`
-			Count   int  `json:"count"`
+			Refresh      bool `json:"refresh"`
+			Count        int  `json:"count"`
+			BridgeBlocks struct {
+				TotalCount   int                 `json:"total_count"`
+				RecentEvents []domain.AuditEvent `json:"recent_events"`
+			} `json:"bridge_blocks"`
+			Compatibility struct {
+				BridgeCompatibleCount int `json:"bridge_compatible_count"`
+				DegradedCount         int `json:"degraded_count"`
+				WarningCount          int `json:"warning_count"`
+			} `json:"compatibility"`
 			Catalog struct {
 				CachedAgentCount int  `json:"cached_agent_count"`
 				CacheValid       bool `json:"cache_valid"`
@@ -2084,18 +2551,36 @@ func TestHandleListCompatibleACPAgents(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Data) != 1 || payload.Data[0].AgentName != "agent_ok" || payload.Meta.Count != 1 {
+	if len(payload.Data) != 2 || payload.Meta.Count != 2 {
 		t.Fatalf("unexpected compatible acp payload: %+v", payload)
 	}
-	if payload.Meta.Catalog.CachedAgentCount != 2 || !payload.Meta.Catalog.CacheValid {
+	if payload.Data[0].AgentName != "agent_ok" || payload.Data[1].AgentName != "agent_bridge" {
+		t.Fatalf("unexpected compatible agent payload: %+v", payload.Data)
+	}
+	if payload.Meta.Compatibility.BridgeCompatibleCount != 1 || payload.Meta.Compatibility.DegradedCount != 1 || payload.Meta.Compatibility.WarningCount != 2 {
+		t.Fatalf("unexpected compatible summary meta: %+v", payload.Meta.Compatibility)
+	}
+	if payload.Meta.Catalog.CachedAgentCount != 3 || !payload.Meta.Catalog.CacheValid {
 		t.Fatalf("unexpected compatible acp catalog meta: %+v", payload.Meta.Catalog)
+	}
+	if payload.Meta.BridgeBlocks.TotalCount != 4 {
+		t.Fatalf("unexpected compatible acp bridge block meta: %+v", payload.Meta.BridgeBlocks)
+	}
+	if len(payload.Meta.BridgeBlocks.RecentEvents) != 1 || payload.Meta.BridgeBlocks.RecentEvents[0].SessionID != "session_1" {
+		t.Fatalf("unexpected compatible recent bridge block events: %+v", payload.Meta.BridgeBlocks.RecentEvents)
 	}
 }
 
 func TestHandleValidateACPAgent(t *testing.T) {
 	app := &App{
-		Config:  config.Config{DefaultACPAgentName: "agent_ok"},
-		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStreaming: true, SupportsArtifacts: true}}}, TTL: time.Minute},
+		Config: config.Config{DefaultTenantID: "tenant_default", DefaultACPAgentName: "agent_ok"},
+		Repo: &appRepoStub{
+			auditCounts: map[string]int{"worker.await_blocked_opencode_bridge": 2},
+			auditPagesByEventType: map[string]domain.PagedResult[domain.AuditEvent]{
+				"worker.await_blocked_opencode_bridge": {Items: []domain.AuditEvent{{EventType: "worker.await_blocked_opencode_bridge", AggregateID: "agent_ok"}}},
+			},
+		},
+		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true}}}, TTL: time.Minute},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/admin/acp/validate", nil)
 	rec := httptest.NewRecorder()
@@ -2106,9 +2591,19 @@ func TestHandleValidateACPAgent(t *testing.T) {
 	var payload struct {
 		Data domain.AgentCompatibility `json:"data"`
 		Meta struct {
-			AgentName string `json:"agent_name"`
-			Refresh   bool   `json:"refresh"`
-			Catalog   struct {
+			AgentName    string `json:"agent_name"`
+			Refresh      bool   `json:"refresh"`
+			BridgeBlocks struct {
+				TotalCount   int                 `json:"total_count"`
+				RecentEvents []domain.AuditEvent `json:"recent_events"`
+			} `json:"bridge_blocks"`
+			Compatibility struct {
+				ValidationMode string `json:"validation_mode"`
+				WarningCount   int    `json:"warning_count"`
+				Degraded       bool   `json:"degraded"`
+				ReasonCount    int    `json:"reason_count"`
+			} `json:"compatibility"`
+			Catalog struct {
 				CachedAgentCount int  `json:"cached_agent_count"`
 				CacheValid       bool `json:"cache_valid"`
 			} `json:"catalog"`
@@ -2120,8 +2615,74 @@ func TestHandleValidateACPAgent(t *testing.T) {
 	if payload.Data.AgentName != "agent_ok" || !payload.Data.Compatible || payload.Meta.AgentName != "agent_ok" {
 		t.Fatalf("unexpected validate acp payload: %+v", payload)
 	}
+	if payload.Meta.Compatibility.ValidationMode != "strict_acp" || payload.Meta.Compatibility.WarningCount != 0 || payload.Meta.Compatibility.Degraded || payload.Meta.Compatibility.ReasonCount != 0 {
+		t.Fatalf("unexpected validate compatibility meta: %+v", payload.Meta.Compatibility)
+	}
 	if payload.Meta.Catalog.CachedAgentCount != 1 || !payload.Meta.Catalog.CacheValid {
 		t.Fatalf("unexpected validate acp catalog meta: %+v", payload.Meta.Catalog)
+	}
+	if payload.Meta.BridgeBlocks.TotalCount != 2 {
+		t.Fatalf("unexpected validate acp bridge block meta: %+v", payload.Meta.BridgeBlocks)
+	}
+	if len(payload.Meta.BridgeBlocks.RecentEvents) != 1 || payload.Meta.BridgeBlocks.RecentEvents[0].AggregateID != "agent_ok" {
+		t.Fatalf("unexpected validate recent bridge block events: %+v", payload.Meta.BridgeBlocks.RecentEvents)
+	}
+}
+
+func TestHandleValidateOpenCodeBridgeAgent(t *testing.T) {
+	app := &App{
+		Config: config.Config{DefaultTenantID: "tenant_default", DefaultACPAgentName: "build"},
+		Repo: &appRepoStub{
+			auditCounts: map[string]int{"worker.await_blocked_opencode_bridge": 5},
+			auditPagesByEventType: map[string]domain.PagedResult[domain.AuditEvent]{
+				"worker.await_blocked_opencode_bridge": {Items: []domain.AuditEvent{{EventType: "worker.await_blocked_opencode_bridge", SessionID: "session_build"}}},
+			},
+		},
+		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{{
+			Name:                    "build",
+			Protocol:                "opencode",
+			Healthy:                 true,
+			SupportsAwaitResume:     false,
+			SupportsStructuredAwait: false,
+			SupportsStreaming:       true,
+			SupportsArtifacts:       true,
+		}}}, TTL: time.Minute},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/acp/validate", nil)
+	rec := httptest.NewRecorder()
+	app.handleValidateACPAgent(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var payload struct {
+		Data domain.AgentCompatibility `json:"data"`
+		Meta struct {
+			BridgeBlocks struct {
+				TotalCount   int                 `json:"total_count"`
+				RecentEvents []domain.AuditEvent `json:"recent_events"`
+			} `json:"bridge_blocks"`
+			Compatibility struct {
+				ValidationMode string `json:"validation_mode"`
+				WarningCount   int    `json:"warning_count"`
+				Degraded       bool   `json:"degraded"`
+				ReasonCount    int    `json:"reason_count"`
+			} `json:"compatibility"`
+		} `json:"meta"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Data.Compatible || payload.Data.ValidationMode != "opencode_bridge" || len(payload.Data.Warnings) == 0 {
+		t.Fatalf("unexpected OpenCode validate payload: %+v", payload)
+	}
+	if payload.Meta.Compatibility.ValidationMode != "opencode_bridge" || payload.Meta.Compatibility.WarningCount == 0 || !payload.Meta.Compatibility.Degraded || payload.Meta.Compatibility.ReasonCount != 0 {
+		t.Fatalf("unexpected OpenCode validate compatibility meta: %+v", payload.Meta.Compatibility)
+	}
+	if payload.Meta.BridgeBlocks.TotalCount != 5 {
+		t.Fatalf("unexpected OpenCode validate bridge block meta: %+v", payload.Meta.BridgeBlocks)
+	}
+	if len(payload.Meta.BridgeBlocks.RecentEvents) != 1 || payload.Meta.BridgeBlocks.RecentEvents[0].SessionID != "session_build" {
+		t.Fatalf("unexpected OpenCode recent bridge block events: %+v", payload.Meta.BridgeBlocks.RecentEvents)
 	}
 }
 

@@ -10,8 +10,8 @@ import (
 	"nexus/internal/adapters/acp"
 	"nexus/internal/adapters/db"
 	"nexus/internal/adapters/slack"
-	"nexus/internal/adapters/telegram"
 	"nexus/internal/adapters/storage"
+	"nexus/internal/adapters/telegram"
 	"nexus/internal/config"
 	"nexus/internal/domain"
 	"nexus/internal/httpx"
@@ -20,38 +20,38 @@ import (
 )
 
 type App struct {
-	Config    config.Config
-	Repo      ports.Repository
-	DB        *db.PostgresRepository
-	Inbound   services.InboundService
-	Await     services.AwaitService
-	Artifacts services.ArtifactService
-	Catalog   *services.AgentCatalog
-	Worker    services.WorkerService
+	Config     config.Config
+	Repo       ports.Repository
+	DB         *db.PostgresRepository
+	Inbound    services.InboundService
+	Await      services.AwaitService
+	Artifacts  services.ArtifactService
+	Catalog    *services.AgentCatalog
+	Worker     services.WorkerService
 	Reconciler services.Reconciler
-	ACP       acp.Client
-	Slack     slack.Adapter
-	Telegram  telegram.Adapter
-	Channels  map[string]ports.ChannelAdapter
-	Runtime   *RuntimeState
+	ACP        acp.Client
+	Slack      slack.Adapter
+	Telegram   telegram.Adapter
+	Channels   map[string]ports.ChannelAdapter
+	Runtime    *RuntimeState
 }
 
 type RuntimeState struct {
 	mu sync.Mutex
 
-	LastWorkerRunAt      time.Time
-	LastWorkerError      string
-	LastReconcileRunAt   time.Time
-	LastReconcileError   string
-	LastHealthStatus     string
-	LastReadinessStatus  string
-	RecentTransitions    []ProbeTransition
-	OutboxRequeueCount   int
+	LastWorkerRunAt           time.Time
+	LastWorkerError           string
+	LastReconcileRunAt        time.Time
+	LastReconcileError        string
+	LastHealthStatus          string
+	LastReadinessStatus       string
+	RecentTransitions         []ProbeTransition
+	OutboxRequeueCount        int
 	QueueRepairRecoveredCount int
 	QueueRepairRequeuedCount  int
-	RunRefreshCount      int
-	AwaitExpiryCount     int
-	DeliveryRetryCount   int
+	RunRefreshCount           int
+	AwaitExpiryCount          int
+	DeliveryRetryCount        int
 }
 
 type ProbeTransition struct {
@@ -62,19 +62,19 @@ type ProbeTransition struct {
 }
 
 type RuntimeStatus struct {
-	LastWorkerRunAt    time.Time `json:"last_worker_run_at,omitempty"`
-	LastWorkerError    string    `json:"last_worker_error,omitempty"`
-	LastReconcileRunAt time.Time `json:"last_reconcile_run_at,omitempty"`
-	LastReconcileError string    `json:"last_reconcile_error,omitempty"`
-	LastHealthStatus   string    `json:"last_health_status,omitempty"`
-	LastReadinessStatus string   `json:"last_readiness_status,omitempty"`
-	RecentTransitions  []ProbeTransition `json:"recent_transitions,omitempty"`
-	OutboxRequeueCount int `json:"outbox_requeue_count"`
-	QueueRepairRecoveredCount int `json:"queue_repair_recovered_count"`
-	QueueRepairRequeuedCount int `json:"queue_repair_requeued_count"`
-	RunRefreshCount int `json:"run_refresh_count"`
-	AwaitExpiryCount int `json:"await_expiry_count"`
-	DeliveryRetryCount int `json:"delivery_retry_count"`
+	LastWorkerRunAt           time.Time         `json:"last_worker_run_at,omitempty"`
+	LastWorkerError           string            `json:"last_worker_error,omitempty"`
+	LastReconcileRunAt        time.Time         `json:"last_reconcile_run_at,omitempty"`
+	LastReconcileError        string            `json:"last_reconcile_error,omitempty"`
+	LastHealthStatus          string            `json:"last_health_status,omitempty"`
+	LastReadinessStatus       string            `json:"last_readiness_status,omitempty"`
+	RecentTransitions         []ProbeTransition `json:"recent_transitions,omitempty"`
+	OutboxRequeueCount        int               `json:"outbox_requeue_count"`
+	QueueRepairRecoveredCount int               `json:"queue_repair_recovered_count"`
+	QueueRepairRequeuedCount  int               `json:"queue_repair_requeued_count"`
+	RunRefreshCount           int               `json:"run_refresh_count"`
+	AwaitExpiryCount          int               `json:"await_expiry_count"`
+	DeliveryRetryCount        int               `json:"delivery_retry_count"`
 }
 
 func (r *RuntimeState) MarkWorkerRun(at time.Time) {
@@ -122,19 +122,19 @@ func (r *RuntimeState) Status() RuntimeStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return RuntimeStatus{
-		LastWorkerRunAt:    r.LastWorkerRunAt,
-		LastWorkerError:    r.LastWorkerError,
-		LastReconcileRunAt: r.LastReconcileRunAt,
-		LastReconcileError: r.LastReconcileError,
-		LastHealthStatus:   r.LastHealthStatus,
-		LastReadinessStatus: r.LastReadinessStatus,
-		RecentTransitions:  append([]ProbeTransition(nil), r.RecentTransitions...),
-		OutboxRequeueCount: r.OutboxRequeueCount,
+		LastWorkerRunAt:           r.LastWorkerRunAt,
+		LastWorkerError:           r.LastWorkerError,
+		LastReconcileRunAt:        r.LastReconcileRunAt,
+		LastReconcileError:        r.LastReconcileError,
+		LastHealthStatus:          r.LastHealthStatus,
+		LastReadinessStatus:       r.LastReadinessStatus,
+		RecentTransitions:         append([]ProbeTransition(nil), r.RecentTransitions...),
+		OutboxRequeueCount:        r.OutboxRequeueCount,
 		QueueRepairRecoveredCount: r.QueueRepairRecoveredCount,
-		QueueRepairRequeuedCount: r.QueueRepairRequeuedCount,
-		RunRefreshCount: r.RunRefreshCount,
-		AwaitExpiryCount: r.AwaitExpiryCount,
-		DeliveryRetryCount: r.DeliveryRetryCount,
+		QueueRepairRequeuedCount:  r.QueueRepairRequeuedCount,
+		RunRefreshCount:           r.RunRefreshCount,
+		AwaitExpiryCount:          r.AwaitExpiryCount,
+		DeliveryRetryCount:        r.DeliveryRetryCount,
 	}
 }
 
@@ -310,21 +310,21 @@ func (a *App) Close() {
 func (a *App) GatewayHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		status := healthStatus(a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+		status := healthStatus(a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
 		a.Runtime.RecordProbeStatus("health", status, time.Now().UTC())
-		httpx.OK(w, map[string]any{"status": status}, healthMeta("gateway", a.Catalog, a.Runtime))
+		httpx.OK(w, map[string]any{"status": status}, healthMeta("gateway", a.Catalog, a.Runtime, a.Config.DefaultACPAgentName))
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		status := readinessStatus(a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+		status := readinessStatus(a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
 		a.Runtime.RecordProbeStatus("readiness", status, time.Now().UTC())
 		code := http.StatusOK
 		if status != "ready" {
 			code = http.StatusServiceUnavailable
 		}
-		httpx.Respond(w, code, map[string]any{"status": status}, healthMeta("gateway", a.Catalog, a.Runtime))
+		httpx.Respond(w, code, map[string]any{"status": status}, healthMeta("gateway", a.Catalog, a.Runtime, a.Config.DefaultACPAgentName))
 	})
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
-		writeMetrics(w, context.Background(), "gateway", a.Config.DefaultTenantID, a.Repo, a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+		writeMetrics(w, context.Background(), "gateway", a.Config.DefaultTenantID, a.Repo, a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
 	})
 	mux.HandleFunc("/webhooks/slack", a.handleSlackWebhook)
 	mux.HandleFunc("/webhooks/telegram", a.handleTelegramWebhook)
@@ -334,33 +334,36 @@ func (a *App) GatewayHandler() http.Handler {
 func (a *App) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		status := healthStatus(a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+		status := healthStatus(a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
 		a.Runtime.RecordProbeStatus("health", status, time.Now().UTC())
-		httpx.OK(w, map[string]any{"status": status}, healthMeta("admin", a.Catalog, a.Runtime))
+		httpx.OK(w, map[string]any{"status": status}, healthMeta("admin", a.Catalog, a.Runtime, a.Config.DefaultACPAgentName))
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		status := readinessStatus(a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+		status := readinessStatus(a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
 		a.Runtime.RecordProbeStatus("readiness", status, time.Now().UTC())
 		code := http.StatusOK
 		if status != "ready" {
 			code = http.StatusServiceUnavailable
 		}
-		httpx.Respond(w, code, map[string]any{"status": status}, healthMeta("admin", a.Catalog, a.Runtime))
+		httpx.Respond(w, code, map[string]any{"status": status}, healthMeta("admin", a.Catalog, a.Runtime, a.Config.DefaultACPAgentName))
 	})
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
-		writeMetrics(w, context.Background(), "admin", a.Config.DefaultTenantID, a.Repo, a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+		writeMetrics(w, context.Background(), "admin", a.Config.DefaultTenantID, a.Repo, a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
 	})
 	mux.HandleFunc("/admin/sessions", a.handleListSessions)
 	mux.HandleFunc("/admin/sessions/detail", a.handleSessionDetail)
 	mux.HandleFunc("/admin/acp/agents", a.handleListACPAgents)
 	mux.HandleFunc("/admin/acp/compatible", a.handleListCompatibleACPAgents)
 	mux.HandleFunc("/admin/acp/validate", a.handleValidateACPAgent)
+	mux.HandleFunc("/admin/acp/summary", a.handleACPAdminSummary)
+	mux.HandleFunc("/admin/acp/bridge-blocks", a.handleListACPBridgeBlocks)
 	mux.HandleFunc("/admin/runs", a.handleListRuns)
 	mux.HandleFunc("/admin/runs/detail", a.handleRunDetail)
 	mux.HandleFunc("/admin/awaits", a.handleListAwaits)
 	mux.HandleFunc("/admin/awaits/detail", a.handleAwaitDetail)
 	mux.HandleFunc("/admin/audit", a.handleListAuditEvents)
 	mux.HandleFunc("/admin/telegram/denials", a.handleListTelegramDenials)
+	mux.HandleFunc("/admin/telegram/failures", a.handleListTelegramFailures)
 	mux.HandleFunc("/admin/telegram/trust/summary", a.handleTelegramTrustSummary)
 	mux.HandleFunc("/admin/telegram/trust/decisions", a.handleTelegramTrustDecisions)
 	mux.HandleFunc("/admin/surfaces/sessions", a.handleListSurfaceSessions)
