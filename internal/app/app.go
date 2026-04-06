@@ -313,6 +313,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 }
 
 func (a *App) Close() {
+	if closer, ok := a.ACP.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
 	if a.DB != nil {
 		a.DB.Close()
 	}

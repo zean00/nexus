@@ -26,6 +26,7 @@ type strictManifest struct {
 	OutputContentTypes      []string `json:"output_content_types"`
 	SupportsAwaitResume     bool     `json:"supports_await_resume"`
 	SupportsStructuredAwait bool     `json:"supports_structured_await"`
+	SupportsSessionReload   bool     `json:"supports_session_reload"`
 	SupportsStreaming       bool     `json:"supports_streaming"`
 	SupportsArtifacts       bool     `json:"supports_artifacts"`
 	Healthy                 bool     `json:"healthy"`
@@ -84,6 +85,7 @@ func (c StrictClient) DiscoverAgents(ctx context.Context) ([]domain.AgentManifes
 			OutputContentTypes:      manifest.OutputContentTypes,
 			SupportsAwaitResume:     manifest.SupportsAwaitResume,
 			SupportsStructuredAwait: manifest.SupportsStructuredAwait,
+			SupportsSessionReload:   manifest.SupportsSessionReload,
 			SupportsStreaming:       manifest.SupportsStreaming,
 			SupportsArtifacts:       manifest.SupportsArtifacts,
 			Healthy:                 manifest.Healthy,

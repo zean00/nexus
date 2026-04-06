@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,12 @@ type stdioHelperMessage struct {
 	UserText      string
 	AssistantID   string
 	AssistantText string
+}
+
+type stdioHelperStore struct {
+	Sessions    map[string]*stdioHelperSession `json:"sessions"`
+	NextSession int                            `json:"next_session"`
+	NextMessage int                            `json:"next_message"`
 }
 
 func TestStdioClientRoundTrip(t *testing.T) {
@@ -82,6 +89,18 @@ func TestStdioClientRoundTrip(t *testing.T) {
 
 	if err := client.CancelRun(ctx, run); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStdioClientManifestRequiresLoadSessionForRecovery(t *testing.T) {
+	client := NewStdioClient(StdioConfig{DefaultAgentName: "build"})
+	init := &stdioInitializeResult{}
+	init.AgentInfo.Name = "Helper ACP"
+	init.AgentCapabilities.SessionCapabilities.Resume = map[string]any{}
+
+	manifest := client.manifestFromInitialize(init)
+	if manifest.SupportsSessionReload {
+		t.Fatalf("expected stdio manifest without session reload support, got %+v", manifest)
 	}
 }
 
@@ -177,13 +196,18 @@ func TestBridgeFactorySelectsStdio(t *testing.T) {
 
 func newHelperBackedStdioClient(t *testing.T) *StdioClient {
 	t.Helper()
+	return newHelperBackedStdioClientWithWorkdir(t, t.TempDir())
+}
+
+func newHelperBackedStdioClientWithWorkdir(t *testing.T, workdir string) *StdioClient {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=TestStdioACPHelperProcess", "--")
 	cmd.Env = append(os.Environ(), "NEXUS_STDIO_HELPER=1")
 	client := NewStdioClient(StdioConfig{
 		Command:          cmd.Path,
 		Args:             cmd.Args[1:],
 		Env:              []string{"NEXUS_STDIO_HELPER=1"},
-		Workdir:          t.TempDir(),
+		Workdir:          workdir,
 		DefaultAgentName: "build",
 		StartupTimeout:   5 * time.Second,
 		RPCTimeout:       20 * time.Second,
@@ -191,17 +215,152 @@ func newHelperBackedStdioClient(t *testing.T) *StdioClient {
 	return client
 }
 
+func TestStdioClientReplayAfterProcessRestart(t *testing.T) {
+	workdir := t.TempDir()
+	client := newHelperBackedStdioClientWithWorkdir(t, workdir)
+	ctx := context.Background()
+
+	sessionID, err := client.EnsureSession(ctx, domain.Session{ID: "session_restart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := client.StartRun(ctx, domain.StartRunRequest{
+		Session:       domain.Session{ID: "session_restart", ACPSessionID: sessionID},
+		RouteDecision: domain.RouteDecision{ACPAgentName: "build"},
+		Message:       domain.Message{Text: "restart replay"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := newHelperBackedStdioClientWithWorkdir(t, workdir)
+	snapshot, err := restarted.GetRun(ctx, run.ACPRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ACPRunID != run.ACPRunID || snapshot.Status != "completed" || !strings.Contains(snapshot.Output, "restart replay") {
+		t.Fatalf("unexpected replay snapshot after restart: %+v", snapshot)
+	}
+	latest, found, err := restarted.FindLatestRunForSession(ctx, domain.Session{ID: "session_restart", ACPSessionID: sessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || latest.ACPRunID != run.ACPRunID {
+		t.Fatalf("unexpected latest replay snapshot after restart: %+v found=%v", latest, found)
+	}
+}
+
+func TestStdioClientFindRunByIdempotencyKeyAfterRestart(t *testing.T) {
+	workdir := t.TempDir()
+	client := newHelperBackedStdioClientWithWorkdir(t, workdir)
+	ctx := context.Background()
+
+	sessionID, err := client.EnsureSession(ctx, domain.Session{ID: "session_restart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRun, _, err := client.StartRun(ctx, domain.StartRunRequest{
+		Session:        domain.Session{ID: "session_restart", ACPSessionID: sessionID},
+		RouteDecision:  domain.RouteDecision{ACPAgentName: "build"},
+		Message:        domain.Message{Text: "first replay"},
+		IdempotencyKey: "queue_1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.StartRun(ctx, domain.StartRunRequest{
+		Session:        domain.Session{ID: "session_restart", ACPSessionID: sessionID},
+		RouteDecision:  domain.RouteDecision{ACPAgentName: "build"},
+		Message:        domain.Message{Text: "second replay"},
+		IdempotencyKey: "queue_2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := newHelperBackedStdioClientWithWorkdir(t, workdir)
+	snapshot, found, err := restarted.FindRunByIdempotencyKey(ctx, domain.Session{ID: "session_restart", ACPSessionID: sessionID}, "queue_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected run snapshot for idempotency key")
+	}
+	if snapshot.ACPRunID != firstRun.ACPRunID || !strings.Contains(snapshot.Output, "first replay") {
+		t.Fatalf("unexpected idempotency snapshot after restart: %+v", snapshot)
+	}
+}
+
+func TestStdioClientStoreIdempotencyRunIDConcurrent(t *testing.T) {
+	workdir := t.TempDir()
+	client := NewStdioClient(StdioConfig{Workdir: workdir, DefaultAgentName: "build"})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := client.storeIdempotencyRunID("queue_1", "ses_1:msg_1"); err != nil {
+			t.Errorf("store queue_1: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := client.storeIdempotencyRunID("queue_2", "ses_1:msg_2"); err != nil {
+			t.Errorf("store queue_2: %v", err)
+		}
+	}()
+	wg.Wait()
+
+	got1, ok1, err := client.loadIdempotencyRunID("queue_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, ok2, err := client.loadIdempotencyRunID("queue_2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok1 || got1 != "ses_1:msg_1" || !ok2 || got2 != "ses_1:msg_2" {
+		t.Fatalf("expected both mappings to persist, got queue_1=%q ok=%v queue_2=%q ok=%v", got1, ok1, got2, ok2)
+	}
+}
+
 func TestStdioACPHelperProcess(t *testing.T) {
 	if os.Getenv("NEXUS_STDIO_HELPER") != "1" {
 		return
 	}
 
-	sessions := map[string]*stdioHelperSession{}
-	nextSession := 1
-	nextMessage := 1
+	storePath := filepath.Join(".", ".nexus-stdio-helper-store.json")
+	store := stdioHelperStore{
+		Sessions:    map[string]*stdioHelperSession{},
+		NextSession: 1,
+		NextMessage: 1,
+	}
+	if data, err := os.ReadFile(storePath); err == nil {
+		_ = json.Unmarshal(data, &store)
+		if store.Sessions == nil {
+			store.Sessions = map[string]*stdioHelperSession{}
+		}
+		if store.NextSession == 0 {
+			store.NextSession = 1
+		}
+		if store.NextMessage == 0 {
+			store.NextMessage = 1
+		}
+	}
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	enc := json.NewEncoder(os.Stdout)
+	persist := func() {
+		data, err := json.Marshal(store)
+		if err == nil {
+			_ = os.WriteFile(storePath, data, 0o644)
+		}
+	}
 
 	for scanner.Scan() {
 		var req map[string]any
@@ -233,9 +392,10 @@ func TestStdioACPHelperProcess(t *testing.T) {
 				},
 			})
 		case "session/new":
-			sessionID := fmt.Sprintf("ses_helper_%d", nextSession)
-			nextSession++
-			sessions[sessionID] = &stdioHelperSession{ID: sessionID}
+			sessionID := fmt.Sprintf("ses_helper_%d", store.NextSession)
+			store.NextSession++
+			store.Sessions[sessionID] = &stdioHelperSession{ID: sessionID}
+			persist()
 			_ = enc.Encode(map[string]any{
 				"jsonrpc": "2.0",
 				"id":      id,
@@ -266,15 +426,20 @@ func TestStdioACPHelperProcess(t *testing.T) {
 					userText, _ = first["text"].(string)
 				}
 			}
-			assistantID := fmt.Sprintf("msg_helper_%d", nextMessage)
-			nextMessage++
+			assistantID := fmt.Sprintf("msg_helper_%d", store.NextMessage)
+			store.NextMessage++
 			assistantText := "echo: " + userText
-			session := sessions[sessionID]
+			session := store.Sessions[sessionID]
+			if session == nil {
+				session = &stdioHelperSession{ID: sessionID}
+				store.Sessions[sessionID] = session
+			}
 			session.Messages = append(session.Messages, stdioHelperMessage{
 				UserText:      userText,
 				AssistantID:   assistantID,
 				AssistantText: assistantText,
 			})
+			persist()
 			_ = enc.Encode(map[string]any{
 				"jsonrpc": "2.0",
 				"method":  "session/update",
@@ -308,7 +473,10 @@ func TestStdioACPHelperProcess(t *testing.T) {
 			})
 		case "session/load":
 			sessionID, _ := params["sessionId"].(string)
-			session := sessions[sessionID]
+			session := store.Sessions[sessionID]
+			if session == nil {
+				session = &stdioHelperSession{ID: sessionID}
+			}
 			for _, message := range session.Messages {
 				_ = enc.Encode(map[string]any{
 					"jsonrpc": "2.0",
@@ -341,8 +509,8 @@ func TestStdioACPHelperProcess(t *testing.T) {
 				"result":  map[string]any{"sessionId": sessionID},
 			})
 		case "session/list":
-			items := make([]map[string]any, 0, len(sessions))
-			for _, session := range sessions {
+			items := make([]map[string]any, 0, len(store.Sessions))
+			for _, session := range store.Sessions {
 				items = append(items, map[string]any{
 					"sessionId": session.ID,
 					"cwd":       ".",

@@ -46,11 +46,12 @@ func (b *catalogBridge) CancelRun(context.Context, domain.Run) error { return ni
 func TestAgentCatalogCachesDiscoverAgents(t *testing.T) {
 	bridge := &catalogBridge{
 		agents: []domain.AgentManifest{{
-			Name:                "coder",
-			SupportsAwaitResume: true,
-			SupportsStreaming:   true,
-			SupportsArtifacts:   true,
-			Healthy:             true,
+			Name:                  "coder",
+			SupportsAwaitResume:   true,
+			SupportsSessionReload: true,
+			SupportsStreaming:     true,
+			SupportsArtifacts:     true,
+			Healthy:               true,
 		}},
 	}
 	catalog := AgentCatalog{Bridge: bridge, TTL: 60}
@@ -72,11 +73,12 @@ func TestAgentCatalogCachesDiscoverAgents(t *testing.T) {
 func TestAgentCatalogRefreshBypassesCache(t *testing.T) {
 	bridge := &catalogBridge{
 		agents: []domain.AgentManifest{{
-			Name:                "coder",
-			SupportsAwaitResume: true,
-			SupportsStreaming:   true,
-			SupportsArtifacts:   true,
-			Healthy:             true,
+			Name:                  "coder",
+			SupportsAwaitResume:   true,
+			SupportsSessionReload: true,
+			SupportsStreaming:     true,
+			SupportsArtifacts:     true,
+			Healthy:               true,
 		}},
 	}
 	catalog := AgentCatalog{Bridge: bridge, TTL: time.Hour}
@@ -90,11 +92,12 @@ func TestAgentCatalogRefreshBypassesCache(t *testing.T) {
 	}
 
 	bridge.agents = []domain.AgentManifest{{
-		Name:                "coder",
-		SupportsAwaitResume: false,
-		SupportsStreaming:   true,
-		SupportsArtifacts:   true,
-		Healthy:             true,
+		Name:                  "coder",
+		SupportsAwaitResume:   false,
+		SupportsSessionReload: true,
+		SupportsStreaming:     true,
+		SupportsArtifacts:     true,
+		Healthy:               true,
 	}}
 
 	cached, err := catalog.Validate(context.Background(), "coder", false)
@@ -120,11 +123,12 @@ func TestAgentCatalogRefreshBypassesCache(t *testing.T) {
 func TestAgentCatalogTTlExpiryRefetches(t *testing.T) {
 	bridge := &catalogBridge{
 		agents: []domain.AgentManifest{{
-			Name:                "coder",
-			SupportsAwaitResume: true,
-			SupportsStreaming:   true,
-			SupportsArtifacts:   true,
-			Healthy:             true,
+			Name:                  "coder",
+			SupportsAwaitResume:   true,
+			SupportsSessionReload: true,
+			SupportsStreaming:     true,
+			SupportsArtifacts:     true,
+			Healthy:               true,
 		}},
 	}
 	catalog := AgentCatalog{Bridge: bridge, TTL: 5 * time.Millisecond}
@@ -138,11 +142,12 @@ func TestAgentCatalogTTlExpiryRefetches(t *testing.T) {
 	}
 
 	bridge.agents = []domain.AgentManifest{{
-		Name:                "reviewer",
-		SupportsAwaitResume: true,
-		SupportsStreaming:   true,
-		SupportsArtifacts:   true,
-		Healthy:             true,
+		Name:                  "reviewer",
+		SupportsAwaitResume:   true,
+		SupportsSessionReload: true,
+		SupportsStreaming:     true,
+		SupportsArtifacts:     true,
+		Healthy:               true,
 	}}
 	time.Sleep(20 * time.Millisecond)
 
@@ -162,18 +167,20 @@ func TestAgentCatalogCompatibleUsesCachedSnapshotUntilRefresh(t *testing.T) {
 	bridge := &catalogBridge{
 		agents: []domain.AgentManifest{
 			{
-				Name:                "coder",
-				SupportsAwaitResume: true,
-				SupportsStreaming:   true,
-				SupportsArtifacts:   true,
-				Healthy:             true,
+				Name:                  "coder",
+				SupportsAwaitResume:   true,
+				SupportsSessionReload: true,
+				SupportsStreaming:     true,
+				SupportsArtifacts:     true,
+				Healthy:               true,
 			},
 			{
-				Name:                "broken",
-				SupportsAwaitResume: false,
-				SupportsStreaming:   true,
-				SupportsArtifacts:   true,
-				Healthy:             true,
+				Name:                  "broken",
+				SupportsAwaitResume:   false,
+				SupportsSessionReload: true,
+				SupportsStreaming:     true,
+				SupportsArtifacts:     true,
+				Healthy:               true,
 			},
 		},
 	}
@@ -188,11 +195,12 @@ func TestAgentCatalogCompatibleUsesCachedSnapshotUntilRefresh(t *testing.T) {
 	}
 
 	bridge.agents = []domain.AgentManifest{{
-		Name:                "broken",
-		SupportsAwaitResume: true,
-		SupportsStreaming:   true,
-		SupportsArtifacts:   true,
-		Healthy:             true,
+		Name:                  "broken",
+		SupportsAwaitResume:   true,
+		SupportsSessionReload: true,
+		SupportsStreaming:     true,
+		SupportsArtifacts:     true,
+		Healthy:               true,
 	}}
 
 	cachedCompatible, err := catalog.Compatible(context.Background(), false)

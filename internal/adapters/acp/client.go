@@ -102,6 +102,7 @@ func (c Client) DiscoverAgents(ctx context.Context) ([]domain.AgentManifest, err
 			OutputContentTypes:      []string{"text/plain", "application/json"},
 			SupportsAwaitResume:     false,
 			SupportsStructuredAwait: false,
+			SupportsSessionReload:   false,
 			SupportsStreaming:       true,
 			SupportsArtifacts:       true,
 			Healthy:                 true,

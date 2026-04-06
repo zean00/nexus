@@ -33,11 +33,16 @@ type StdioClient struct {
 	cfg StdioConfig
 
 	mu        sync.Mutex
+	stateMu   sync.Mutex
 	proc      *stdioProcess
 	init      *stdioInitializeResult
 	closed    bool
 	startErr  error
 	startedAt time.Time
+}
+
+type stdioClientState struct {
+	IdempotencyRunIDs map[string]string `json:"idempotency_run_ids"`
 }
 
 type StdioRuntimeStatus struct {
@@ -176,9 +181,7 @@ type stdioSessionUpdate struct {
 }
 
 type stdioReplay struct {
-	runID    string
-	output   strings.Builder
-	status   string
+	outputs  map[string]*strings.Builder
 	lastSeen string
 }
 
@@ -209,6 +212,19 @@ func NewStdioClient(cfg StdioConfig) *StdioClient {
 		cfg.DefaultAgentName = "default-agent"
 	}
 	return &StdioClient{cfg: cfg}
+}
+
+func (c *StdioClient) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	if c.proc == nil || c.proc.cmd == nil || c.proc.cmd.Process == nil {
+		return nil
+	}
+	err := c.proc.cmd.Process.Kill()
+	c.proc = nil
+	c.init = nil
+	return err
 }
 
 func (c *StdioClient) RuntimeStatus() StdioRuntimeStatus {
@@ -252,7 +268,11 @@ func (c *StdioClient) DiscoverAgents(ctx context.Context) ([]domain.AgentManifes
 	if err != nil {
 		return nil, err
 	}
-	manifest := domain.AgentManifest{
+	return []domain.AgentManifest{c.manifestFromInitialize(init)}, nil
+}
+
+func (c *StdioClient) manifestFromInitialize(init *stdioInitializeResult) domain.AgentManifest {
+	return domain.AgentManifest{
 		Name:                    c.cfg.DefaultAgentName,
 		Description:             init.AgentInfo.Name,
 		Protocol:                "acp",
@@ -260,11 +280,11 @@ func (c *StdioClient) DiscoverAgents(ctx context.Context) ([]domain.AgentManifes
 		OutputContentTypes:      []string{"text/plain", "application/json"},
 		SupportsAwaitResume:     init.AgentCapabilities.SessionCapabilities.Resume != nil,
 		SupportsStructuredAwait: init.AgentCapabilities.SessionCapabilities.Resume != nil,
+		SupportsSessionReload:   init.AgentCapabilities.LoadSession,
 		SupportsStreaming:       true,
 		SupportsArtifacts:       true,
 		Healthy:                 true,
 	}
-	return []domain.AgentManifest{manifest}, nil
 }
 
 func (c *StdioClient) EnsureSession(ctx context.Context, session domain.Session) (string, error) {
@@ -315,7 +335,7 @@ func (c *StdioClient) StartRun(ctx context.Context, req domain.StartRunRequest) 
 		return domain.Run{}, nil, err
 	}
 	replay := collectReplay(updates)
-	runID, status, output := replay.finalize(response.StopReason)
+	runID, status, output := replay.latest(response.StopReason)
 	if runID == "" {
 		return domain.Run{}, nil, fmt.Errorf("session/prompt: missing assistant message id")
 	}
@@ -327,6 +347,11 @@ func (c *StdioClient) StartRun(ctx context.Context, req domain.StartRunRequest) 
 		Status:          status,
 		StartedAt:       time.Now().UTC(),
 		LastEventAt:     time.Now().UTC(),
+	}
+	if req.IdempotencyKey != "" {
+		if err := c.storeIdempotencyRunID(req.IdempotencyKey, run.ACPRunID); err != nil {
+			return domain.Run{}, nil, err
+		}
 	}
 	return run, []domain.RunEvent{{
 		RunID:  run.ID,
@@ -357,7 +382,7 @@ func (c *StdioClient) ResumeRun(ctx context.Context, await domain.Await, payload
 		return nil, err
 	}
 	replay := collectReplay(updates)
-	runID, status, output := replay.finalize(response.StopReason)
+	runID, status, output := replay.latest(response.StopReason)
 	if runID == "" {
 		return nil, fmt.Errorf("session/prompt resume: missing assistant message id")
 	}
@@ -377,13 +402,10 @@ func (c *StdioClient) GetRun(ctx context.Context, acpRunID string) (domain.RunSt
 	if err != nil {
 		return domain.RunStatusSnapshot{}, err
 	}
-	if replay.lastSeen == "" {
-		return domain.RunStatusSnapshot{}, fmt.Errorf("session/load: no assistant message found")
-	}
-	if messageID != replay.lastSeen && replay.runID != messageID {
+	if !replay.has(messageID) {
 		return domain.RunStatusSnapshot{}, fmt.Errorf("session/load: run %s not found", acpRunID)
 	}
-	_, status, output := replay.finalize("")
+	status, output := replay.snapshot(messageID, "")
 	return domain.RunStatusSnapshot{
 		ACPRunID:  composeACPRunID(sessionID, messageID),
 		Status:    status,
@@ -392,8 +414,28 @@ func (c *StdioClient) GetRun(ctx context.Context, acpRunID string) (domain.RunSt
 	}, nil
 }
 
-func (c *StdioClient) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
-	return domain.RunStatusSnapshot{}, false, nil
+func (c *StdioClient) FindRunByIdempotencyKey(ctx context.Context, session domain.Session, idempotencyKey string) (domain.RunStatusSnapshot, bool, error) {
+	if strings.TrimSpace(idempotencyKey) == "" {
+		return domain.RunStatusSnapshot{}, false, nil
+	}
+	acpRunID, ok, err := c.loadIdempotencyRunID(idempotencyKey)
+	if err != nil || !ok {
+		return domain.RunStatusSnapshot{}, ok, err
+	}
+	if session.ACPSessionID != "" {
+		sessionID, _, splitErr := splitACPRunID(acpRunID)
+		if splitErr != nil {
+			return domain.RunStatusSnapshot{}, false, splitErr
+		}
+		if sessionID != session.ACPSessionID {
+			return domain.RunStatusSnapshot{}, false, nil
+		}
+	}
+	snapshot, err := c.GetRun(ctx, acpRunID)
+	if err != nil {
+		return domain.RunStatusSnapshot{}, false, err
+	}
+	return snapshot, true, nil
 }
 
 func (c *StdioClient) FindLatestRunForSession(ctx context.Context, session domain.Session) (domain.RunStatusSnapshot, bool, error) {
@@ -404,7 +446,7 @@ func (c *StdioClient) FindLatestRunForSession(ctx context.Context, session domai
 	if err != nil {
 		return domain.RunStatusSnapshot{}, false, err
 	}
-	runID, status, output := replay.finalize("")
+	runID, status, output := replay.latest("")
 	if runID == "" {
 		return domain.RunStatusSnapshot{}, false, nil
 	}
@@ -547,6 +589,71 @@ func startStdioProcess(cfg StdioConfig) (*stdioProcess, error) {
 		proc.mu.Unlock()
 	}()
 	return proc, nil
+}
+
+func (c *StdioClient) stateFilePath() string {
+	root := strings.TrimSpace(c.cfg.Workdir)
+	if root == "" {
+		root = "."
+	}
+	return filepath.Join(root, ".nexus-stdio-client-state.json")
+}
+
+func (c *StdioClient) loadState() (stdioClientState, error) {
+	path := c.stateFilePath()
+	state := stdioClientState{IdempotencyRunIDs: map[string]string{}}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return state, nil
+	}
+	if err != nil {
+		return stdioClientState{}, err
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return stdioClientState{}, err
+	}
+	if state.IdempotencyRunIDs == nil {
+		state.IdempotencyRunIDs = map[string]string{}
+	}
+	return state, nil
+}
+
+func (c *StdioClient) saveState(state stdioClientState) error {
+	path := c.stateFilePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	tempPath := path + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func (c *StdioClient) storeIdempotencyRunID(idempotencyKey, acpRunID string) error {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	state, err := c.loadState()
+	if err != nil {
+		return err
+	}
+	state.IdempotencyRunIDs[idempotencyKey] = acpRunID
+	return c.saveState(state)
+}
+
+func (c *StdioClient) loadIdempotencyRunID(idempotencyKey string) (string, bool, error) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	state, err := c.loadState()
+	if err != nil {
+		return "", false, err
+	}
+	acpRunID, ok := state.IdempotencyRunIDs[idempotencyKey]
+	return acpRunID, ok, nil
 }
 
 func (p *stdioProcess) call(ctx context.Context, timeout time.Duration, method string, params any, out any) error {
@@ -1009,7 +1116,7 @@ func (p *stdioProcess) callbackStatus() stdioCallbackCounts {
 }
 
 func collectReplay(ch <-chan stdioSessionUpdate) stdioReplay {
-	replay := stdioReplay{}
+	replay := stdioReplay{outputs: map[string]*strings.Builder{}}
 	for {
 		select {
 		case update, ok := <-ch:
@@ -1018,10 +1125,12 @@ func collectReplay(ch <-chan stdioSessionUpdate) stdioReplay {
 			}
 			switch update.SessionUpdate {
 			case "agent_message_chunk":
-				replay.runID = update.MessageID
 				replay.lastSeen = update.MessageID
 				if update.Content != nil {
-					replay.output.WriteString(update.Content.Text)
+					if replay.outputs[update.MessageID] == nil {
+						replay.outputs[update.MessageID] = &strings.Builder{}
+					}
+					replay.outputs[update.MessageID].WriteString(update.Content.Text)
 				}
 			}
 		default:
@@ -1030,12 +1139,23 @@ func collectReplay(ch <-chan stdioSessionUpdate) stdioReplay {
 	}
 }
 
-func (r stdioReplay) finalize(stopReason string) (string, string, string) {
-	runID := r.runID
-	if runID == "" {
-		runID = r.lastSeen
+func (r stdioReplay) latest(stopReason string) (string, string, string) {
+	if r.lastSeen == "" {
+		return "", mapStopReason(stopReason), ""
 	}
-	return runID, mapStopReason(stopReason), strings.TrimSpace(r.output.String())
+	status, output := r.snapshot(r.lastSeen, stopReason)
+	return r.lastSeen, status, output
+}
+
+func (r stdioReplay) snapshot(messageID, stopReason string) (string, string) {
+	if messageID == "" || r.outputs[messageID] == nil {
+		return mapStopReason(stopReason), ""
+	}
+	return mapStopReason(stopReason), strings.TrimSpace(r.outputs[messageID].String())
+}
+
+func (r stdioReplay) has(messageID string) bool {
+	return messageID != "" && r.outputs[messageID] != nil
 }
 
 func mapStopReason(stopReason string) string {

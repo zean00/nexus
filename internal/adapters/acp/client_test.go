@@ -38,7 +38,7 @@ func TestDiscoverAgents(t *testing.T) {
 	if len(agents) != 1 {
 		t.Fatalf("expected 1 agent, got %d", len(agents))
 	}
-	if agents[0].Name != "build" || agents[0].Protocol != "opencode" || agents[0].SupportsAwaitResume || agents[0].SupportsStructuredAwait || !agents[0].SupportsStreaming || !agents[0].SupportsArtifacts {
+	if agents[0].Name != "build" || agents[0].Protocol != "opencode" || agents[0].SupportsAwaitResume || agents[0].SupportsStructuredAwait || agents[0].SupportsSessionReload || !agents[0].SupportsStreaming || !agents[0].SupportsArtifacts {
 		t.Fatalf("unexpected manifest: %+v", agents[0])
 	}
 }

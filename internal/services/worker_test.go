@@ -445,6 +445,7 @@ func TestWorkerBlocksStructuredAwaitForOpenCodeBridge(t *testing.T) {
 				Healthy:                 true,
 				SupportsAwaitResume:     false,
 				SupportsStructuredAwait: false,
+				SupportsSessionReload:   true,
 				SupportsStreaming:       true,
 				SupportsArtifacts:       true,
 			}}},

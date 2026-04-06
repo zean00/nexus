@@ -20,6 +20,9 @@ func ValidateAgentCompatibility(manifests []domain.AgentManifest, agentName stri
 		if !manifest.Healthy {
 			result.Reasons = append(result.Reasons, "agent is unhealthy")
 		}
+		if !manifest.SupportsSessionReload {
+			result.Reasons = append(result.Reasons, "session reload not supported")
+		}
 		if result.ValidationMode == "strict_acp" && !manifest.SupportsAwaitResume {
 			result.Reasons = append(result.Reasons, "await/resume not supported")
 		}

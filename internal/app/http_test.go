@@ -912,7 +912,7 @@ func TestGatewayReadinessEnvelope(t *testing.T) {
 	app := &App{
 		Config: config.Config{DefaultACPAgentName: "agent_a"},
 		Catalog: &services.AgentCatalog{
-			Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_a", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true}}},
+			Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_a", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true}}},
 			TTL:    time.Minute,
 		},
 	}
@@ -1294,9 +1294,9 @@ func TestHandleRuntimeStatus(t *testing.T) {
 			},
 		}},
 		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{
-			{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
-			{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsStreaming: true, SupportsArtifacts: true},
-			{Name: "agent_bad", Healthy: false, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_bad", Healthy: false, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true},
 		}}, TTL: time.Minute},
 		Runtime: &RuntimeState{},
 	}
@@ -1474,9 +1474,9 @@ func TestGatewayMetricsEndpoint(t *testing.T) {
 		Catalog: &services.AgentCatalog{
 			Bridge: testACPBridge{
 				agents: []domain.AgentManifest{
-					{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
-					{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsStreaming: true, SupportsArtifacts: true},
-					{Name: "agent_bad", Healthy: false, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+					{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true},
+					{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true},
+					{Name: "agent_bad", Healthy: false, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true},
 				},
 				runtimeStatus: acpadapter.StdioRuntimeStatus{
 					Implementation: "stdio",
@@ -1933,9 +1933,9 @@ func TestHandleACPAdminSummary(t *testing.T) {
 		Config: config.Config{DefaultTenantID: "tenant_default", DefaultACPAgentName: "agent_bridge"},
 		Repo:   repo,
 		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{
-			{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
-			{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsStreaming: true, SupportsArtifacts: true},
-			{Name: "agent_bad", Healthy: false, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_bad", Healthy: false, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true},
 		}}, TTL: time.Minute},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/admin/acp/summary?refresh=true", nil)
@@ -2728,8 +2728,8 @@ func TestHandleListCompatibleACPAgents(t *testing.T) {
 			},
 		},
 		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{
-			{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true},
-			{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true},
+			{Name: "agent_bridge", Healthy: true, Protocol: "opencode", SupportsAwaitResume: false, SupportsStructuredAwait: false, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true},
 			{Name: "agent_bad", Healthy: true, SupportsAwaitResume: false, SupportsStreaming: true, SupportsArtifacts: true},
 		}}, TTL: time.Minute},
 	}
@@ -2791,7 +2791,7 @@ func TestHandleValidateACPAgent(t *testing.T) {
 				"worker.await_blocked_opencode_bridge": {Items: []domain.AuditEvent{{EventType: "worker.await_blocked_opencode_bridge", AggregateID: "agent_ok"}}},
 			},
 		},
-		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsStreaming: true, SupportsArtifacts: true}}}, TTL: time.Minute},
+		Catalog: &services.AgentCatalog{Bridge: testACPBridge{agents: []domain.AgentManifest{{Name: "agent_ok", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true}}}, TTL: time.Minute},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/admin/acp/validate", nil)
 	rec := httptest.NewRecorder()
@@ -2855,6 +2855,7 @@ func TestHandleValidateOpenCodeBridgeAgent(t *testing.T) {
 			Healthy:                 true,
 			SupportsAwaitResume:     false,
 			SupportsStructuredAwait: false,
+			SupportsSessionReload:   true,
 			SupportsStreaming:       true,
 			SupportsArtifacts:       true,
 		}}}, TTL: time.Minute},

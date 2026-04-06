@@ -203,6 +203,7 @@ type AgentManifest struct {
 	OutputContentTypes      []string `json:"output_content_types"`
 	SupportsAwaitResume     bool     `json:"supports_await_resume"`
 	SupportsStructuredAwait bool     `json:"supports_structured_await"`
+	SupportsSessionReload   bool     `json:"supports_session_reload"`
 	SupportsStreaming       bool     `json:"supports_streaming"`
 	SupportsArtifacts       bool     `json:"supports_artifacts"`
 	Healthy                 bool     `json:"healthy"`

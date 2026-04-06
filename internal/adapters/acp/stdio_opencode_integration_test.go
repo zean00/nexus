@@ -95,6 +95,65 @@ func TestStdioClientOpenCodeTerminalIntegration(t *testing.T) {
 	t.Logf("opencode terminal callback counts: %+v", status.CallbackCounts)
 }
 
+func TestStdioClientOpenCodeFindRunByIdempotencyKeyAfterRestart(t *testing.T) {
+	ctx, client, sessionID, workdir, mode := newOpenCodeIntegrationSession(t)
+	firstToken := "OPENCODE_REPLAY_FIRST_2a0c6f1d"
+	secondToken := "OPENCODE_REPLAY_SECOND_7b4e9c3a"
+
+	firstRun, events, err := client.StartRun(ctx, domain.StartRunRequest{
+		Session:        domain.Session{ID: "session_stdio_opencode_replay", ACPSessionID: sessionID},
+		RouteDecision:  domain.RouteDecision{ACPAgentName: mode},
+		IdempotencyKey: "queue_1",
+		Message: domain.Message{
+			Text: "Reply with only this exact token and nothing else: " + firstToken,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOpenCodeRunCompleted(t, firstRun)
+	if got := joinedEventText(events); !strings.Contains(got, firstToken) {
+		t.Fatalf("expected first run output to contain %q, got %q", firstToken, got)
+	}
+
+	_, events, err = client.StartRun(ctx, domain.StartRunRequest{
+		Session:        domain.Session{ID: "session_stdio_opencode_replay", ACPSessionID: sessionID},
+		RouteDecision:  domain.RouteDecision{ACPAgentName: mode},
+		IdempotencyKey: "queue_2",
+		Message: domain.Message{
+			Text: "Reply with only this exact token and nothing else: " + secondToken,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := joinedEventText(events); !strings.Contains(got, secondToken) {
+		t.Fatalf("expected second run output to contain %q, got %q", secondToken, got)
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := newOpenCodeIntegrationClient(t, workdir, mode)
+	snapshot, found, err := restarted.FindRunByIdempotencyKey(ctx, domain.Session{
+		ID:           "session_stdio_opencode_replay",
+		ACPSessionID: sessionID,
+	}, "queue_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected idempotency lookup to find replayed run")
+	}
+	if snapshot.ACPRunID != firstRun.ACPRunID {
+		t.Fatalf("expected replayed run id %q, got %q", firstRun.ACPRunID, snapshot.ACPRunID)
+	}
+	if !strings.Contains(snapshot.Output, firstToken) {
+		t.Fatalf("expected replayed output to contain %q, got %q", firstToken, snapshot.Output)
+	}
+}
+
 func newOpenCodeIntegrationSession(t *testing.T) (context.Context, *StdioClient, string, string, string) {
 	t.Helper()
 	if os.Getenv("NEXUS_INTEGRATION_OPENCODE") != "1" {
@@ -109,14 +168,7 @@ func newOpenCodeIntegrationSession(t *testing.T) (context.Context, *StdioClient,
 	if mode == "" {
 		mode = "build"
 	}
-	client := NewStdioClient(StdioConfig{
-		Command:          "opencode",
-		Args:             []string{"acp", "--pure", "--cwd", workdir},
-		Workdir:          workdir,
-		DefaultAgentName: mode,
-		StartupTimeout:   20 * time.Second,
-		RPCTimeout:       2 * time.Minute,
-	})
+	client := newOpenCodeIntegrationClient(t, workdir, mode)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	t.Cleanup(cancel)
 
@@ -136,6 +188,18 @@ func newOpenCodeIntegrationSession(t *testing.T) (context.Context, *StdioClient,
 		t.Fatal("expected acp session id")
 	}
 	return ctx, client, sessionID, workdir, mode
+}
+
+func newOpenCodeIntegrationClient(t *testing.T, workdir, mode string) *StdioClient {
+	t.Helper()
+	return NewStdioClient(StdioConfig{
+		Command:          "opencode",
+		Args:             []string{"acp", "--pure", "--cwd", workdir},
+		Workdir:          workdir,
+		DefaultAgentName: mode,
+		StartupTimeout:   20 * time.Second,
+		RPCTimeout:       2 * time.Minute,
+	})
 }
 
 func assertOpenCodeRunCompleted(t *testing.T, run domain.Run) {

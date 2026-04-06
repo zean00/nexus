@@ -18,7 +18,7 @@ func TestStrictDiscoverAgents(t *testing.T) {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `[{"name":"strict-agent","supports_await_resume":true,"supports_structured_await":true,"supports_streaming":true,"supports_artifacts":true,"healthy":true}]`)
+		_, _ = io.WriteString(w, `[{"name":"strict-agent","supports_await_resume":true,"supports_structured_await":true,"supports_session_reload":false,"supports_streaming":true,"supports_artifacts":true,"healthy":true}]`)
 	}))
 	defer server.Close()
 
@@ -29,7 +29,7 @@ func TestStrictDiscoverAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(agents) != 1 || agents[0].Name != "strict-agent" || agents[0].Protocol != "" || !agents[0].SupportsAwaitResume {
+	if len(agents) != 1 || agents[0].Name != "strict-agent" || agents[0].Protocol != "" || !agents[0].SupportsAwaitResume || agents[0].SupportsSessionReload {
 		t.Fatalf("unexpected strict manifests: %+v", agents)
 	}
 }
