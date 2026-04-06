@@ -1,0 +1,116 @@
+package ports
+
+import (
+	"context"
+	"net/http"
+	"time"
+
+	"nexus/internal/domain"
+)
+
+type ChannelAdapter interface {
+	Channel() string
+	VerifyInbound(ctx context.Context, r *http.Request, body []byte) error
+	ParseInbound(ctx context.Context, r *http.Request, body []byte, tenantID string) (domain.CanonicalInboundEvent, error)
+	SendMessage(ctx context.Context, delivery domain.OutboundDelivery) (domain.DeliveryResult, error)
+	SendAwaitPrompt(ctx context.Context, delivery domain.OutboundDelivery) (domain.DeliveryResult, error)
+}
+
+type ACPBridge interface {
+	DiscoverAgents(ctx context.Context) ([]domain.AgentManifest, error)
+	EnsureSession(ctx context.Context, session domain.Session) (string, error)
+	StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, []domain.RunEvent, error)
+	ResumeRun(ctx context.Context, await domain.Await, payload []byte) ([]domain.RunEvent, error)
+	GetRun(ctx context.Context, acpRunID string) (domain.RunStatusSnapshot, error)
+	FindRunByIdempotencyKey(ctx context.Context, key string) (domain.RunStatusSnapshot, bool, error)
+	CancelRun(ctx context.Context, run domain.Run) error
+}
+
+type Repository interface {
+	InTx(ctx context.Context, fn func(ctx context.Context, repo Repository) error) error
+	RecordInboundReceipt(ctx context.Context, evt domain.CanonicalInboundEvent) (bool, error)
+	ResolveSession(ctx context.Context, evt domain.CanonicalInboundEvent, agentProfileID string) (domain.Session, bool, error)
+	HasActiveRun(ctx context.Context, sessionID string) (bool, error)
+	StoreInboundMessage(ctx context.Context, evt domain.CanonicalInboundEvent, sessionID string) (string, error)
+	StoreOutboundMessage(ctx context.Context, session domain.Session, runID string, text string, rawPayload []byte) (string, error)
+	StoreArtifacts(ctx context.Context, messageID string, direction string, artifacts []domain.Artifact) error
+	EnqueueMessage(ctx context.Context, evt domain.CanonicalInboundEvent, session domain.Session, route domain.RouteDecision, inboundMessageID string, startNow bool) (domain.QueueItem, *domain.OutboxEvent, error)
+	CreateRun(ctx context.Context, run domain.Run) error
+	UpdateRunStatus(ctx context.Context, runID, status string) error
+	UpdateQueueItemStatus(ctx context.Context, queueItemID, status string) error
+	UpdateActiveQueueItemStatus(ctx context.Context, sessionID, status string) error
+	EnqueueNextQueueItem(ctx context.Context, sessionID string) (*domain.OutboxEvent, error)
+	StoreAwait(ctx context.Context, await domain.Await) error
+	ResolveAwait(ctx context.Context, awaitID string, actorID string, payload []byte) (domain.Await, error)
+	GetAwait(ctx context.Context, awaitID string) (domain.Await, error)
+	EnqueueAwaitResume(ctx context.Context, req domain.ResumeRequest, tenantID string) error
+	EnqueueDelivery(ctx context.Context, delivery domain.OutboundDelivery) error
+	ClaimOutbox(ctx context.Context, now time.Time, limit int) ([]domain.OutboxEvent, error)
+	MarkOutboxDone(ctx context.Context, eventID string) error
+	MarkOutboxFailed(ctx context.Context, eventID string, err error, next time.Time) error
+	GetQueueItem(ctx context.Context, queueItemID string) (domain.QueueItem, error)
+	GetSession(ctx context.Context, sessionID string) (domain.Session, error)
+	GetRouteDecision(ctx context.Context, queueItemID string) (domain.RouteDecision, error)
+	GetInboundMessage(ctx context.Context, messageID string) (domain.Message, error)
+	GetDelivery(ctx context.Context, deliveryID string) (domain.OutboundDelivery, error)
+	GetLatestDeliveryByLogicalMessage(ctx context.Context, logicalMessageID string) (*domain.OutboundDelivery, error)
+	GetRun(ctx context.Context, runID string) (domain.Run, error)
+	GetRunByACP(ctx context.Context, acpRunID string) (domain.Run, error)
+	GetAwaitsForRun(ctx context.Context, runID string, limit int) ([]domain.Await, error)
+	GetAwaitResponses(ctx context.Context, awaitID string, limit int) ([]domain.AwaitResponse, error)
+	MarkDeliverySent(ctx context.Context, deliveryID string, result domain.DeliveryResult) error
+	MarkDeliverySending(ctx context.Context, deliveryID string) error
+	MarkDeliveryFailed(ctx context.Context, deliveryID string, err error) error
+	CountMessages(ctx context.Context, query domain.MessageListQuery) (int, error)
+	ListMessages(ctx context.Context, query domain.MessageListQuery) (domain.PagedResult[domain.Message], error)
+	CountArtifacts(ctx context.Context, query domain.ArtifactListQuery) (int, error)
+	ListArtifacts(ctx context.Context, query domain.ArtifactListQuery) (domain.PagedResult[domain.Artifact], error)
+	CountDeliveries(ctx context.Context, query domain.DeliveryListQuery) (int, error)
+	ListDeliveries(ctx context.Context, query domain.DeliveryListQuery) (domain.PagedResult[domain.OutboundDelivery], error)
+	CountSessions(ctx context.Context, query domain.SessionListQuery) (int, error)
+	ListSessions(ctx context.Context, query domain.SessionListQuery) (domain.PagedResult[domain.Session], error)
+	CountRuns(ctx context.Context, query domain.RunListQuery) (int, error)
+	ListRuns(ctx context.Context, query domain.RunListQuery) (domain.PagedResult[domain.Run], error)
+	CountAwaits(ctx context.Context, query domain.AwaitListQuery) (int, error)
+	ListAwaits(ctx context.Context, query domain.AwaitListQuery) (domain.PagedResult[domain.Await], error)
+	ListAuditEvents(ctx context.Context, query domain.AuditEventListQuery) (domain.PagedResult[domain.AuditEvent], error)
+	GetSessionDetail(ctx context.Context, sessionID string, limit int) (domain.SessionDetail, error)
+	GetRunDetail(ctx context.Context, runID string, limit int) (domain.RunDetail, error)
+	GetAwaitDetail(ctx context.Context, awaitID string, limit int) (domain.AwaitDetail, error)
+	ListStaleClaimedOutbox(ctx context.Context, before time.Time, limit int) ([]domain.OutboxEvent, error)
+	RequeueOutbox(ctx context.Context, eventID string) error
+	RequeueQueueStartOutbox(ctx context.Context, queueItemID, tenantID string) error
+	ListStuckQueueItems(ctx context.Context, before time.Time, limit int) ([]domain.QueueItem, error)
+	ListStaleRuns(ctx context.Context, before time.Time, limit int) ([]domain.Run, error)
+	ListExpiredAwaits(ctx context.Context, before time.Time, limit int) ([]domain.Await, error)
+	ListStaleDeliveries(ctx context.Context, before time.Time, maxAttempts int, limit int) ([]domain.OutboundDelivery, error)
+	ExpireAwait(ctx context.Context, awaitID string) error
+	RepairRunFromSnapshot(ctx context.Context, queueItem domain.QueueItem, snapshot domain.RunStatusSnapshot) (domain.Run, error)
+	CreateVirtualSession(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID, agentProfileID, alias string) (domain.Session, error)
+	EnsureNotificationSession(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID string) (domain.Session, error)
+	SwitchActiveSession(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID, aliasOrID string) (domain.Session, error)
+	ListSurfaceSessions(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID string, limit int) ([]domain.SurfaceSession, error)
+	CloseActiveSession(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID string) (domain.Session, error)
+	IsTelegramUserAllowed(ctx context.Context, tenantID, telegramUserID string) (bool, error)
+	CountTelegramUserAccess(ctx context.Context, tenantID, status string) (int, error)
+	ListTelegramUserAccessPage(ctx context.Context, query domain.TelegramUserAccessListQuery) (domain.PagedResult[domain.TelegramUserAccess], error)
+	ListTelegramUserAccess(ctx context.Context, tenantID string, limit int) ([]domain.TelegramUserAccess, error)
+	ListTelegramUserAccessByStatus(ctx context.Context, tenantID, status string, limit int) ([]domain.TelegramUserAccess, error)
+	GetTelegramUserAccess(ctx context.Context, tenantID, telegramUserID string) (domain.TelegramUserAccess, error)
+	UpsertTelegramUserAccess(ctx context.Context, entry domain.TelegramUserAccess) error
+	DeleteTelegramUserAccess(ctx context.Context, tenantID, telegramUserID string) error
+	RequestTelegramAccess(ctx context.Context, entry domain.TelegramUserAccess) (domain.TelegramUserAccess, error)
+	ResolveTelegramAccessRequest(ctx context.Context, tenantID, telegramUserID, status, addedBy string) (domain.TelegramUserAccess, error)
+	CountAuditEvents(ctx context.Context, query domain.AuditEventListQuery) (int, error)
+	Audit(ctx context.Context, event domain.AuditEvent) error
+	ForceCancelRun(ctx context.Context, runID string) error
+	RetryDelivery(ctx context.Context, deliveryID string) error
+}
+
+type Router interface {
+	Route(ctx context.Context, evt domain.CanonicalInboundEvent, session domain.Session) (domain.RouteDecision, error)
+}
+
+type Renderer interface {
+	RenderRunEvent(ctx context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error)
+}

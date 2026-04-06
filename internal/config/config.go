@@ -1,0 +1,147 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type Config struct {
+	ServiceName           string
+	HTTPAddr              string
+	AdminAddr             string
+	DatabaseURL           string
+	ACPBaseURL            string
+	ACPToken              string
+	DefaultACPAgentName   string
+	ValidateACPOnStartup  bool
+	ACPManifestCacheTTL   time.Duration
+	SlackSigningSecret    string
+	SlackBotToken         string
+	ObjectStorageBaseURL  string
+	WorkerPollInterval    time.Duration
+	ReconcilerInterval    time.Duration
+	OutboxClaimTimeout    time.Duration
+	QueueStartingTimeout  time.Duration
+	RunStaleTimeout       time.Duration
+	DeliverySendingTimeout time.Duration
+	DeliveryMaxAttempts   int
+	TelegramBotToken      string
+	TelegramWebhookSecret string
+	TelegramAllowedUserIDs []string
+	DefaultTenantID       string
+	DefaultAgentProfileID string
+}
+
+func Load() (Config, error) {
+	cfg := Config{
+		ServiceName:           env("SERVICE_NAME", "nexus-gateway"),
+		HTTPAddr:              env("HTTP_ADDR", ":8080"),
+		AdminAddr:             env("ADMIN_ADDR", ":8081"),
+		DatabaseURL:           env("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/nexus?sslmode=disable"),
+		ACPBaseURL:            env("ACP_BASE_URL", "http://localhost:8090"),
+		ACPToken:              os.Getenv("ACP_TOKEN"),
+		DefaultACPAgentName:   env("DEFAULT_ACP_AGENT_NAME", "default-agent"),
+		SlackSigningSecret:    env("SLACK_SIGNING_SECRET", "dev-secret"),
+		SlackBotToken:         os.Getenv("SLACK_BOT_TOKEN"),
+		TelegramBotToken:      os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramWebhookSecret: env("TELEGRAM_WEBHOOK_SECRET", "dev-telegram-secret"),
+		TelegramAllowedUserIDs: csvEnv("TELEGRAM_ALLOWED_USER_IDS"),
+		ObjectStorageBaseURL:  env("OBJECT_STORAGE_BASE_URL", "file:///tmp/nexus-objects"),
+		DefaultTenantID:       env("DEFAULT_TENANT_ID", "tenant_default"),
+		DefaultAgentProfileID: env("DEFAULT_AGENT_PROFILE_ID", "agent_profile_default"),
+	}
+
+	seconds, err := envInt("WORKER_POLL_SECONDS", 2)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse WORKER_POLL_SECONDS: %w", err)
+	}
+	cfg.WorkerPollInterval = time.Duration(seconds) * time.Second
+	reconcilerSeconds, err := envInt("RECONCILER_INTERVAL_SECONDS", 30)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse RECONCILER_INTERVAL_SECONDS: %w", err)
+	}
+	cfg.ReconcilerInterval = time.Duration(reconcilerSeconds) * time.Second
+	outboxClaimSeconds, err := envInt("OUTBOX_CLAIM_TIMEOUT_SECONDS", 120)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse OUTBOX_CLAIM_TIMEOUT_SECONDS: %w", err)
+	}
+	cfg.OutboxClaimTimeout = time.Duration(outboxClaimSeconds) * time.Second
+	queueStartingSeconds, err := envInt("QUEUE_STARTING_TIMEOUT_SECONDS", 120)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse QUEUE_STARTING_TIMEOUT_SECONDS: %w", err)
+	}
+	cfg.QueueStartingTimeout = time.Duration(queueStartingSeconds) * time.Second
+	runStaleSeconds, err := envInt("RUN_STALE_TIMEOUT_SECONDS", 300)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse RUN_STALE_TIMEOUT_SECONDS: %w", err)
+	}
+	cfg.RunStaleTimeout = time.Duration(runStaleSeconds) * time.Second
+	deliverySendingSeconds, err := envInt("DELIVERY_SENDING_TIMEOUT_SECONDS", 120)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse DELIVERY_SENDING_TIMEOUT_SECONDS: %w", err)
+	}
+	cfg.DeliverySendingTimeout = time.Duration(deliverySendingSeconds) * time.Second
+	cfg.DeliveryMaxAttempts, err = envInt("DELIVERY_MAX_ATTEMPTS", 5)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse DELIVERY_MAX_ATTEMPTS: %w", err)
+	}
+	cfg.ValidateACPOnStartup = envBool("VALIDATE_ACP_ON_STARTUP", false)
+	cacheTTLSeconds, err := envInt("ACP_MANIFEST_CACHE_TTL_SECONDS", 60)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse ACP_MANIFEST_CACHE_TTL_SECONDS: %w", err)
+	}
+	cfg.ACPManifestCacheTTL = time.Duration(cacheTTLSeconds) * time.Second
+	return cfg, nil
+}
+
+func env(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) (int, error) {
+	if value := os.Getenv(key); value != "" {
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return 0, err
+		}
+		return n, nil
+	}
+	return fallback, nil
+}
+
+func envBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if value == "" {
+		return fallback
+	}
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func csvEnv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}

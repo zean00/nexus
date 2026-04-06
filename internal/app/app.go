@@ -1,0 +1,414 @@
+package app
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"sync"
+	"time"
+
+	"nexus/internal/adapters/acp"
+	"nexus/internal/adapters/db"
+	"nexus/internal/adapters/slack"
+	"nexus/internal/adapters/telegram"
+	"nexus/internal/adapters/storage"
+	"nexus/internal/config"
+	"nexus/internal/domain"
+	"nexus/internal/httpx"
+	"nexus/internal/ports"
+	"nexus/internal/services"
+)
+
+type App struct {
+	Config    config.Config
+	Repo      ports.Repository
+	DB        *db.PostgresRepository
+	Inbound   services.InboundService
+	Await     services.AwaitService
+	Artifacts services.ArtifactService
+	Catalog   *services.AgentCatalog
+	Worker    services.WorkerService
+	Reconciler services.Reconciler
+	ACP       acp.Client
+	Slack     slack.Adapter
+	Telegram  telegram.Adapter
+	Channels  map[string]ports.ChannelAdapter
+	Runtime   *RuntimeState
+}
+
+type RuntimeState struct {
+	mu sync.Mutex
+
+	LastWorkerRunAt      time.Time
+	LastWorkerError      string
+	LastReconcileRunAt   time.Time
+	LastReconcileError   string
+	LastHealthStatus     string
+	LastReadinessStatus  string
+	RecentTransitions    []ProbeTransition
+	OutboxRequeueCount   int
+	QueueRepairRecoveredCount int
+	QueueRepairRequeuedCount  int
+	RunRefreshCount      int
+	AwaitExpiryCount     int
+	DeliveryRetryCount   int
+}
+
+type ProbeTransition struct {
+	Probe string    `json:"probe"`
+	From  string    `json:"from"`
+	To    string    `json:"to"`
+	At    time.Time `json:"at"`
+}
+
+type RuntimeStatus struct {
+	LastWorkerRunAt    time.Time `json:"last_worker_run_at,omitempty"`
+	LastWorkerError    string    `json:"last_worker_error,omitempty"`
+	LastReconcileRunAt time.Time `json:"last_reconcile_run_at,omitempty"`
+	LastReconcileError string    `json:"last_reconcile_error,omitempty"`
+	LastHealthStatus   string    `json:"last_health_status,omitempty"`
+	LastReadinessStatus string   `json:"last_readiness_status,omitempty"`
+	RecentTransitions  []ProbeTransition `json:"recent_transitions,omitempty"`
+	OutboxRequeueCount int `json:"outbox_requeue_count"`
+	QueueRepairRecoveredCount int `json:"queue_repair_recovered_count"`
+	QueueRepairRequeuedCount int `json:"queue_repair_requeued_count"`
+	RunRefreshCount int `json:"run_refresh_count"`
+	AwaitExpiryCount int `json:"await_expiry_count"`
+	DeliveryRetryCount int `json:"delivery_retry_count"`
+}
+
+func (r *RuntimeState) MarkWorkerRun(at time.Time) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.LastWorkerRunAt = at
+	r.LastWorkerError = ""
+}
+
+func (r *RuntimeState) MarkWorkerError(err error) {
+	if r == nil || err == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.LastWorkerError = err.Error()
+}
+
+func (r *RuntimeState) MarkReconcileRun(at time.Time) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.LastReconcileRunAt = at
+	r.LastReconcileError = ""
+}
+
+func (r *RuntimeState) MarkReconcileError(err error) {
+	if r == nil || err == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.LastReconcileError = err.Error()
+}
+
+func (r *RuntimeState) Status() RuntimeStatus {
+	if r == nil {
+		return RuntimeStatus{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return RuntimeStatus{
+		LastWorkerRunAt:    r.LastWorkerRunAt,
+		LastWorkerError:    r.LastWorkerError,
+		LastReconcileRunAt: r.LastReconcileRunAt,
+		LastReconcileError: r.LastReconcileError,
+		LastHealthStatus:   r.LastHealthStatus,
+		LastReadinessStatus: r.LastReadinessStatus,
+		RecentTransitions:  append([]ProbeTransition(nil), r.RecentTransitions...),
+		OutboxRequeueCount: r.OutboxRequeueCount,
+		QueueRepairRecoveredCount: r.QueueRepairRecoveredCount,
+		QueueRepairRequeuedCount: r.QueueRepairRequeuedCount,
+		RunRefreshCount: r.RunRefreshCount,
+		AwaitExpiryCount: r.AwaitExpiryCount,
+		DeliveryRetryCount: r.DeliveryRetryCount,
+	}
+}
+
+func (r *RuntimeState) RecordProbeStatus(probe, status string, at time.Time) {
+	if r == nil || probe == "" || status == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var current *string
+	switch probe {
+	case "health":
+		current = &r.LastHealthStatus
+	case "readiness":
+		current = &r.LastReadinessStatus
+	default:
+		return
+	}
+	if *current == status {
+		return
+	}
+	r.RecentTransitions = append(r.RecentTransitions, ProbeTransition{
+		Probe: probe,
+		From:  *current,
+		To:    status,
+		At:    at,
+	})
+	if len(r.RecentTransitions) > 10 {
+		r.RecentTransitions = append([]ProbeTransition(nil), r.RecentTransitions[len(r.RecentTransitions)-10:]...)
+	}
+	*current = status
+}
+
+func (r *RuntimeState) RecordOutboxRequeue() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.OutboxRequeueCount++
+}
+
+func (r *RuntimeState) RecordQueueRepairRecovered() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.QueueRepairRecoveredCount++
+}
+
+func (r *RuntimeState) RecordQueueRepairRequeued() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.QueueRepairRequeuedCount++
+}
+
+func (r *RuntimeState) RecordRunRefresh() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.RunRefreshCount++
+}
+
+func (r *RuntimeState) RecordAwaitExpiry() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.AwaitExpiryCount++
+}
+
+func (r *RuntimeState) RecordDeliveryRetry() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.DeliveryRetryCount++
+}
+
+func New(ctx context.Context, cfg config.Config) (*App, error) {
+	repo, err := db.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return nil, err
+	}
+	slackAdapter := slack.New(cfg.SlackSigningSecret, cfg.SlackBotToken)
+	telegramAdapter := telegram.New(cfg.TelegramBotToken, cfg.TelegramWebhookSecret)
+	router := services.StaticRouter{
+		DefaultAgentProfileID: cfg.DefaultAgentProfileID,
+		DefaultACPAgentName:   cfg.DefaultACPAgentName,
+	}
+	renderers := map[string]ports.Renderer{
+		"slack":    services.SlackRenderer{},
+		"telegram": services.TelegramRenderer{},
+	}
+	channels := map[string]ports.ChannelAdapter{
+		"slack":    slackAdapter,
+		"telegram": telegramAdapter,
+	}
+	acpClient := acp.New(cfg.ACPBaseURL, cfg.ACPToken)
+	artifactSvc := services.ArtifactService{Store: storage.New(cfg.ObjectStorageBaseURL)}
+	catalog := &services.AgentCatalog{
+		Bridge: acpClient,
+		TTL:    cfg.ACPManifestCacheTTL,
+	}
+	runtime := &RuntimeState{}
+	if cfg.ValidateACPOnStartup {
+		compat, err := catalog.Validate(ctx, cfg.DefaultACPAgentName, true)
+		if err != nil {
+			return nil, err
+		}
+		if !compat.Compatible {
+			return nil, fmt.Errorf("configured ACP agent %q is incompatible: %v", cfg.DefaultACPAgentName, compat.Reasons)
+		}
+	}
+
+	return &App{
+		Config: cfg,
+		Repo:   repo,
+		DB:     repo,
+		Inbound: services.InboundService{
+			Repo:   repo,
+			Router: router,
+		},
+		Await: services.AwaitService{
+			Repo: repo,
+		},
+		Artifacts: artifactSvc,
+		Catalog:   catalog,
+		Worker: services.WorkerService{
+			Repo:      repo,
+			ACP:       acpClient,
+			Catalog:   catalog,
+			Renderer:  renderers["slack"],
+			Channel:   slackAdapter,
+			Renderers: renderers,
+			Channels:  channels,
+		},
+		Reconciler: services.Reconciler{
+			Repo: repo,
+			ACP:  acpClient,
+			Config: services.ReconcilerConfig{
+				OutboxClaimTimeout:     cfg.OutboxClaimTimeout,
+				QueueStartingTimeout:   cfg.QueueStartingTimeout,
+				RunStaleTimeout:        cfg.RunStaleTimeout,
+				DeliverySendingTimeout: cfg.DeliverySendingTimeout,
+				DeliveryMaxAttempts:    cfg.DeliveryMaxAttempts,
+			},
+			Observer: runtime,
+		},
+		ACP:      acpClient,
+		Slack:    slackAdapter,
+		Telegram: telegramAdapter,
+		Channels: channels,
+		Runtime:  runtime,
+	}, nil
+}
+
+func (a *App) Close() {
+	if a.DB != nil {
+		a.DB.Close()
+	}
+}
+
+func (a *App) GatewayHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		status := healthStatus(a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+		a.Runtime.RecordProbeStatus("health", status, time.Now().UTC())
+		httpx.OK(w, map[string]any{"status": status}, healthMeta("gateway", a.Catalog, a.Runtime))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		status := readinessStatus(a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+		a.Runtime.RecordProbeStatus("readiness", status, time.Now().UTC())
+		code := http.StatusOK
+		if status != "ready" {
+			code = http.StatusServiceUnavailable
+		}
+		httpx.Respond(w, code, map[string]any{"status": status}, healthMeta("gateway", a.Catalog, a.Runtime))
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+		writeMetrics(w, context.Background(), "gateway", a.Config.DefaultTenantID, a.Repo, a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+	})
+	mux.HandleFunc("/webhooks/slack", a.handleSlackWebhook)
+	mux.HandleFunc("/webhooks/telegram", a.handleTelegramWebhook)
+	return mux
+}
+
+func (a *App) AdminHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		status := healthStatus(a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+		a.Runtime.RecordProbeStatus("health", status, time.Now().UTC())
+		httpx.OK(w, map[string]any{"status": status}, healthMeta("admin", a.Catalog, a.Runtime))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		status := readinessStatus(a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+		a.Runtime.RecordProbeStatus("readiness", status, time.Now().UTC())
+		code := http.StatusOK
+		if status != "ready" {
+			code = http.StatusServiceUnavailable
+		}
+		httpx.Respond(w, code, map[string]any{"status": status}, healthMeta("admin", a.Catalog, a.Runtime))
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+		writeMetrics(w, context.Background(), "admin", a.Config.DefaultTenantID, a.Repo, a.Catalog, a.Runtime, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
+	})
+	mux.HandleFunc("/admin/sessions", a.handleListSessions)
+	mux.HandleFunc("/admin/sessions/detail", a.handleSessionDetail)
+	mux.HandleFunc("/admin/acp/agents", a.handleListACPAgents)
+	mux.HandleFunc("/admin/acp/compatible", a.handleListCompatibleACPAgents)
+	mux.HandleFunc("/admin/acp/validate", a.handleValidateACPAgent)
+	mux.HandleFunc("/admin/runs", a.handleListRuns)
+	mux.HandleFunc("/admin/runs/detail", a.handleRunDetail)
+	mux.HandleFunc("/admin/awaits", a.handleListAwaits)
+	mux.HandleFunc("/admin/awaits/detail", a.handleAwaitDetail)
+	mux.HandleFunc("/admin/audit", a.handleListAuditEvents)
+	mux.HandleFunc("/admin/telegram/denials", a.handleListTelegramDenials)
+	mux.HandleFunc("/admin/telegram/trust/summary", a.handleTelegramTrustSummary)
+	mux.HandleFunc("/admin/telegram/trust/decisions", a.handleTelegramTrustDecisions)
+	mux.HandleFunc("/admin/surfaces/sessions", a.handleListSurfaceSessions)
+	mux.HandleFunc("/admin/surfaces/sessions/switch", a.handleSwitchSurfaceSession)
+	mux.HandleFunc("/admin/surfaces/sessions/close", a.handleCloseSurfaceSession)
+	mux.HandleFunc("/admin/telegram/users", a.handleListTelegramUsers)
+	mux.HandleFunc("/admin/telegram/users/detail", a.handleTelegramUserDetail)
+	mux.HandleFunc("/admin/telegram/users/summary", a.handleTelegramUserSummary)
+	mux.HandleFunc("/admin/telegram/users/upsert", a.handleUpsertTelegramUser)
+	mux.HandleFunc("/admin/telegram/users/delete", a.handleDeleteTelegramUser)
+	mux.HandleFunc("/admin/telegram/requests", a.handleListTelegramRequests)
+	mux.HandleFunc("/admin/telegram/requests/resolve", a.handleResolveTelegramRequest)
+	mux.HandleFunc("/admin/runtime", a.handleRuntimeStatus)
+	mux.HandleFunc("/admin/messages", a.handleListMessages)
+	mux.HandleFunc("/admin/artifacts", a.handleListArtifacts)
+	mux.HandleFunc("/admin/deliveries", a.handleListDeliveries)
+	mux.HandleFunc("/admin/runs/cancel", a.handleCancelRun)
+	mux.HandleFunc("/admin/deliveries/retry", a.handleRetryDelivery)
+	return mux
+}
+
+func (a *App) WorkerLoop(ctx context.Context) error {
+	ticker := time.NewTicker(a.Config.WorkerPollInterval)
+	reconcileTicker := time.NewTicker(a.Config.ReconcilerInterval)
+	defer ticker.Stop()
+	defer reconcileTicker.Stop()
+	for {
+		if err := a.Worker.ProcessOnce(ctx, 10); err != nil {
+			a.Runtime.MarkWorkerError(err)
+			return err
+		}
+		a.Runtime.MarkWorkerRun(time.Now().UTC())
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		case <-reconcileTicker.C:
+			if err := a.Reconciler.RunOnce(ctx, 10); err != nil {
+				a.Runtime.MarkReconcileError(err)
+				return err
+			}
+			a.Runtime.MarkReconcileRun(time.Now().UTC())
+		}
+	}
+}
+
+func buildDeliveryPayload(text string) domain.OutboundDelivery {
+	return domain.OutboundDelivery{
+		PayloadJSON: []byte(text),
+	}
+}

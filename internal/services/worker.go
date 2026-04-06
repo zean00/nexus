@@ -1,0 +1,281 @@
+package services
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"nexus/internal/domain"
+	"nexus/internal/ports"
+)
+
+type WorkerService struct {
+	Repo     ports.Repository
+	ACP      ports.ACPBridge
+	Catalog  *AgentCatalog
+	Renderer ports.Renderer
+	Channel  ports.ChannelAdapter
+	Renderers map[string]ports.Renderer
+	Channels  map[string]ports.ChannelAdapter
+}
+
+func (s WorkerService) ProcessOnce(ctx context.Context, limit int) error {
+	events, err := s.Repo.ClaimOutbox(ctx, time.Now().UTC(), limit)
+	if err != nil {
+		return err
+	}
+	for _, evt := range events {
+		if err := s.processEvent(ctx, evt); err != nil {
+			_ = s.Repo.MarkOutboxFailed(ctx, evt.ID, err, time.Now().UTC().Add(10*time.Second))
+			continue
+		}
+		if err := s.Repo.MarkOutboxDone(ctx, evt.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s WorkerService) rendererFor(channelType string) ports.Renderer {
+	if renderer, ok := s.Renderers[channelType]; ok {
+		return renderer
+	}
+	return s.Renderer
+}
+
+func (s WorkerService) channelFor(channelType string) ports.ChannelAdapter {
+	if adapter, ok := s.Channels[channelType]; ok {
+		return adapter
+	}
+	return s.Channel
+}
+
+func (s WorkerService) processEvent(ctx context.Context, evt domain.OutboxEvent) error {
+	switch evt.EventType {
+	case "queue.start":
+		return s.processQueueStart(ctx, evt)
+	case "await.resume":
+		return s.processAwaitResume(ctx, evt)
+	case "delivery.send":
+		return s.processDelivery(ctx, evt)
+	default:
+		return nil
+	}
+}
+
+func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxEvent) error {
+	queued, err := s.Repo.GetQueueItem(ctx, evt.AggregateID)
+	if err != nil {
+		return err
+	}
+	if queued.Status != "queued" {
+		return nil
+	}
+	session, err := s.Repo.GetSession(ctx, queued.SessionID)
+	if err != nil {
+		return err
+	}
+	active, err := s.Repo.HasActiveRun(ctx, session.ID)
+	if err != nil {
+		return err
+	}
+	if active {
+		return nil
+	}
+	route, err := s.Repo.GetRouteDecision(ctx, queued.ID)
+	if err != nil {
+		return err
+	}
+	if s.Catalog != nil {
+		compat, err := s.Catalog.Validate(ctx, route.ACPAgentName, false)
+		if err != nil {
+			return err
+		}
+		if !compat.Compatible {
+			return fmt.Errorf("agent %s is incompatible: %v", route.ACPAgentName, compat.Reasons)
+		}
+	}
+	message, err := s.Repo.GetInboundMessage(ctx, queued.InboundMessageID)
+	if err != nil {
+		return err
+	}
+	acpSessionID, err := s.ACP.EnsureSession(ctx, session)
+	if err != nil {
+		return err
+	}
+	session.ACPSessionID = acpSessionID
+	if err := s.Repo.UpdateQueueItemStatus(ctx, queued.ID, "starting"); err != nil {
+		return err
+	}
+	run, stream, err := s.ACP.StartRun(ctx, domain.StartRunRequest{
+		TenantID:       session.TenantID,
+		Session:        session,
+		RouteDecision:  route,
+		Message:        message,
+		IdempotencyKey: evt.IdempotencyKey,
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.Repo.CreateRun(ctx, run); err != nil {
+		return err
+	}
+	terminalStatus := ""
+	for _, runEvent := range stream {
+		if err := s.persistRunEvent(ctx, session, runEvent); err != nil {
+			return err
+		}
+		renderer := s.rendererFor(session.ChannelType)
+		if renderer == nil {
+			return fmt.Errorf("no renderer for channel %s", session.ChannelType)
+		}
+		deliveries, err := renderer.RenderRunEvent(ctx, session, runEvent)
+		if err != nil {
+			return err
+		}
+		if runEvent.Status == "awaiting" {
+			await := domain.Await{
+				ID:               "await_" + runEvent.RunID,
+				RunID:            runEvent.RunID,
+				SessionID:        session.ID,
+				ChannelType:      session.ChannelType,
+				Status:           "pending",
+				SchemaJSON:       runEvent.AwaitSchema,
+				PromptRenderJSON: runEvent.AwaitPrompt,
+				ExpiresAt:        time.Now().UTC().Add(24 * time.Hour),
+			}
+			if err := s.Repo.StoreAwait(ctx, await); err != nil {
+				return err
+			}
+		}
+		for _, delivery := range deliveries {
+			if err := s.Repo.EnqueueDelivery(ctx, delivery); err != nil {
+				return err
+			}
+		}
+		if err := s.Repo.UpdateRunStatus(ctx, run.ID, runEvent.Status); err != nil {
+			return err
+		}
+		if err := s.Repo.UpdateQueueItemStatus(ctx, queued.ID, runEvent.Status); err != nil {
+			return err
+		}
+		switch runEvent.Status {
+		case "completed", "failed", "canceled":
+			terminalStatus = runEvent.Status
+		}
+	}
+	if terminalStatus != "" {
+		if _, err := s.Repo.EnqueueNextQueueItem(ctx, session.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s WorkerService) processDelivery(ctx context.Context, evt domain.OutboxEvent) error {
+	delivery, err := s.Repo.GetDelivery(ctx, evt.AggregateID)
+	if err != nil {
+		return err
+	}
+	adapter := s.channelFor(delivery.ChannelType)
+	if adapter == nil {
+		return fmt.Errorf("no channel adapter for %s", delivery.ChannelType)
+	}
+	if err := s.Repo.MarkDeliverySending(ctx, delivery.ID); err != nil {
+		return err
+	}
+	var (
+		result  domain.DeliveryResult
+		sendErr error
+	)
+	if delivery.AwaitID != "" {
+		result, sendErr = adapter.SendAwaitPrompt(ctx, delivery)
+	} else {
+		result, sendErr = adapter.SendMessage(ctx, delivery)
+	}
+	if sendErr != nil {
+		_ = s.Repo.MarkDeliveryFailed(ctx, delivery.ID, sendErr)
+		return sendErr
+	}
+	if err := s.Repo.MarkDeliverySent(ctx, delivery.ID, result); err != nil {
+		return err
+	}
+	return sendErr
+}
+
+func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.OutboxEvent) error {
+	var req domain.ResumeRequest
+	if err := json.Unmarshal(evt.PayloadJSON, &req); err != nil {
+		return fmt.Errorf("unmarshal await resume: %w", err)
+	}
+	await, err := s.Repo.GetAwait(ctx, req.AwaitID)
+	if err != nil {
+		return err
+	}
+	session, err := s.Repo.GetSession(ctx, await.SessionID)
+	if err != nil {
+		return err
+	}
+	runEvents, err := s.ACP.ResumeRun(ctx, await, req.Payload)
+	if err != nil {
+		return err
+	}
+	terminalStatus := ""
+	for _, runEvent := range runEvents {
+		if err := s.persistRunEvent(ctx, session, runEvent); err != nil {
+			return err
+		}
+		renderer := s.rendererFor(session.ChannelType)
+		if renderer == nil {
+			return fmt.Errorf("no renderer for channel %s", session.ChannelType)
+		}
+		deliveries, err := renderer.RenderRunEvent(ctx, session, runEvent)
+		if err != nil {
+			return err
+		}
+		for _, delivery := range deliveries {
+			if err := s.Repo.EnqueueDelivery(ctx, delivery); err != nil {
+				return err
+			}
+		}
+		if err := s.Repo.UpdateRunStatus(ctx, await.RunID, runEvent.Status); err != nil {
+			return err
+		}
+		if err := s.Repo.UpdateActiveQueueItemStatus(ctx, session.ID, runEvent.Status); err != nil {
+			return err
+		}
+		switch runEvent.Status {
+		case "completed", "failed", "canceled":
+			terminalStatus = runEvent.Status
+		}
+	}
+	if terminalStatus != "" {
+		if _, err := s.Repo.EnqueueNextQueueItem(ctx, session.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s WorkerService) persistRunEvent(ctx context.Context, session domain.Session, evt domain.RunEvent) error {
+	rawPayload, err := json.Marshal(map[string]any{
+		"run_id":    evt.RunID,
+		"status":    evt.Status,
+		"text":      evt.Text,
+		"artifacts": evt.Artifacts,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal outbound message payload: %w", err)
+	}
+	messageID, err := s.Repo.StoreOutboundMessage(ctx, session, evt.RunID, evt.Text, rawPayload)
+	if err != nil {
+		return err
+	}
+	if len(evt.Artifacts) > 0 {
+		if err := s.Repo.StoreArtifacts(ctx, messageID, "outbound", evt.Artifacts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
