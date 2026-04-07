@@ -81,8 +81,8 @@ func (r *PostgresRepository) RecordInboundReceipt(ctx context.Context, evt domai
 
 func (r *PostgresRepository) ResolveSession(ctx context.Context, evt domain.CanonicalInboundEvent, agentProfileID string) (domain.Session, bool, error) {
 	key := evt.Conversation.ChannelSurfaceKey
-	if evt.Channel == "telegram" && !strings.HasPrefix(key, "-") {
-		session, created, err := r.resolveTelegramVirtualSession(ctx, evt, agentProfileID)
+	if (evt.Channel == "telegram" && !strings.HasPrefix(key, "-")) || evt.Channel == "webchat" {
+		session, created, err := r.resolveVirtualSurfaceSession(ctx, evt, agentProfileID)
 		if err != nil {
 			return domain.Session{}, false, err
 		}
@@ -122,7 +122,7 @@ func (r *PostgresRepository) ResolveSession(ctx context.Context, evt domain.Cano
 	return s, true, err
 }
 
-func (r *PostgresRepository) resolveTelegramVirtualSession(ctx context.Context, evt domain.CanonicalInboundEvent, agentProfileID string) (domain.Session, bool, error) {
+func (r *PostgresRepository) resolveVirtualSurfaceSession(ctx context.Context, evt domain.CanonicalInboundEvent, agentProfileID string) (domain.Session, bool, error) {
 	row := r.queryRow(ctx, `
 		select s.id, s.tenant_id, coalesce(s.owner_user_id,''), coalesce(s.agent_profile_id,''), s.channel_type,
 		       s.channel_scope_key, s.state, s.last_active_at, coalesce(s.acp_session_id,'')
@@ -144,6 +144,127 @@ func (r *PostgresRepository) resolveTelegramVirtualSession(ctx context.Context, 
 		return domain.Session{}, false, err
 	}
 	return s, true, nil
+}
+
+func (r *PostgresRepository) CreateWebAuthChallenge(ctx context.Context, challenge domain.WebAuthChallenge, minInterval time.Duration) error {
+	return r.InTx(ctx, func(ctx context.Context, repo ports.Repository) error {
+		txRepo, ok := repo.(*PostgresRepository)
+		if !ok {
+			return fmt.Errorf("unexpected repository type %T", repo)
+		}
+		var latest time.Time
+		err := txRepo.queryRow(ctx, `
+			select coalesce(max(created_at), 'epoch'::timestamptz)
+			from webchat_auth_challenges
+			where tenant_id=$1 and email=$2 and consumed_at is null
+		`, challenge.TenantID, challenge.Email).Scan(&latest)
+		if err != nil {
+			return err
+		}
+		if !latest.IsZero() && time.Since(latest) < minInterval {
+			return domain.ErrWebAuthRateLimited
+		}
+		if _, err := txRepo.exec(ctx, `
+			update webchat_auth_challenges
+			set consumed_at=$3
+			where tenant_id=$1 and email=$2 and consumed_at is null
+		`, challenge.TenantID, challenge.Email, challenge.CreatedAt); err != nil {
+			return err
+		}
+		_, err = txRepo.exec(ctx, `
+			insert into webchat_auth_challenges (
+				id, tenant_id, email, otp_hash, link_token_hash, expires_at, consumed_at, attempt_count, created_at
+			) values ($1,$2,$3,$4,$5,$6,null,0,$7)
+		`, challenge.ID, challenge.TenantID, challenge.Email, challenge.OTPHash, challenge.LinkTokenHash, challenge.ExpiresAt, challenge.CreatedAt)
+		return err
+	})
+}
+
+func (r *PostgresRepository) ConsumeWebAuthChallengeByOTP(ctx context.Context, tenantID, email, otpHash string, now time.Time) (domain.WebAuthChallenge, error) {
+	return r.consumeWebAuthChallenge(ctx, `
+		select id, tenant_id, email, otp_hash, link_token_hash, expires_at, coalesce(consumed_at,'epoch'::timestamptz), attempt_count, created_at
+		from webchat_auth_challenges
+		where tenant_id=$1 and email=$2 and otp_hash=$3
+		order by created_at desc
+		limit 1
+	`, tenantID, email, otpHash, now)
+}
+
+func (r *PostgresRepository) ConsumeWebAuthChallengeByLink(ctx context.Context, tenantID, linkTokenHash string, now time.Time) (domain.WebAuthChallenge, error) {
+	return r.consumeWebAuthChallenge(ctx, `
+		select id, tenant_id, email, otp_hash, link_token_hash, expires_at, coalesce(consumed_at,'epoch'::timestamptz), attempt_count, created_at
+		from webchat_auth_challenges
+		where tenant_id=$1 and link_token_hash=$2
+		order by created_at desc
+		limit 1
+	`, tenantID, linkTokenHash, now)
+}
+
+func (r *PostgresRepository) consumeWebAuthChallenge(ctx context.Context, sql string, args ...any) (domain.WebAuthChallenge, error) {
+	now := args[len(args)-1].(time.Time)
+	args = args[:len(args)-1]
+	row := r.queryRow(ctx, sql, args...)
+	var challenge domain.WebAuthChallenge
+	if err := row.Scan(&challenge.ID, &challenge.TenantID, &challenge.Email, &challenge.OTPHash, &challenge.LinkTokenHash, &challenge.ExpiresAt, &challenge.ConsumedAt, &challenge.AttemptCount, &challenge.CreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.WebAuthChallenge{}, domain.ErrWebAuthChallengeNotFound
+		}
+		return domain.WebAuthChallenge{}, err
+	}
+	if !challenge.ConsumedAt.IsZero() && challenge.ConsumedAt.After(time.Unix(1, 0)) {
+		return domain.WebAuthChallenge{}, domain.ErrWebAuthChallengeNotFound
+	}
+	if now.After(challenge.ExpiresAt) {
+		return domain.WebAuthChallenge{}, domain.ErrWebAuthChallengeExpired
+	}
+	tag, err := r.exec(ctx, `update webchat_auth_challenges set consumed_at=$2 where id=$1 and consumed_at is null`, challenge.ID, now)
+	if err != nil {
+		return domain.WebAuthChallenge{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.WebAuthChallenge{}, domain.ErrWebAuthChallengeNotFound
+	}
+	challenge.ConsumedAt = now
+	return challenge, nil
+}
+
+func (r *PostgresRepository) CreateWebAuthSession(ctx context.Context, session domain.WebAuthSession) error {
+	_, err := r.exec(ctx, `
+		insert into webchat_auth_sessions (
+			id, tenant_id, email, csrf_token_hash, expires_at, last_seen_at, created_at
+		) values ($1,$2,$3,$4,$5,$6,$7)
+	`, session.ID, session.TenantID, session.Email, session.CSRFTokenHash, session.ExpiresAt, session.LastSeenAt, session.CreatedAt)
+	return err
+}
+
+func (r *PostgresRepository) GetWebAuthSession(ctx context.Context, sessionID string, now time.Time) (domain.WebAuthSession, error) {
+	row := r.queryRow(ctx, `
+		select id, tenant_id, email, csrf_token_hash, expires_at, last_seen_at, created_at
+		from webchat_auth_sessions
+		where id=$1
+	`, sessionID)
+	var session domain.WebAuthSession
+	if err := row.Scan(&session.ID, &session.TenantID, &session.Email, &session.CSRFTokenHash, &session.ExpiresAt, &session.LastSeenAt, &session.CreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.WebAuthSession{}, domain.ErrWebAuthSessionNotFound
+		}
+		return domain.WebAuthSession{}, err
+	}
+	if now.After(session.ExpiresAt) {
+		return domain.WebAuthSession{}, domain.ErrWebAuthSessionNotFound
+	}
+	_, _ = r.exec(ctx, `update webchat_auth_sessions set last_seen_at=$2 where id=$1`, sessionID, now)
+	return session, nil
+}
+
+func (r *PostgresRepository) UpdateWebAuthSessionCSRFHash(ctx context.Context, sessionID, csrfHash string, now time.Time) error {
+	_, err := r.exec(ctx, `update webchat_auth_sessions set csrf_token_hash=$2, last_seen_at=$3 where id=$1`, sessionID, csrfHash, now)
+	return err
+}
+
+func (r *PostgresRepository) DeleteWebAuthSession(ctx context.Context, sessionID string) error {
+	_, err := r.exec(ctx, `delete from webchat_auth_sessions where id=$1`, sessionID)
+	return err
 }
 
 func (r *PostgresRepository) HasActiveRun(ctx context.Context, sessionID string) (bool, error) {

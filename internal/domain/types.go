@@ -163,6 +163,40 @@ type OutboundDelivery struct {
 	PayloadJSON       []byte
 }
 
+type WebAuthChallenge struct {
+	ID            string
+	TenantID      string
+	Email         string
+	OTPHash       string
+	LinkTokenHash string
+	ExpiresAt     time.Time
+	ConsumedAt    time.Time
+	AttemptCount  int
+	CreatedAt     time.Time
+}
+
+type WebAuthSession struct {
+	ID            string
+	TenantID      string
+	Email         string
+	CSRFTokenHash string
+	ExpiresAt     time.Time
+	LastSeenAt    time.Time
+	CreatedAt     time.Time
+}
+
+type WebChatItem struct {
+	ID        string            `json:"id"`
+	Type      string            `json:"type"`
+	Role      string            `json:"role,omitempty"`
+	Text      string            `json:"text,omitempty"`
+	Status    string            `json:"status,omitempty"`
+	AwaitID   string            `json:"await_id,omitempty"`
+	Choices   []RenderChoice    `json:"choices,omitempty"`
+	Artifacts []Artifact        `json:"artifacts,omitempty"`
+	Meta      map[string]string `json:"meta,omitempty"`
+}
+
 type DeliveryResult struct {
 	ProviderMessageID string
 	ProviderRequestID string

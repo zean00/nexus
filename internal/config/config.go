@@ -37,6 +37,9 @@ type Config struct {
 	EmailSMTPUsername      string
 	EmailSMTPPassword      string
 	EmailFromAddress       string
+	WebChatCookieName      string
+	WebChatSessionHours    int
+	WebChatOTPMinutes      int
 	ObjectStorageBaseURL   string
 	WorkerPollInterval     time.Duration
 	ReconcilerInterval     time.Duration
@@ -85,6 +88,7 @@ func Load() (Config, error) {
 		EmailSMTPUsername:      os.Getenv("EMAIL_SMTP_USERNAME"),
 		EmailSMTPPassword:      os.Getenv("EMAIL_SMTP_PASSWORD"),
 		EmailFromAddress:       env("EMAIL_FROM_ADDRESS", "nexus@example.com"),
+		WebChatCookieName:      env("WEBCHAT_COOKIE_NAME", "nexus_webchat_session"),
 		TelegramBotToken:       os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramWebhookSecret:  env("TELEGRAM_WEBHOOK_SECRET", "dev-telegram-secret"),
 		TelegramAllowedUserIDs: csvEnv("TELEGRAM_ALLOWED_USER_IDS"),
@@ -152,6 +156,14 @@ func Load() (Config, error) {
 	cfg.RetentionGraceDays, err = envInt("RETENTION_RELATIONAL_GRACE_DAYS", 30)
 	if err != nil {
 		return Config{}, fmt.Errorf("parse RETENTION_RELATIONAL_GRACE_DAYS: %w", err)
+	}
+	cfg.WebChatSessionHours, err = envInt("WEBCHAT_SESSION_HOURS", 24)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse WEBCHAT_SESSION_HOURS: %w", err)
+	}
+	cfg.WebChatOTPMinutes, err = envInt("WEBCHAT_OTP_MINUTES", 10)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse WEBCHAT_OTP_MINUTES: %w", err)
 	}
 	cfg.ValidateACPOnStartup = envBool("VALIDATE_ACP_ON_STARTUP", false)
 	cacheTTLSeconds, err := envInt("ACP_MANIFEST_CACHE_TTL_SECONDS", 60)

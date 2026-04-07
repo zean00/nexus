@@ -402,6 +402,59 @@ func TestPostgresRepositoryIntegrationAdminQueries(t *testing.T) {
 	})
 }
 
+func TestPostgresRepositoryIntegrationWebAuthChallengeReplacement(t *testing.T) {
+	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
+		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")
+	}
+
+	ctx := context.Background()
+	dbURL := startPostgresContainer(t)
+
+	repo, err := New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(repo.Close)
+
+	applyAllMigrations(t, ctx, repo)
+
+	first := domain.WebAuthChallenge{
+		ID:            "challenge_1",
+		TenantID:      "tenant_default",
+		Email:         "user@example.com",
+		OTPHash:       "otp_1",
+		LinkTokenHash: "link_1",
+		ExpiresAt:     time.Now().UTC().Add(10 * time.Minute),
+		CreatedAt:     time.Now().UTC().Add(-2 * time.Minute),
+	}
+	second := domain.WebAuthChallenge{
+		ID:            "challenge_2",
+		TenantID:      "tenant_default",
+		Email:         "user@example.com",
+		OTPHash:       "otp_2",
+		LinkTokenHash: "link_2",
+		ExpiresAt:     time.Now().UTC().Add(10 * time.Minute),
+		CreatedAt:     time.Now().UTC(),
+	}
+
+	if err := repo.CreateWebAuthChallenge(ctx, first, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateWebAuthChallenge(ctx, second, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := repo.ConsumeWebAuthChallengeByOTP(ctx, "tenant_default", "user@example.com", "otp_1", time.Now().UTC()); !errors.Is(err, domain.ErrWebAuthChallengeNotFound) {
+		t.Fatalf("expected old otp to be invalidated, got %v", err)
+	}
+	if _, err := repo.ConsumeWebAuthChallengeByLink(ctx, "tenant_default", "link_1", time.Now().UTC()); !errors.Is(err, domain.ErrWebAuthChallengeNotFound) {
+		t.Fatalf("expected old link to be invalidated, got %v", err)
+	}
+	if _, err := repo.ConsumeWebAuthChallengeByOTP(ctx, "tenant_default", "user@example.com", "otp_2", time.Now().UTC()); err != nil {
+		t.Fatalf("expected latest otp to remain valid, got %v", err)
+	}
+}
+
 func TestPostgresRepositoryIntegrationRetention(t *testing.T) {
 	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
 		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")

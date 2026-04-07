@@ -28,6 +28,16 @@ type BatchInboundParser interface {
 	ParseInboundBatch(ctx context.Context, r *http.Request, body []byte, tenantID string) ([]domain.CanonicalInboundEvent, error)
 }
 
+type WebAuthRepository interface {
+	CreateWebAuthChallenge(ctx context.Context, challenge domain.WebAuthChallenge, minInterval time.Duration) error
+	ConsumeWebAuthChallengeByOTP(ctx context.Context, tenantID, email, otpHash string, now time.Time) (domain.WebAuthChallenge, error)
+	ConsumeWebAuthChallengeByLink(ctx context.Context, tenantID, linkTokenHash string, now time.Time) (domain.WebAuthChallenge, error)
+	CreateWebAuthSession(ctx context.Context, session domain.WebAuthSession) error
+	GetWebAuthSession(ctx context.Context, sessionID string, now time.Time) (domain.WebAuthSession, error)
+	UpdateWebAuthSessionCSRFHash(ctx context.Context, sessionID, csrfHash string, now time.Time) error
+	DeleteWebAuthSession(ctx context.Context, sessionID string) error
+}
+
 type ACPBridge interface {
 	DiscoverAgents(ctx context.Context) ([]domain.AgentManifest, error)
 	EnsureSession(ctx context.Context, session domain.Session) (string, error)

@@ -1,0 +1,169 @@
+/* src/styles.css */
+:root {
+  --nexus-webchat-accent: #1a6b54;
+  --nexus-webchat-accent-contrast: #fffaf0;
+  --nexus-webchat-ink: #1b1712;
+  --nexus-webchat-muted: #6e655b;
+  --nexus-webchat-background:
+    linear-gradient(
+      180deg,
+      #f8f1e3 0%,
+      #ecdcc4 100%);
+  --nexus-webchat-panel: rgba(255, 250, 241, 0.9);
+  --nexus-webchat-border: rgba(80, 62, 42, 0.14);
+  --nexus-webchat-user: #fff2dd;
+  --nexus-webchat-assistant: #eef8f3;
+  --nexus-webchat-radius: 22px;
+  --nexus-webchat-shadow: 0 24px 64px rgba(64, 42, 20, 0.12);
+  --nexus-webchat-font:
+    "Iowan Old Style",
+    "Palatino Linotype",
+    "Book Antiqua",
+    Palatino,
+    Georgia,
+    serif;
+  --nexus-webchat-gap: 1.25rem;
+  --nexus-webchat-pad: 1.35rem;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  min-height: 100%;
+  margin: 0;
+}
+body {
+  font-family: var(--nexus-webchat-font);
+  background: var(--nexus-webchat-background);
+  color: var(--nexus-webchat-ink);
+}
+.nexus-webchat-shell {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 2rem 1.1rem 2.6rem;
+}
+.nexus-webchat-header,
+.nexus-webchat-auth {
+  display: grid;
+  gap: var(--nexus-webchat-gap);
+}
+.nexus-webchat-header {
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  margin-bottom: var(--nexus-webchat-gap);
+}
+.nexus-webchat-kicker {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--nexus-webchat-muted);
+}
+.nexus-webchat-header h1,
+.nexus-webchat-brand h1 {
+  margin: 0.15rem 0 0.45rem;
+  font-size: clamp(2.2rem, 4vw, 3.75rem);
+  line-height: 0.95;
+}
+.nexus-webchat-header p,
+.nexus-webchat-brand p,
+.nexus-webchat-status,
+.nexus-webchat-empty {
+  margin: 0;
+  color: var(--nexus-webchat-muted);
+}
+.nexus-webchat-auth-grid,
+.nexus-webchat-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.nexus-webchat-panel {
+  border: 1px solid var(--nexus-webchat-border);
+  background: var(--nexus-webchat-panel);
+  border-radius: var(--nexus-webchat-radius);
+  box-shadow: var(--nexus-webchat-shadow);
+  padding: var(--nexus-webchat-pad);
+  backdrop-filter: blur(12px);
+}
+.nexus-webchat-auth-grid .nexus-webchat-panel {
+  flex: 1 1 280px;
+}
+.nexus-webchat-panel label {
+  display: grid;
+  gap: 0.45rem;
+  margin-bottom: 0.85rem;
+}
+.nexus-webchat-panel input,
+.nexus-webchat-panel textarea {
+  width: 100%;
+  border: 1px solid var(--nexus-webchat-border);
+  border-radius: calc(var(--nexus-webchat-radius) - 10px);
+  background: rgba(255, 255, 255, 0.82);
+  padding: 0.9rem 1rem;
+  font: inherit;
+  color: inherit;
+}
+.nexus-webchat-panel textarea {
+  min-height: 112px;
+  resize: vertical;
+}
+.nexus-webchat-panel button {
+  border: 0;
+  border-radius: 999px;
+  background: var(--nexus-webchat-accent);
+  color: var(--nexus-webchat-accent-contrast);
+  padding: 0.78rem 1.2rem;
+  font: inherit;
+  cursor: pointer;
+}
+.nexus-webchat-panel button.secondary {
+  background: rgba(39, 28, 15, 0.08);
+  color: var(--nexus-webchat-ink);
+}
+.nexus-webchat-timeline {
+  display: grid;
+  gap: 0.9rem;
+  min-height: 320px;
+}
+.nexus-webchat-item {
+  display: grid;
+  gap: 0.8rem;
+  border: 1px solid var(--nexus-webchat-border);
+  border-radius: calc(var(--nexus-webchat-radius) - 8px);
+  padding: 1rem 1.1rem;
+  background: rgba(255, 255, 255, 0.84);
+}
+.nexus-webchat-item.user {
+  background: var(--nexus-webchat-user);
+}
+.nexus-webchat-item.assistant {
+  background: var(--nexus-webchat-assistant);
+}
+.nexus-webchat-item-body {
+  white-space: pre-wrap;
+}
+.nexus-webchat-artifacts {
+  display: grid;
+  gap: 0.45rem;
+}
+.nexus-webchat-artifact {
+  display: flex;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  color: var(--nexus-webchat-muted);
+  font-size: 0.92rem;
+}
+.nexus-webchat-composer {
+  margin-top: var(--nexus-webchat-gap);
+}
+@media (max-width: 760px) {
+  .nexus-webchat-shell {
+    padding: 1.1rem 0.8rem 1.8rem;
+  }
+  .nexus-webchat-header {
+    grid-template-columns: 1fr;
+  }
+}

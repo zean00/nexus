@@ -1,0 +1,715 @@
+package app
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"html/template"
+	"io"
+	"io/fs"
+	"mime/multipart"
+	"net/http"
+	"net/mail"
+	"strconv"
+	"strings"
+	"time"
+
+	"nexus/internal/domain"
+	"nexus/internal/httpx"
+	webchatui "nexus/ui/webchat"
+)
+
+var webChatPageTemplate = template.Must(template.New("webchat-page").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nexus Web Chat</title>
+  <link rel="stylesheet" href="/webchat/app.css">
+</head>
+<body>
+  <div id="app"></div>
+  <script>window.__NEXUS_WEBCHAT_CONFIG__ = {{ .Config }};</script>
+  <script type="module" src="/webchat/app.js"></script>
+</body>
+</html>`))
+
+func (a *App) handleWebChatIndex(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	configJSON, _ := json.Marshal(map[string]any{
+		"baseUrl": "/webchat",
+		"features": map[string]bool{
+			"auth":    true,
+			"uploads": true,
+			"newChat": true,
+			"logout":  true,
+			"sse":     true,
+		},
+	})
+	_ = webChatPageTemplate.Execute(w, map[string]any{
+		"Config": template.JS(string(configJSON)),
+	})
+}
+
+func (a *App) handleWebChatJS(w http.ResponseWriter, r *http.Request) {
+	a.serveWebChatAsset(w, r, "app.js", "application/javascript; charset=utf-8")
+}
+
+func (a *App) handleWebChatCSS(w http.ResponseWriter, r *http.Request) {
+	a.serveWebChatAsset(w, r, "app.css", "text/css; charset=utf-8")
+}
+
+func (a *App) serveWebChatAsset(w http.ResponseWriter, _ *http.Request, name, contentType string) {
+	content, err := fs.ReadFile(webchatui.Dist(), name)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	_, _ = w.Write(content)
+}
+
+func (a *App) handleWebChatAuthRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if a.WebAuth == nil {
+		httpx.Error(w, http.StatusInternalServerError, "web auth unavailable")
+		return
+	}
+	var body struct {
+		Email string `json:"email"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	email, err := normalizeEmail(body.Email)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	otp := randomDigits(6)
+	linkToken := randomToken(24)
+	challenge := domain.WebAuthChallenge{
+		ID:            "webauth_" + randomToken(8),
+		TenantID:      a.Config.DefaultTenantID,
+		Email:         email,
+		OTPHash:       sha256Hex(otp),
+		LinkTokenHash: sha256Hex(linkToken),
+		ExpiresAt:     time.Now().UTC().Add(time.Duration(a.Config.WebChatOTPMinutes) * time.Minute),
+		CreatedAt:     time.Now().UTC(),
+	}
+	if err := a.WebAuth.CreateWebAuthChallenge(r.Context(), challenge, time.Minute); err != nil {
+		if errors.Is(err, domain.ErrWebAuthRateLimited) {
+			httpx.Error(w, http.StatusTooManyRequests, err.Error())
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	link := absoluteURL(r, "/webchat/auth/callback?token="+linkToken)
+	text := fmt.Sprintf("Your Nexus verification code is %s.\n\nOr open this link:\n%s", otp, link)
+	if _, err := a.Email.SendMail(r.Context(), email, "Your Nexus sign-in code", text, ""); err != nil {
+		httpx.Error(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	httpx.Accepted(w, map[string]any{"status": "sent"}, map[string]any{"email": email})
+}
+
+func (a *App) handleWebChatAuthVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if a.WebAuth == nil {
+		httpx.Error(w, http.StatusInternalServerError, "web auth unavailable")
+		return
+	}
+	var body struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	email, err := normalizeEmail(body.Email)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, err := a.WebAuth.ConsumeWebAuthChallengeByOTP(r.Context(), a.Config.DefaultTenantID, email, sha256Hex(strings.TrimSpace(body.Code)), time.Now().UTC()); err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	authSession, err := a.createWebChatAuthSession(r.Context(), email)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	setWebChatCookie(w, r, a.Config.WebChatCookieName, authSession.ID, authSession.ExpiresAt)
+	httpx.OK(w, map[string]any{"authenticated": true}, map[string]any{"email": email})
+}
+
+func (a *App) handleWebChatAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if a.WebAuth == nil {
+		httpx.Error(w, http.StatusInternalServerError, "web auth unavailable")
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		httpx.Error(w, http.StatusBadRequest, "missing token")
+		return
+	}
+	challenge, err := a.WebAuth.ConsumeWebAuthChallengeByLink(r.Context(), a.Config.DefaultTenantID, sha256Hex(token), time.Now().UTC())
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	authSession, err := a.createWebChatAuthSession(r.Context(), challenge.Email)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	setWebChatCookie(w, r, a.Config.WebChatCookieName, authSession.ID, authSession.ExpiresAt)
+	http.Redirect(w, r, "/webchat", http.StatusSeeOther)
+}
+
+func (a *App) handleWebChatAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err == nil && a.WebAuth != nil {
+		_ = a.WebAuth.DeleteWebAuthSession(r.Context(), authSession.ID)
+	}
+	clearWebChatCookie(w, a.Config.WebChatCookieName)
+	httpx.OK(w, map[string]any{"status": "logged_out"}, nil)
+}
+
+func (a *App) handleWebChatBootstrap(w http.ResponseWriter, r *http.Request) {
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	csrfToken, err := a.issueWebChatCSRF(r.Context(), authSession.ID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	session, items, err := a.loadWebChatState(r.Context(), authSession, 100)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"email":      authSession.Email,
+		"session_id": session.ID,
+		"csrf_token": csrfToken,
+		"items":      items,
+	}, nil)
+}
+
+func (a *App) handleWebChatHistory(w http.ResponseWriter, r *http.Request) {
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	if limit <= 0 {
+		limit = 100
+	}
+	_, items, err := a.loadWebChatState(r.Context(), authSession, limit)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{"items": items}, nil)
+}
+
+func (a *App) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		httpx.Error(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	var last string
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		_, items, err := a.loadWebChatState(r.Context(), authSession, 100)
+		if err != nil {
+			return
+		}
+		payload, _ := json.Marshal(map[string]any{"items": items})
+		if string(payload) != last {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+			flusher.Flush()
+			last = string(payload)
+		} else {
+			_, _ = io.WriteString(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (a *App) handleWebChatMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err := a.validateWebChatCSRF(r, authSession.ID); err != nil {
+		httpx.Error(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if err := r.ParseMultipartForm(16 << 20); err != nil {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	text := strings.TrimSpace(r.FormValue("text"))
+	files := r.MultipartForm.File["files"]
+	artifacts, err := a.readWebChatUploads(r.Context(), files)
+	if err != nil {
+		httpx.Error(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if text == "" && len(artifacts) == 0 {
+		httpx.Error(w, http.StatusBadRequest, "missing message body")
+		return
+	}
+	evt := buildWebChatMessageEvent(a.Config.DefaultTenantID, authSession, text, artifacts)
+	result, err := a.Inbound.Handle(r.Context(), evt)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.Accepted(w, result, nil)
+}
+
+func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err := a.validateWebChatCSRF(r, authSession.ID); err != nil {
+		httpx.Error(w, http.StatusForbidden, err.Error())
+		return
+	}
+	var body struct {
+		AwaitID string `json:"await_id"`
+		Reply   string `json:"reply"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	payload, _ := json.Marshal(map[string]string{"reply": body.Reply})
+	err = a.Await.HandleResponse(r.Context(), domain.CanonicalInboundEvent{
+		EventID:         "webchat_await_" + randomToken(8),
+		TenantID:        a.Config.DefaultTenantID,
+		Channel:         "webchat",
+		Interaction:     "await_response",
+		ProviderEventID: "webchat_await_" + randomToken(4),
+		ReceivedAt:      time.Now().UTC(),
+		Sender: domain.Sender{
+			ChannelUserID:       authSession.Email,
+			DisplayName:         authSession.Email,
+			IsAuthenticated:     true,
+			IdentityAssurance:   "first_party_session",
+			AllowedResponderIDs: []string{authSession.Email},
+		},
+		Conversation: domain.Conversation{
+			ChannelConversationID: authSession.Email,
+			ChannelThreadID:       authSession.ID,
+			ChannelSurfaceKey:     authSession.ID,
+		},
+		Message: domain.Message{
+			MessageID:   "webchat_await_msg_" + randomToken(6),
+			MessageType: "interactive",
+			Text:        body.Reply,
+			Parts:       []domain.Part{{ContentType: "application/json", Content: string(payload)}},
+		},
+		Metadata: domain.Metadata{
+			AwaitID:       body.AwaitID,
+			ResumePayload: payload,
+		},
+	})
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{"status": "accepted"}, nil)
+}
+
+func (a *App) handleWebChatNewChat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err := a.validateWebChatCSRF(r, authSession.ID); err != nil {
+		httpx.Error(w, http.StatusForbidden, err.Error())
+		return
+	}
+	session, err := a.Repo.CreateVirtualSession(r.Context(), a.Config.DefaultTenantID, "webchat", authSession.ID, authSession.Email, a.Config.DefaultAgentProfileID, "")
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, session, nil)
+}
+
+func (a *App) handleWebChatCloseChat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err := a.validateWebChatCSRF(r, authSession.ID); err != nil {
+		httpx.Error(w, http.StatusForbidden, err.Error())
+		return
+	}
+	session, err := a.Repo.CloseActiveSession(r.Context(), a.Config.DefaultTenantID, "webchat", authSession.ID, authSession.Email)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, session, nil)
+}
+
+func (a *App) createWebChatAuthSession(ctx context.Context, email string) (domain.WebAuthSession, error) {
+	session := domain.WebAuthSession{
+		ID:         "websess_" + randomToken(16),
+		TenantID:   a.Config.DefaultTenantID,
+		Email:      email,
+		ExpiresAt:  time.Now().UTC().Add(time.Duration(a.Config.WebChatSessionHours) * time.Hour),
+		LastSeenAt: time.Now().UTC(),
+		CreatedAt:  time.Now().UTC(),
+	}
+	return session, a.WebAuth.CreateWebAuthSession(ctx, session)
+}
+
+func (a *App) currentWebChatSession(r *http.Request) (domain.WebAuthSession, error) {
+	if a.WebAuth == nil {
+		return domain.WebAuthSession{}, domain.ErrWebAuthSessionNotFound
+	}
+	cookie, err := r.Cookie(a.Config.WebChatCookieName)
+	if err != nil {
+		return domain.WebAuthSession{}, domain.ErrWebAuthSessionNotFound
+	}
+	session, err := a.WebAuth.GetWebAuthSession(r.Context(), cookie.Value, time.Now().UTC())
+	if err != nil {
+		return domain.WebAuthSession{}, err
+	}
+	return session, nil
+}
+
+func (a *App) issueWebChatCSRF(ctx context.Context, sessionID string) (string, error) {
+	if a.WebAuth == nil {
+		return "", domain.ErrWebAuthSessionNotFound
+	}
+	csrf := randomToken(18)
+	if err := a.WebAuth.UpdateWebAuthSessionCSRFHash(ctx, sessionID, sha256Hex(csrf), time.Now().UTC()); err != nil {
+		return "", err
+	}
+	return csrf, nil
+}
+
+func (a *App) validateWebChatCSRF(r *http.Request, sessionID string) error {
+	if a.WebAuth == nil {
+		return domain.ErrWebAuthSessionNotFound
+	}
+	token := strings.TrimSpace(r.Header.Get("X-CSRF-Token"))
+	if token == "" {
+		return fmt.Errorf("missing csrf token")
+	}
+	session, err := a.WebAuth.GetWebAuthSession(r.Context(), sessionID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if session.CSRFTokenHash == "" || session.CSRFTokenHash != sha256Hex(token) {
+		return fmt.Errorf("invalid csrf token")
+	}
+	return nil
+}
+
+func (a *App) loadWebChatState(ctx context.Context, authSession domain.WebAuthSession, limit int) (domain.Session, []domain.WebChatItem, error) {
+	session, _, err := a.Repo.ResolveSession(ctx, domain.CanonicalInboundEvent{
+		EventID:  "webchat_bootstrap_" + authSession.ID,
+		TenantID: a.Config.DefaultTenantID,
+		Channel:  "webchat",
+		Sender: domain.Sender{
+			ChannelUserID: authSession.Email,
+			DisplayName:   authSession.Email,
+		},
+		Conversation: domain.Conversation{
+			ChannelConversationID: authSession.Email,
+			ChannelThreadID:       authSession.ID,
+			ChannelSurfaceKey:     authSession.ID,
+		},
+	}, a.Config.DefaultAgentProfileID)
+	if err != nil {
+		return domain.Session{}, nil, err
+	}
+	detail, err := a.Repo.GetSessionDetail(ctx, session.ID, limit)
+	if err != nil {
+		return domain.Session{}, nil, err
+	}
+	return session, buildWebChatItems(detail), nil
+}
+
+func buildWebChatItems(detail domain.SessionDetail) []domain.WebChatItem {
+	artifactByMessage := map[string][]domain.Artifact{}
+	for _, artifact := range detail.Artifacts {
+		artifactByMessage[artifact.MessageID] = append(artifactByMessage[artifact.MessageID], artifact)
+	}
+	items := make([]domain.WebChatItem, 0, len(detail.Messages)+len(detail.Awaits))
+	for i := len(detail.Messages) - 1; i >= 0; i-- {
+		msg := detail.Messages[i]
+		role := msg.Role
+		if role == "" {
+			if msg.Direction == "inbound" {
+				role = "user"
+			} else {
+				role = "assistant"
+			}
+		}
+		items = append(items, domain.WebChatItem{
+			ID:        msg.MessageID,
+			Type:      "message",
+			Role:      role,
+			Text:      msg.Text,
+			Artifacts: artifactByMessage[msg.MessageID],
+		})
+	}
+	for _, await := range detail.Awaits {
+		if await.Status != "pending" {
+			continue
+		}
+		var model struct {
+			Title   string                `json:"title"`
+			Body    string                `json:"body"`
+			Choices []domain.RenderChoice `json:"choices"`
+		}
+		_ = json.Unmarshal(await.PromptRenderJSON, &model)
+		text := strings.TrimSpace(strings.Join([]string{model.Title, model.Body}, "\n\n"))
+		if text == "" {
+			text = "The agent needs your input to continue."
+		}
+		items = append(items, domain.WebChatItem{
+			ID:      await.ID,
+			Type:    "await",
+			Role:    "assistant",
+			Text:    text,
+			AwaitID: await.ID,
+			Choices: model.Choices,
+			Status:  await.Status,
+		})
+	}
+	return items
+}
+
+func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession, text string, artifacts []domain.Artifact) domain.CanonicalInboundEvent {
+	eventID := "webchat_evt_" + randomToken(8)
+	messageType := "text"
+	switch {
+	case len(artifacts) > 0 && text != "":
+		messageType = "mixed"
+	case len(artifacts) > 0:
+		messageType = "artifact"
+	}
+	parts := []domain.Part{}
+	if text != "" {
+		parts = append(parts, domain.Part{ContentType: "text/plain", Content: text})
+	}
+	return domain.CanonicalInboundEvent{
+		EventID:         eventID,
+		TenantID:        tenantID,
+		Channel:         "webchat",
+		Interaction:     "message",
+		ProviderEventID: eventID,
+		ReceivedAt:      time.Now().UTC(),
+		Sender: domain.Sender{
+			ChannelUserID:       authSession.Email,
+			DisplayName:         authSession.Email,
+			IsAuthenticated:     true,
+			IdentityAssurance:   "first_party_session",
+			AllowedResponderIDs: []string{authSession.Email},
+		},
+		Conversation: domain.Conversation{
+			ChannelConversationID: authSession.Email,
+			ChannelThreadID:       authSession.ID,
+			ChannelSurfaceKey:     authSession.ID,
+		},
+		Message: domain.Message{
+			MessageID:   eventID + "_msg",
+			MessageType: messageType,
+			Text:        text,
+			Parts:       parts,
+			Artifacts:   artifacts,
+		},
+		Metadata: domain.Metadata{
+			ArtifactTrust: "first-party-webchat",
+			ResponderBinding: domain.ResponderBinding{
+				Mode:                  "same-user-only",
+				AllowedChannelUserIDs: []string{authSession.Email},
+			},
+		},
+	}
+}
+
+func (a *App) readWebChatUploads(ctx context.Context, files []*multipart.FileHeader) ([]domain.Artifact, error) {
+	out := make([]domain.Artifact, 0, len(files))
+	for _, file := range files {
+		handle, err := file.Open()
+		if err != nil {
+			return nil, err
+		}
+		content, err := io.ReadAll(handle)
+		_ = handle.Close()
+		if err != nil {
+			return nil, err
+		}
+		mimeType := file.Header.Get("Content-Type")
+		saved, err := a.Artifacts.SaveInbound(ctx, file.Filename, mimeType, content)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, saved)
+	}
+	return out, nil
+}
+
+func normalizeEmail(input string) (string, error) {
+	addr, err := mail.ParseAddress(strings.TrimSpace(input))
+	if err != nil {
+		return "", fmt.Errorf("invalid email")
+	}
+	return strings.ToLower(strings.TrimSpace(addr.Address)), nil
+}
+
+func setWebChatCookie(w http.ResponseWriter, r *http.Request, name, value string, expiresAt time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   externalRequestScheme(r) == "https",
+		Expires:  expiresAt,
+	})
+}
+
+func clearWebChatCookie(w http.ResponseWriter, name string) {
+	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+}
+
+func absoluteURL(r *http.Request, path string) string {
+	scheme := externalRequestScheme(r)
+	host := externalRequestHost(r)
+	return scheme + "://" + host + path
+}
+
+func externalRequestScheme(r *http.Request) string {
+	if forwarded := strings.TrimSpace(r.Header.Get("Forwarded")); forwarded != "" {
+		for _, part := range strings.Split(forwarded, ";") {
+			part = strings.TrimSpace(part)
+			if key, value, ok := strings.Cut(part, "="); ok && strings.EqualFold(strings.TrimSpace(key), "proto") {
+				value = strings.Trim(strings.TrimSpace(value), "\"")
+				if value != "" {
+					return strings.ToLower(value)
+				}
+			}
+		}
+	}
+	if proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+		if first, _, _ := strings.Cut(proto, ","); strings.TrimSpace(first) != "" {
+			return strings.ToLower(strings.TrimSpace(first))
+		}
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func externalRequestHost(r *http.Request) string {
+	if forwarded := strings.TrimSpace(r.Header.Get("Forwarded")); forwarded != "" {
+		for _, part := range strings.Split(forwarded, ";") {
+			part = strings.TrimSpace(part)
+			if key, value, ok := strings.Cut(part, "="); ok && strings.EqualFold(strings.TrimSpace(key), "host") {
+				value = strings.Trim(strings.TrimSpace(value), "\"")
+				if value != "" {
+					return value
+				}
+			}
+		}
+	}
+	if host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); host != "" {
+		if first, _, _ := strings.Cut(host, ","); strings.TrimSpace(first) != "" {
+			return strings.TrimSpace(first)
+		}
+	}
+	return r.Host
+}
+
+func randomToken(n int) string {
+	buf := make([]byte, n)
+	_, _ = rand.Read(buf)
+	return base64.RawURLEncoding.EncodeToString(buf)
+}
+
+func randomDigits(n int) string {
+	const digits = "0123456789"
+	buf := make([]byte, n)
+	_, _ = rand.Read(buf)
+	out := make([]byte, n)
+	for i := range buf {
+		out[i] = digits[int(buf[i])%len(digits)]
+	}
+	return string(out)
+}
+
+func sha256Hex(input string) string {
+	sum := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(sum[:])
+}

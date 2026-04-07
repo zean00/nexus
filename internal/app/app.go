@@ -13,6 +13,7 @@ import (
 	"nexus/internal/adapters/slack"
 	"nexus/internal/adapters/storage"
 	"nexus/internal/adapters/telegram"
+	"nexus/internal/adapters/webchat"
 	"nexus/internal/adapters/whatsapp"
 	"nexus/internal/config"
 	"nexus/internal/domain"
@@ -34,9 +35,11 @@ type App struct {
 	Worker     services.WorkerService
 	Reconciler services.Reconciler
 	ACP        ports.ACPBridge
+	WebAuth    ports.WebAuthRepository
 	Slack      slack.Adapter
 	WhatsApp   whatsapp.Adapter
 	Email      email.Adapter
+	WebChat    webchat.Adapter
 	Telegram   telegram.Adapter
 	Channels   map[string]ports.ChannelAdapter
 	Runtime    *RuntimeState
@@ -282,6 +285,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	slackAdapter := slack.New(cfg.SlackSigningSecret, cfg.SlackBotToken)
 	whatsappAdapter := whatsapp.New(cfg.WhatsAppVerifyToken, cfg.WhatsAppAccessToken, cfg.WhatsAppAppSecret, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppAPIBaseURL)
 	emailAdapter := email.New(cfg.EmailWebhookSecret, cfg.EmailSMTPAddr, cfg.EmailSMTPUsername, cfg.EmailSMTPPassword, cfg.EmailFromAddress)
+	webchatAdapter := webchat.New()
 	telegramAdapter := telegram.New(cfg.TelegramBotToken, cfg.TelegramWebhookSecret)
 	router := services.StaticRouter{
 		DefaultAgentProfileID: cfg.DefaultAgentProfileID,
@@ -291,12 +295,14 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		"slack":    services.SlackRenderer{},
 		"whatsapp": services.WhatsAppRenderer{},
 		"email":    services.EmailRenderer{},
+		"webchat":  services.WebChatRenderer{},
 		"telegram": services.TelegramRenderer{},
 	}
 	channels := map[string]ports.ChannelAdapter{
 		"slack":    slackAdapter,
 		"whatsapp": whatsappAdapter,
 		"email":    emailAdapter,
+		"webchat":  webchatAdapter,
 		"telegram": telegramAdapter,
 	}
 	acpClient := acp.NewBridge(acp.BridgeConfig{
@@ -375,9 +381,11 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 			Observer: runtime,
 		},
 		ACP:      acpClient,
+		WebAuth:  repo,
 		Slack:    slackAdapter,
 		WhatsApp: whatsappAdapter,
 		Email:    emailAdapter,
+		WebChat:  webchatAdapter,
 		Telegram: telegramAdapter,
 		Channels: channels,
 		Runtime:  runtime,
@@ -416,6 +424,20 @@ func (a *App) GatewayHandler() http.Handler {
 	mux.HandleFunc("/webhooks/whatsapp", a.handleWhatsAppWebhook)
 	mux.HandleFunc("/webhooks/email", a.handleEmailWebhook)
 	mux.HandleFunc("/webhooks/telegram", a.handleTelegramWebhook)
+	mux.HandleFunc("/webchat", a.handleWebChatIndex)
+	mux.HandleFunc("/webchat/app.js", a.handleWebChatJS)
+	mux.HandleFunc("/webchat/app.css", a.handleWebChatCSS)
+	mux.HandleFunc("/webchat/bootstrap", a.handleWebChatBootstrap)
+	mux.HandleFunc("/webchat/history", a.handleWebChatHistory)
+	mux.HandleFunc("/webchat/events", a.handleWebChatEvents)
+	mux.HandleFunc("/webchat/messages", a.handleWebChatMessage)
+	mux.HandleFunc("/webchat/awaits/respond", a.handleWebChatAwaitRespond)
+	mux.HandleFunc("/webchat/chats/new", a.handleWebChatNewChat)
+	mux.HandleFunc("/webchat/chats/close", a.handleWebChatCloseChat)
+	mux.HandleFunc("/webchat/auth/request", a.handleWebChatAuthRequest)
+	mux.HandleFunc("/webchat/auth/verify", a.handleWebChatAuthVerify)
+	mux.HandleFunc("/webchat/auth/callback", a.handleWebChatAuthCallback)
+	mux.HandleFunc("/webchat/auth/logout", a.handleWebChatAuthLogout)
 	return tracex.Middleware("gateway", mux)
 }
 

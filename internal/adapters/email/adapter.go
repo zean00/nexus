@@ -203,6 +203,19 @@ func (a Adapter) SendAwaitPrompt(ctx context.Context, delivery domain.OutboundDe
 	return a.send(ctx, delivery.PayloadJSON)
 }
 
+func (a Adapter) SendMail(ctx context.Context, to, subject, text, html string) (domain.DeliveryResult, error) {
+	payload, err := json.Marshal(map[string]any{
+		"to":      to,
+		"subject": subject,
+		"text":    text,
+		"html":    html,
+	})
+	if err != nil {
+		return domain.DeliveryResult{}, err
+	}
+	return a.send(ctx, payload)
+}
+
 func (a Adapter) send(_ context.Context, payload []byte) (domain.DeliveryResult, error) {
 	if a.SMTPAddr == "" {
 		return domain.DeliveryResult{}, nil

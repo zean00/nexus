@@ -14,6 +14,7 @@ type SlackRenderer struct{}
 type TelegramRenderer struct{}
 type WhatsAppRenderer struct{}
 type EmailRenderer struct{}
+type WebChatRenderer struct{}
 
 func (r SlackRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
 	channelID, threadTS := splitSurfaceKey(session.ChannelScopeKey)
@@ -368,6 +369,46 @@ func (r EmailRenderer) RenderRunEvent(_ context.Context, session domain.Session,
 			})
 		}
 		return deliveries, nil
+	default:
+		return nil, nil
+	}
+}
+
+func (r WebChatRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
+	switch evt.Status {
+	case "awaiting":
+		return []domain.OutboundDelivery{{
+			ID:               "delivery_" + evt.RunID + "_await",
+			TenantID:         session.TenantID,
+			SessionID:        session.ID,
+			RunID:            evt.RunID,
+			AwaitID:          "await_" + evt.RunID,
+			ChannelType:      session.ChannelType,
+			DeliveryKind:     "send",
+			Status:           "queued",
+			LogicalMessageID: "logical_" + evt.RunID + "_await",
+			PayloadJSON:      evt.AwaitPrompt,
+		}}, nil
+	case "completed", "running", "failed":
+		payload, err := json.Marshal(map[string]any{
+			"text":      evt.Text,
+			"status":    evt.Status,
+			"artifacts": evt.Artifacts,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return []domain.OutboundDelivery{{
+			ID:               "delivery_" + evt.RunID + "_" + evt.Status,
+			TenantID:         session.TenantID,
+			SessionID:        session.ID,
+			RunID:            evt.RunID,
+			ChannelType:      session.ChannelType,
+			DeliveryKind:     "send",
+			Status:           "queued",
+			LogicalMessageID: "logical_" + evt.RunID + "_status",
+			PayloadJSON:      payload,
+		}}, nil
 	default:
 		return nil, nil
 	}
