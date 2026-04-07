@@ -64,3 +64,40 @@ func TestTelegramRendererFormatsOpenCodeAwaitBlockFailure(t *testing.T) {
 		t.Fatalf("unexpected telegram failure text: %q", text)
 	}
 }
+
+func TestWhatsAppRendererListsFallbackChoices(t *testing.T) {
+	renderer := WhatsAppRenderer{}
+	prompt, err := json.Marshal(map[string]any{
+		"title": "Choose one",
+		"choices": []map[string]string{
+			{"id": "alpha", "label": "Alpha"},
+			{"id": "beta", "label": "Beta"},
+			{"id": "gamma", "label": "Gamma"},
+			{"id": "delta", "label": "Delta"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliveries, err := renderer.RenderRunEvent(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "whatsapp",
+		ChannelScopeKey: "15551234567",
+	}, domain.RunEvent{
+		RunID:       "run_1",
+		Status:      "awaiting",
+		AwaitPrompt: prompt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(deliveries[0].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	text := payload["text"].(map[string]any)["body"].(string)
+	if !strings.Contains(text, "[await:await_run_1] alpha") || !strings.Contains(text, "[await:await_run_1] delta") {
+		t.Fatalf("unexpected whatsapp fallback text: %q", text)
+	}
+}

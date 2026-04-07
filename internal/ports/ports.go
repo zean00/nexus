@@ -16,6 +16,18 @@ type ChannelAdapter interface {
 	SendAwaitPrompt(ctx context.Context, delivery domain.OutboundDelivery) (domain.DeliveryResult, error)
 }
 
+type InboundArtifactStore interface {
+	SaveInbound(ctx context.Context, filename, mimeType string, content []byte) (domain.Artifact, error)
+}
+
+type InboundArtifactHydrator interface {
+	HydrateInboundArtifacts(ctx context.Context, evt *domain.CanonicalInboundEvent, store InboundArtifactStore) error
+}
+
+type BatchInboundParser interface {
+	ParseInboundBatch(ctx context.Context, r *http.Request, body []byte, tenantID string) ([]domain.CanonicalInboundEvent, error)
+}
+
 type ACPBridge interface {
 	DiscoverAgents(ctx context.Context) ([]domain.AgentManifest, error)
 	EnsureSession(ctx context.Context, session domain.Session) (string, error)

@@ -27,6 +27,17 @@ func (a *App) handleSlackWebhook(w http.ResponseWriter, r *http.Request) {
 	a.handleChannelWebhook(w, r, a.Slack)
 }
 
+func (a *App) handleWhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
+	if a.WhatsApp.WriteVerification(w, r) {
+		return
+	}
+	a.handleChannelWebhook(w, r, a.WhatsApp)
+}
+
+func (a *App) handleEmailWebhook(w http.ResponseWriter, r *http.Request) {
+	a.handleChannelWebhook(w, r, a.Email)
+}
+
 func (a *App) handleTelegramWebhook(w http.ResponseWriter, r *http.Request) {
 	a.handleChannelWebhook(w, r, a.Telegram)
 }
@@ -41,16 +52,35 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 		httpx.Error(w, http.StatusUnauthorized, err.Error())
 		return
 	}
+	if batcher, ok := adapter.(ports.BatchInboundParser); ok {
+		events, err := batcher.ParseInboundBatch(r.Context(), r, body, a.Config.DefaultTenantID)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(events) == 0 {
+			httpx.Error(w, http.StatusBadRequest, "no inbound events")
+			return
+		}
+		for i := range events {
+			if err := a.processBatchChannelEvent(r.Context(), adapter, events[i]); err != nil {
+				httpx.Error(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		httpx.Accepted(w, map[string]any{"status": "accepted", "processed": len(events)}, map[string]any{
+			"channel": adapter.Channel(),
+		})
+		return
+	}
 	evt, err := adapter.ParseInbound(r.Context(), r, body, a.Config.DefaultTenantID)
 	if err != nil {
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if evt.Channel == "slack" {
-		if err := a.persistSlackArtifacts(r.Context(), &evt); err != nil {
-			httpx.Error(w, http.StatusBadGateway, err.Error())
-			return
-		}
+	if err := a.persistInboundArtifacts(r.Context(), adapter, &evt); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	if evt.Channel == "telegram" && !a.telegramUserAllowed(r.Context(), evt.Sender.ChannelUserID) {
 		if existing, err := a.Repo.GetTelegramUserAccess(r.Context(), a.Config.DefaultTenantID, evt.Sender.ChannelUserID); err == nil {
@@ -129,29 +159,27 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 	httpx.Accepted(w, result, webhookResultMeta(evt))
 }
 
-func (a *App) persistSlackArtifacts(ctx context.Context, evt *domain.CanonicalInboundEvent) error {
+func (a *App) processBatchChannelEvent(ctx context.Context, adapter ports.ChannelAdapter, evt domain.CanonicalInboundEvent) error {
+	if err := a.persistInboundArtifacts(ctx, adapter, &evt); err != nil {
+		return err
+	}
+	if evt.Interaction == "await_response" {
+		return a.Await.HandleResponse(ctx, evt)
+	}
+	if evt.Interaction == "challenge" {
+		return nil
+	}
+	_, err := a.Inbound.Handle(ctx, evt)
+	return err
+}
+
+func (a *App) persistInboundArtifacts(ctx context.Context, adapter ports.ChannelAdapter, evt *domain.CanonicalInboundEvent) error {
 	if len(evt.Message.Artifacts) == 0 {
 		return nil
 	}
-	stored := make([]domain.Artifact, 0, len(evt.Message.Artifacts))
-	for _, artifact := range evt.Message.Artifacts {
-		if artifact.SourceURL == "" {
-			stored = append(stored, artifact)
-			continue
-		}
-		content, err := a.Slack.DownloadArtifact(ctx, artifact.SourceURL)
-		if err != nil {
-			return err
-		}
-		saved, err := a.Artifacts.SaveInbound(ctx, artifact.Name, artifact.MIMEType, content)
-		if err != nil {
-			return err
-		}
-		saved.ID = artifact.ID
-		saved.SourceURL = artifact.SourceURL
-		stored = append(stored, saved)
+	if hydrator, ok := adapter.(ports.InboundArtifactHydrator); ok {
+		return hydrator.HydrateInboundArtifacts(ctx, evt, a.Artifacts)
 	}
-	evt.Message.Artifacts = stored
 	return nil
 }
 

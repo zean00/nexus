@@ -9,9 +9,11 @@ import (
 
 	"nexus/internal/adapters/acp"
 	"nexus/internal/adapters/db"
+	"nexus/internal/adapters/email"
 	"nexus/internal/adapters/slack"
 	"nexus/internal/adapters/storage"
 	"nexus/internal/adapters/telegram"
+	"nexus/internal/adapters/whatsapp"
 	"nexus/internal/config"
 	"nexus/internal/domain"
 	"nexus/internal/httpx"
@@ -33,6 +35,8 @@ type App struct {
 	Reconciler services.Reconciler
 	ACP        ports.ACPBridge
 	Slack      slack.Adapter
+	WhatsApp   whatsapp.Adapter
+	Email      email.Adapter
 	Telegram   telegram.Adapter
 	Channels   map[string]ports.ChannelAdapter
 	Runtime    *RuntimeState
@@ -276,6 +280,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, err
 	}
 	slackAdapter := slack.New(cfg.SlackSigningSecret, cfg.SlackBotToken)
+	whatsappAdapter := whatsapp.New(cfg.WhatsAppVerifyToken, cfg.WhatsAppAccessToken, cfg.WhatsAppAppSecret, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppAPIBaseURL)
+	emailAdapter := email.New(cfg.EmailWebhookSecret, cfg.EmailSMTPAddr, cfg.EmailSMTPUsername, cfg.EmailSMTPPassword, cfg.EmailFromAddress)
 	telegramAdapter := telegram.New(cfg.TelegramBotToken, cfg.TelegramWebhookSecret)
 	router := services.StaticRouter{
 		DefaultAgentProfileID: cfg.DefaultAgentProfileID,
@@ -283,10 +289,14 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 	renderers := map[string]ports.Renderer{
 		"slack":    services.SlackRenderer{},
+		"whatsapp": services.WhatsAppRenderer{},
+		"email":    services.EmailRenderer{},
 		"telegram": services.TelegramRenderer{},
 	}
 	channels := map[string]ports.ChannelAdapter{
 		"slack":    slackAdapter,
+		"whatsapp": whatsappAdapter,
+		"email":    emailAdapter,
 		"telegram": telegramAdapter,
 	}
 	acpClient := acp.NewBridge(acp.BridgeConfig{
@@ -366,6 +376,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		},
 		ACP:      acpClient,
 		Slack:    slackAdapter,
+		WhatsApp: whatsappAdapter,
+		Email:    emailAdapter,
 		Telegram: telegramAdapter,
 		Channels: channels,
 		Runtime:  runtime,
@@ -401,6 +413,8 @@ func (a *App) GatewayHandler() http.Handler {
 		writeMetrics(w, context.Background(), "gateway", a.Config.DefaultTenantID, a.Repo, a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
 	})
 	mux.HandleFunc("/webhooks/slack", a.handleSlackWebhook)
+	mux.HandleFunc("/webhooks/whatsapp", a.handleWhatsAppWebhook)
+	mux.HandleFunc("/webhooks/email", a.handleEmailWebhook)
 	mux.HandleFunc("/webhooks/telegram", a.handleTelegramWebhook)
 	return tracex.Middleware("gateway", mux)
 }

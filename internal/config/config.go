@@ -27,6 +27,16 @@ type Config struct {
 	ACPManifestCacheTTL    time.Duration
 	SlackSigningSecret     string
 	SlackBotToken          string
+	WhatsAppVerifyToken    string
+	WhatsAppAccessToken    string
+	WhatsAppAppSecret      string
+	WhatsAppPhoneNumberID  string
+	WhatsAppAPIBaseURL     string
+	EmailWebhookSecret     string
+	EmailSMTPAddr          string
+	EmailSMTPUsername      string
+	EmailSMTPPassword      string
+	EmailFromAddress       string
 	ObjectStorageBaseURL   string
 	WorkerPollInterval     time.Duration
 	ReconcilerInterval     time.Duration
@@ -65,6 +75,16 @@ func Load() (Config, error) {
 		DefaultACPAgentName:    env("DEFAULT_ACP_AGENT_NAME", "default-agent"),
 		SlackSigningSecret:     env("SLACK_SIGNING_SECRET", "dev-secret"),
 		SlackBotToken:          os.Getenv("SLACK_BOT_TOKEN"),
+		WhatsAppVerifyToken:    env("WHATSAPP_VERIFY_TOKEN", "dev-whatsapp-verify"),
+		WhatsAppAccessToken:    os.Getenv("WHATSAPP_ACCESS_TOKEN"),
+		WhatsAppAppSecret:      os.Getenv("WHATSAPP_APP_SECRET"),
+		WhatsAppPhoneNumberID:  os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
+		WhatsAppAPIBaseURL:     env("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v20.0"),
+		EmailWebhookSecret:     env("EMAIL_WEBHOOK_SECRET", "dev-email-secret"),
+		EmailSMTPAddr:          os.Getenv("EMAIL_SMTP_ADDR"),
+		EmailSMTPUsername:      os.Getenv("EMAIL_SMTP_USERNAME"),
+		EmailSMTPPassword:      os.Getenv("EMAIL_SMTP_PASSWORD"),
+		EmailFromAddress:       env("EMAIL_FROM_ADDRESS", "nexus@example.com"),
 		TelegramBotToken:       os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramWebhookSecret:  env("TELEGRAM_WEBHOOK_SECRET", "dev-telegram-secret"),
 		TelegramAllowedUserIDs: csvEnv("TELEGRAM_ALLOWED_USER_IDS"),

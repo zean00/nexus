@@ -12,6 +12,8 @@ import (
 	"time"
 
 	acpadapter "nexus/internal/adapters/acp"
+	"nexus/internal/adapters/email"
+	"nexus/internal/adapters/whatsapp"
 	"nexus/internal/config"
 	"nexus/internal/domain"
 	"nexus/internal/ports"
@@ -87,6 +89,7 @@ func (testRouter) Route(context.Context, domain.CanonicalInboundEvent, domain.Se
 var _ ports.Router = testRouter{}
 
 type appRepoStub struct {
+	receiptCount          int
 	surfaceItems          []domain.SurfaceSession
 	switchedSession       domain.Session
 	closedSession         domain.Session
@@ -117,6 +120,7 @@ func (r *appRepoStub) InTx(ctx context.Context, fn func(context.Context, ports.R
 	return fn(ctx, r)
 }
 func (r *appRepoStub) RecordInboundReceipt(context.Context, domain.CanonicalInboundEvent) (bool, error) {
+	r.receiptCount++
 	return true, nil
 }
 func (r *appRepoStub) ResolveSession(context.Context, domain.CanonicalInboundEvent, string) (domain.Session, bool, error) {
@@ -1593,6 +1597,93 @@ func TestGatewayMetricsEndpoint(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected metrics body to contain %q, got:\n%s", want, body)
 		}
+	}
+}
+
+func TestWhatsAppWebhookVerification(t *testing.T) {
+	app := &App{
+		WhatsApp: whatsapp.New("verify-token", "", "", "", "https://graph.example.com"),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=verify-token&hub.challenge=challenge-123", nil)
+	rec := httptest.NewRecorder()
+
+	app.GatewayHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "challenge-123" {
+		t.Fatalf("unexpected body %q", rec.Body.String())
+	}
+}
+
+func TestEmailWebhookAccepted(t *testing.T) {
+	repo := &appRepoStub{}
+	app := &App{
+		Config: config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_profile_default"},
+		Repo:   repo,
+		Inbound: services.InboundService{
+			Repo:   repo,
+			Router: testRouter{},
+		},
+		Await: services.AwaitService{Repo: repo},
+		Email: email.New("secret", "", "", "", "nexus@example.com"),
+	}
+	body := `{
+		"event_id":"evt_email_1",
+		"message_id":"<msg-1@example.com>",
+		"from":"Alice <alice@example.com>",
+		"subject":"Need help",
+		"text":"hello from email",
+		"thread_id":"<thread-1@example.com>"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/email", strings.NewReader(body))
+	req.Header.Set("X-Nexus-Email-Secret", "secret")
+	rec := httptest.NewRecorder()
+
+	app.GatewayHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWhatsAppWebhookProcessesBatchedMessages(t *testing.T) {
+	repo := &appRepoStub{}
+	app := &App{
+		Config: config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_profile_default"},
+		Repo:   repo,
+		Inbound: services.InboundService{
+			Repo:   repo,
+			Router: testRouter{},
+		},
+		Await:    services.AwaitService{Repo: repo},
+		WhatsApp: whatsapp.New("verify-token", "", "", "", "https://graph.example.com"),
+	}
+	body := `{
+		"entry":[{
+			"changes":[{
+				"field":"messages",
+				"value":{
+					"contacts":[{"wa_id":"15551234567","profile":{"name":"Ava"}}],
+					"messages":[
+						{"id":"wamid.1","from":"15551234567","timestamp":"1710000000","type":"text","text":{"body":"first"}},
+						{"id":"wamid.2","from":"15551234567","timestamp":"1710000001","type":"text","text":{"body":"second"}}
+					]
+				}
+			}]
+		}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/whatsapp", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	app.GatewayHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.receiptCount != 2 {
+		t.Fatalf("expected 2 inbound receipts, got %d", repo.receiptCount)
 	}
 }
 
