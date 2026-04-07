@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"nexus/internal/domain"
+	"nexus/internal/ports"
 )
 
 func TestPostgresRepositoryIntegrationAdminQueries(t *testing.T) {
@@ -401,6 +402,187 @@ func TestPostgresRepositoryIntegrationAdminQueries(t *testing.T) {
 	})
 }
 
+func TestPostgresRepositoryIntegrationRetention(t *testing.T) {
+	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
+		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")
+	}
+
+	ctx := context.Background()
+	dbURL := startPostgresContainer(t)
+
+	repo, err := New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(repo.Close)
+
+	applyAllMigrations(t, ctx, repo)
+	blobURI := seedRetentionFixture(t, ctx, repo)
+
+	t.Run("counts candidates", func(t *testing.T) {
+		counts, err := repo.CountRetentionCandidates(ctx, "tenant_retention", domain.RetentionCutoffs{
+			PayloadBefore:    time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			ArtifactBefore:   time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			AuditBefore:      time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			RelationalBefore: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if counts.MessagePayloads != 1 || counts.DeliveryPayloads != 1 || counts.OutboxPayloads != 1 || counts.AwaitPayloads != 1 || counts.AwaitResponsePayloads != 1 || counts.ArtifactBlobs != 1 || counts.AuditRows != 1 || counts.Sessions != 1 {
+			t.Fatalf("unexpected retention counts: %+v", counts)
+		}
+		if counts.HistoryRows != 8 {
+			t.Fatalf("expected 8 history rows for terminal session deletion, got %+v", counts)
+		}
+	})
+
+	t.Run("applies retention", func(t *testing.T) {
+		var deletedURIs []string
+		counts, err := repo.ApplyRetention(ctx, "tenant_retention", domain.RetentionCutoffs{
+			PayloadBefore:    time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			ArtifactBefore:   time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			AuditBefore:      time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			RelationalBefore: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		}, 50, func(ctx context.Context, storageURI string) error {
+			deletedURIs = append(deletedURIs, storageURI)
+			target := strings.TrimPrefix(storageURI, "file://")
+			return os.Remove(target)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(deletedURIs) != 1 || deletedURIs[0] != blobURI {
+			t.Fatalf("unexpected deleted artifact URIs: %+v", deletedURIs)
+		}
+		if _, err := os.Stat(strings.TrimPrefix(blobURI, "file://")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected artifact blob to be removed, got %v", err)
+		}
+		if counts.MessagePayloads != 1 || counts.DeliveryPayloads != 1 || counts.OutboxPayloads != 1 || counts.AwaitPayloads != 1 || counts.AwaitResponsePayloads != 1 || counts.ArtifactBlobs != 1 || counts.AuditRows != 1 || counts.Sessions != 0 || counts.HistoryRows != 0 {
+			t.Fatalf("unexpected retention phase-1 counts: %+v", counts)
+		}
+
+		var (
+			messagePayload   []byte
+			messagePurgedAt  time.Time
+			deliveryPayload  []byte
+			deliveryPurgedAt time.Time
+			outboxPayload    []byte
+			outboxPurgedAt   time.Time
+			awaitSchema      []byte
+			awaitPrompt      []byte
+			awaitResponders  []byte
+			awaitPurgedAt    time.Time
+			responsePayload  []byte
+			responsePurgedAt time.Time
+			artifactStorage  *string
+			artifactPurgedAt time.Time
+			auditOldCount    int
+			auditRecentCount int
+		)
+
+		if err := repo.queryRow(ctx, `select raw_payload_json, payload_purged_at from messages where id='ret_message_old'`).Scan(&messagePayload, &messagePurgedAt); err != nil {
+			t.Fatal(err)
+		}
+		if string(messagePayload) != "{}" || messagePurgedAt.IsZero() {
+			t.Fatalf("unexpected message purge state: payload=%s purged_at=%v", string(messagePayload), messagePurgedAt)
+		}
+		if err := repo.queryRow(ctx, `select payload_json, payload_purged_at from outbound_deliveries where id='ret_delivery_old'`).Scan(&deliveryPayload, &deliveryPurgedAt); err != nil {
+			t.Fatal(err)
+		}
+		if string(deliveryPayload) != "{}" || deliveryPurgedAt.IsZero() {
+			t.Fatalf("unexpected delivery purge state: payload=%s purged_at=%v", string(deliveryPayload), deliveryPurgedAt)
+		}
+		if err := repo.queryRow(ctx, `select payload_json, payload_purged_at from outbox_events where id='ret_outbox_old'`).Scan(&outboxPayload, &outboxPurgedAt); err != nil {
+			t.Fatal(err)
+		}
+		if string(outboxPayload) != "{}" || outboxPurgedAt.IsZero() {
+			t.Fatalf("unexpected outbox purge state: payload=%s purged_at=%v", string(outboxPayload), outboxPurgedAt)
+		}
+		if err := repo.queryRow(ctx, `select schema_json, prompt_render_model_json, allowed_responder_ids_json, payload_purged_at from awaits where id='ret_await_old'`).Scan(&awaitSchema, &awaitPrompt, &awaitResponders, &awaitPurgedAt); err != nil {
+			t.Fatal(err)
+		}
+		if string(awaitSchema) != "{}" || string(awaitPrompt) != "{}" || string(awaitResponders) != "[]" || awaitPurgedAt.IsZero() {
+			t.Fatalf("unexpected await purge state: schema=%s prompt=%s responders=%s purged_at=%v", string(awaitSchema), string(awaitPrompt), string(awaitResponders), awaitPurgedAt)
+		}
+		if err := repo.queryRow(ctx, `select response_payload_json, payload_purged_at from await_responses where id='ret_response_old'`).Scan(&responsePayload, &responsePurgedAt); err != nil {
+			t.Fatal(err)
+		}
+		if string(responsePayload) != "{}" || responsePurgedAt.IsZero() {
+			t.Fatalf("unexpected await response purge state: payload=%s purged_at=%v", string(responsePayload), responsePurgedAt)
+		}
+		if err := repo.queryRow(ctx, `select storage_uri, blob_purged_at from artifacts where id='ret_artifact_old'`).Scan(&artifactStorage, &artifactPurgedAt); err != nil {
+			t.Fatal(err)
+		}
+		if artifactStorage != nil || artifactPurgedAt.IsZero() {
+			t.Fatalf("unexpected artifact purge state: storage=%v purged_at=%v", artifactStorage, artifactPurgedAt)
+		}
+		if err := repo.queryRow(ctx, `select count(*) from audit_events where id='ret_audit_old'`).Scan(&auditOldCount); err != nil {
+			t.Fatal(err)
+		}
+		if auditOldCount != 0 {
+			t.Fatalf("expected old audit row deleted, got count=%d", auditOldCount)
+		}
+		if err := repo.queryRow(ctx, `select count(*) from audit_events where id='ret_audit_recent'`).Scan(&auditRecentCount); err != nil {
+			t.Fatal(err)
+		}
+		if auditRecentCount != 1 {
+			t.Fatalf("expected recent audit row retained, got count=%d", auditRecentCount)
+		}
+
+		counts, err = repo.ApplyRetention(ctx, "tenant_retention", domain.RetentionCutoffs{
+			PayloadBefore:    time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			ArtifactBefore:   time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			AuditBefore:      time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			RelationalBefore: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		}, 50, func(ctx context.Context, storageURI string) error {
+			t.Fatalf("did not expect additional blob deletions during phase 2, got %s", storageURI)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if counts.MessagePayloads != 0 || counts.DeliveryPayloads != 0 || counts.OutboxPayloads != 0 || counts.AwaitPayloads != 0 || counts.AwaitResponsePayloads != 0 || counts.ArtifactBlobs != 0 || counts.AuditRows != 0 || counts.Sessions != 1 || counts.HistoryRows != 8 {
+			t.Fatalf("unexpected retention phase-2 counts: %+v", counts)
+		}
+
+		var (
+			surfaceSessionID *string
+			terminalCount    int
+			activeCount      int
+		)
+		if err := repo.queryRow(ctx, `select count(*) from sessions where id='ret_session_terminal'`).Scan(&terminalCount); err != nil {
+			t.Fatal(err)
+		}
+		if terminalCount != 0 {
+			t.Fatalf("expected terminal session to be deleted, got count=%d", terminalCount)
+		}
+		if err := repo.queryRow(ctx, `select count(*) from sessions where id='ret_session_active'`).Scan(&activeCount); err != nil {
+			t.Fatal(err)
+		}
+		if activeCount != 1 {
+			t.Fatalf("expected active session to remain, got count=%d", activeCount)
+		}
+		if err := repo.queryRow(ctx, `select active_session_id from channel_surface_state where id='ret_surface_state'`).Scan(&surfaceSessionID); err != nil {
+			t.Fatal(err)
+		}
+		if surfaceSessionID != nil {
+			t.Fatalf("expected surface state active session to be cleared, got %v", *surfaceSessionID)
+		}
+	})
+
+	t.Run("retention advisory lock", func(t *testing.T) {
+		err := repo.WithRetentionLock(ctx, func(ctx context.Context, lockedRepo ports.RetentionRepository) error {
+			return repo.WithRetentionLock(ctx, func(ctx context.Context, repo2 ports.RetentionRepository) error {
+				return nil
+			})
+		})
+		if !errors.Is(err, domain.ErrRetentionLockBusy) {
+			t.Fatalf("expected retention lock busy, got %v", err)
+		}
+	})
+}
+
 func startPostgresContainer(t *testing.T) string {
 	t.Helper()
 
@@ -544,6 +726,102 @@ func seedAdminQueryFixture(t *testing.T, ctx context.Context, repo *PostgresRepo
 			('tenant_default','456','bob',false,'pending','self',$2,null,$2,$2),
 			('tenant_default','789','carol',false,'denied','admin',$1,$2,$1,$2)
 	`, t0, t1, t3)
+}
+
+func seedRetentionFixture(t *testing.T, ctx context.Context, repo *PostgresRepository) string {
+	t.Helper()
+
+	old := time.Date(2026, 1, 10, 8, 0, 0, 0, time.UTC)
+	recent := time.Date(2026, 3, 20, 9, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	blobPath := filepath.Join(root, "retention-artifact.txt")
+	if err := os.WriteFile(blobPath, []byte("retention artifact"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blobURI := "file://" + blobPath
+
+	mustExec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := repo.exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed exec failed: %v\nsql: %s", err, sql)
+		}
+	}
+
+	mustExec(`
+		insert into sessions (id, tenant_id, owner_user_id, agent_profile_id, channel_type, channel_scope_key, acp_connection_id, acp_server_url, acp_agent_name, acp_session_id, mode, state, last_active_at, created_at, updated_at)
+		values
+			('ret_session_terminal','tenant_retention','user_ret','agent_profile_ret','slack','slack:retention:1','acp_default','','agent_ret','acp_session_ret_terminal','per-thread','archived',$1,$1,$1),
+			('ret_session_active','tenant_retention','user_ret','agent_profile_ret','slack','slack:retention:2','acp_default','','agent_ret','acp_session_ret_active','per-thread','open',$1,$1,$2)
+	`, old, recent)
+
+	mustExec(`
+		insert into messages (id, tenant_id, session_id, direction, channel_type, channel_message_id, role, text_preview, raw_payload_json, created_at)
+		values
+			('ret_message_old','tenant_retention','ret_session_terminal','inbound','slack','ret_cm_1','user','old retention message',$1,$2),
+			('ret_message_recent','tenant_retention','ret_session_active','inbound','slack','ret_cm_2','user','recent retention message',$3,$4)
+	`, []byte(`{"text":"old retention message"}`), old, []byte(`{"text":"recent retention message"}`), recent)
+
+	mustExec(`
+		insert into session_queue_items (id, tenant_id, session_id, inbound_message_id, queue_position, status, route_decision_json, enqueued_at, started_at, completed_at, expires_at)
+		values
+			('ret_queue_old','tenant_retention','ret_session_terminal','ret_message_old',0,'completed',$1,$2,$2,$2,$2),
+			('ret_queue_active','tenant_retention','ret_session_active','ret_message_recent',0,'queued',$3,$4,null,null,$4)
+	`, []byte(`{"agent_name":"agent_ret"}`), old, []byte(`{"agent_name":"agent_ret"}`), recent)
+
+	mustExec(`
+		insert into runs (id, session_id, acp_run_id, agent_name, mode, status, started_at, completed_at, last_event_at)
+		values
+			('ret_run_old','ret_session_terminal','acp_ret_run_old','agent_ret','per-thread','completed',$1,$1,$1),
+			('ret_run_active','ret_session_active','acp_ret_run_active','agent_ret','per-thread','running',$2,null,$2)
+	`, old, recent)
+
+	mustExec(`
+		insert into awaits (id, run_id, session_id, channel_type, status, schema_json, prompt_render_model_json, allowed_responder_ids_json, expires_at, resolved_at)
+		values ('ret_await_old','ret_run_old','ret_session_terminal','slack','expired',$1,$2,$3,$4,$4)
+	`, []byte(`{"type":"object"}`), []byte(`{"text":"approve?"}`), []byte(`["user_ret"]`), old)
+
+	mustExec(`
+		insert into await_responses (id, await_id, actor_channel_user_id, actor_identity_assurance, response_payload_json, idempotency_key, accepted_at, rejected_reason)
+		values ('ret_response_old','ret_await_old','user_ret','provider_verified',$1,'ret-response-1',$2,'')
+	`, []byte(`{"approved":true}`), old)
+
+	mustExec(`
+		insert into outbound_deliveries (id, tenant_id, session_id, run_id, await_id, logical_message_id, channel_type, delivery_kind, provider_message_id, provider_request_id, status, attempt_count, last_error, payload_json, created_at, updated_at)
+		values
+			('ret_delivery_old','tenant_retention','ret_session_terminal','ret_run_old',null,'ret-logical-old','slack','send','ret_msg_old','ret_req_old','sent',1,'',$1,$2,$2),
+			('ret_delivery_active','tenant_retention','ret_session_active','ret_run_active',null,'ret-logical-active','slack','send','','','queued',0,'',$3,$4,$4)
+	`, []byte(`{"text":"old delivery payload"}`), old, []byte(`{"text":"active delivery payload"}`), recent)
+
+	mustExec(`
+		insert into outbox_events (id, tenant_id, event_type, aggregate_type, aggregate_id, idempotency_key, payload_json, status, available_at, claimed_at, processed_at, attempt_count, last_error)
+		values
+			('ret_outbox_old','tenant_retention','queue.start','session_queue_item','ret_queue_old','ret-outbox-old',$1,'processed',$2,null,$2,0,null),
+			('ret_outbox_recent','tenant_retention','queue.start','session_queue_item','ret_queue_active','ret-outbox-recent',$3,'queued',$4,null,null,0,null)
+	`, []byte(`{"payload":"old outbox payload"}`), old, []byte(`{"payload":"recent outbox payload"}`), recent)
+
+	mustExec(`
+		insert into artifacts (id, message_id, direction, name, mime_type, size_bytes, sha256, storage_uri, created_at)
+		values ('ret_artifact_old','ret_message_old','outbound','retention.txt','text/plain',17,'sha256-retention',$1,$2)
+	`, blobURI, old)
+
+	mustExec(`
+		insert into audit_events (id, tenant_id, session_id, run_id, await_id, aggregate_type, aggregate_id, event_type, payload_json, created_at)
+		values
+			('ret_audit_old','tenant_retention','ret_session_terminal','ret_run_old','ret_await_old','retention','ret_session_terminal','retention.old',$1,$2),
+			('ret_audit_recent','tenant_retention','ret_session_active','ret_run_active','','retention','ret_session_active','retention.recent',$3,$4)
+	`, []byte(`{"old":true}`), old, []byte(`{"recent":true}`), recent)
+
+	mustExec(`
+		insert into channel_surface_state (id, tenant_id, channel_type, surface_key, active_session_id, created_at, updated_at)
+		values ('ret_surface_state','tenant_retention','slack','surface-retention','ret_session_terminal',$1,$1)
+	`, old)
+
+	mustExec(`
+		insert into session_aliases (id, tenant_id, session_id, channel_type, surface_key, alias, created_at)
+		values ('ret_alias_old','tenant_retention','ret_session_terminal','slack','surface-retention','retention',$1)
+	`, old)
+
+	return blobURI
 }
 
 func freePort(t *testing.T) int {
