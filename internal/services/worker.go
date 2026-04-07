@@ -8,6 +8,7 @@ import (
 
 	"nexus/internal/domain"
 	"nexus/internal/ports"
+	"nexus/internal/tracex"
 )
 
 type WorkerService struct {
@@ -20,19 +21,34 @@ type WorkerService struct {
 	Channels  map[string]ports.ChannelAdapter
 }
 
-func (s WorkerService) ProcessOnce(ctx context.Context, limit int) error {
+func (s WorkerService) ProcessOnce(ctx context.Context, limit int) (err error) {
+	ctx, end := tracex.StartSpan(ctx, "worker.process_once", "limit", limit)
+	defer func() { end(err) }()
 	events, err := s.Repo.ClaimOutbox(ctx, time.Now().UTC(), limit)
 	if err != nil {
+		tracex.Logger(ctx).Error("worker.claim_outbox_failed", "error", err.Error())
 		return err
 	}
+	tracex.Logger(ctx).Info("worker.claimed_outbox", "count", len(events))
 	for _, evt := range events {
-		if err := s.processEvent(ctx, evt); err != nil {
+		eventCtx, eventEnd := tracex.StartSpan(ctx, "worker.process_event",
+			"outbox_event_id", evt.ID,
+			"event_type", evt.EventType,
+			"aggregate_id", evt.AggregateID,
+			"tenant_id", evt.TenantID,
+		)
+		if err := s.processEvent(eventCtx, evt); err != nil {
+			eventEnd(err)
 			_ = s.Repo.MarkOutboxFailed(ctx, evt.ID, err, time.Now().UTC().Add(10*time.Second))
+			tracex.Logger(eventCtx).Error("worker.event_failed", "outbox_event_id", evt.ID, "event_type", evt.EventType, "error", err.Error())
 			continue
 		}
+		eventEnd(nil)
 		if err := s.Repo.MarkOutboxDone(ctx, evt.ID); err != nil {
+			tracex.Logger(eventCtx).Error("worker.mark_outbox_done_failed", "outbox_event_id", evt.ID, "error", err.Error())
 			return err
 		}
+		tracex.Logger(eventCtx).Info("worker.event_completed", "outbox_event_id", evt.ID, "event_type", evt.EventType)
 	}
 	return nil
 }
@@ -65,6 +81,7 @@ func (s WorkerService) processEvent(ctx context.Context, evt domain.OutboxEvent)
 }
 
 func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxEvent) error {
+	tracex.Logger(ctx).Info("worker.queue_start.begin", "queue_item_id", evt.AggregateID, "idempotency_key", evt.IdempotencyKey)
 	queued, err := s.Repo.GetQueueItem(ctx, evt.AggregateID)
 	if err != nil {
 		return err
@@ -81,6 +98,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 		return err
 	}
 	if active {
+		tracex.Logger(ctx).Info("worker.queue_start.skipped_active_run", "session_id", session.ID, "queue_item_id", queued.ID)
 		return nil
 	}
 	route, err := s.Repo.GetRouteDecision(ctx, queued.ID)
@@ -125,6 +143,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	if err != nil {
 		return err
 	}
+	tracex.Logger(ctx).Info("worker.run_started", "queue_item_id", queued.ID, "run_id", run.ID, "acp_run_id", run.ACPRunID, "event_count", len(stream))
 	if err := s.Repo.CreateRun(ctx, run); err != nil {
 		return err
 	}
@@ -194,6 +213,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 		}
 	}
 	if terminalStatus != "" {
+		tracex.Logger(ctx).Info("worker.run_terminal", "run_id", run.ID, "status", terminalStatus, "session_id", session.ID)
 		if _, err := s.Repo.EnqueueNextQueueItem(ctx, session.ID); err != nil {
 			return err
 		}
@@ -219,6 +239,7 @@ func enforceCompatibility(runEvent domain.RunEvent, compat *domain.AgentCompatib
 }
 
 func (s WorkerService) processDelivery(ctx context.Context, evt domain.OutboxEvent) error {
+	tracex.Logger(ctx).Info("worker.delivery.begin", "delivery_id", evt.AggregateID)
 	delivery, err := s.Repo.GetDelivery(ctx, evt.AggregateID)
 	if err != nil {
 		return err
@@ -241,15 +262,18 @@ func (s WorkerService) processDelivery(ctx context.Context, evt domain.OutboxEve
 	}
 	if sendErr != nil {
 		_ = s.Repo.MarkDeliveryFailed(ctx, delivery.ID, sendErr)
+		tracex.Logger(ctx).Error("worker.delivery.failed", "delivery_id", delivery.ID, "channel_type", delivery.ChannelType, "error", sendErr.Error())
 		return sendErr
 	}
 	if err := s.Repo.MarkDeliverySent(ctx, delivery.ID, result); err != nil {
 		return err
 	}
+	tracex.Logger(ctx).Info("worker.delivery.sent", "delivery_id", delivery.ID, "channel_type", delivery.ChannelType, "provider_message_id", result.ProviderMessageID)
 	return sendErr
 }
 
 func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.OutboxEvent) error {
+	tracex.Logger(ctx).Info("worker.await_resume.begin", "outbox_event_id", evt.ID, "await_id", evt.AggregateID)
 	var req domain.ResumeRequest
 	if err := json.Unmarshal(evt.PayloadJSON, &req); err != nil {
 		return fmt.Errorf("unmarshal await resume: %w", err)
@@ -266,6 +290,7 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 	if err != nil {
 		return err
 	}
+	tracex.Logger(ctx).Info("worker.await_resume.loaded", "await_id", await.ID, "run_id", await.RunID, "event_count", len(runEvents))
 	terminalStatus := ""
 	for _, runEvent := range runEvents {
 		if err := s.persistRunEvent(ctx, session, runEvent); err != nil {
@@ -296,6 +321,7 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 		}
 	}
 	if terminalStatus != "" {
+		tracex.Logger(ctx).Info("worker.await_resume.terminal", "await_id", await.ID, "run_id", await.RunID, "status", terminalStatus)
 		if _, err := s.Repo.EnqueueNextQueueItem(ctx, session.ID); err != nil {
 			return err
 		}

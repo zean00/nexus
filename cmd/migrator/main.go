@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,14 +15,17 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "migrator"))
 	ctx := context.Background()
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("startup.config_load_failed", "error", err.Error())
+		os.Exit(1)
 	}
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("startup.db_init_failed", "error", err.Error())
+		os.Exit(1)
 	}
 	defer pool.Close()
 
@@ -32,12 +35,14 @@ func main() {
 			applied_at timestamptz not null default now()
 		)
 	`); err != nil {
-		log.Fatal(err)
+		slog.Error("migrations.bootstrap_failed", "error", err.Error())
+		os.Exit(1)
 	}
 
 	entries, err := os.ReadDir("migrations")
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("migrations.readdir_failed", "error", err.Error())
+		os.Exit(1)
 	}
 	var files []string
 	for _, entry := range entries {
@@ -50,32 +55,38 @@ func main() {
 	for _, name := range files {
 		var applied bool
 		if err := pool.QueryRow(ctx, `select exists(select 1 from schema_migrations where version=$1)`, name).Scan(&applied); err != nil {
-			log.Fatal(err)
+			slog.Error("migrations.check_failed", "error", err.Error(), "name", name)
+			os.Exit(1)
 		}
 		if applied {
-			log.Printf("migration already applied: %s", name)
+			slog.Info("migrations.already_applied", "name", name)
 			continue
 		}
 		path := filepath.Join("migrations", name)
 		migration, err := os.ReadFile(path)
 		if err != nil {
-			log.Fatal(err)
+			slog.Error("migrations.read_failed", "error", err.Error(), "name", name, "path", path)
+			os.Exit(1)
 		}
 		tx, err := pool.Begin(ctx)
 		if err != nil {
-			log.Fatal(err)
+			slog.Error("migrations.begin_failed", "error", err.Error(), "name", name)
+			os.Exit(1)
 		}
 		if _, err := tx.Exec(ctx, string(migration)); err != nil {
 			_ = tx.Rollback(ctx)
-			log.Fatalf("apply migration %s: %v", name, err)
+			slog.Error("migrations.apply_failed", "error", err.Error(), "name", name)
+			os.Exit(1)
 		}
 		if _, err := tx.Exec(ctx, `insert into schema_migrations (version) values ($1)`, name); err != nil {
 			_ = tx.Rollback(ctx)
-			log.Fatalf("record migration %s: %v", name, err)
+			slog.Error("migrations.record_failed", "error", err.Error(), "name", name)
+			os.Exit(1)
 		}
 		if err := tx.Commit(ctx); err != nil {
-			log.Fatal(err)
+			slog.Error("migrations.commit_failed", "error", err.Error(), "name", name)
+			os.Exit(1)
 		}
-		log.Println(fmt.Sprintf("migration applied: %s", name))
+		slog.Info("migrations.applied", "name", name, "message", fmt.Sprintf("migration applied: %s", name))
 	}
 }

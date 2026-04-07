@@ -10,6 +10,7 @@ import (
 
 	"nexus/internal/domain"
 	"nexus/internal/ports"
+	"nexus/internal/tracex"
 )
 
 var ErrDuplicateEvent = errors.New("duplicate inbound event")
@@ -25,9 +26,15 @@ type InboundResult struct {
 	QueueID   string `json:"queue_id,omitempty"`
 }
 
-func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundEvent) (InboundResult, error) {
-	var result InboundResult
-	err := s.Repo.InTx(ctx, func(ctx context.Context, repo ports.Repository) error {
+func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundEvent) (result InboundResult, err error) {
+	ctx, end := tracex.StartSpan(ctx, "inbound.handle",
+		"event_id", evt.EventID,
+		"tenant_id", evt.TenantID,
+		"channel", evt.Channel,
+		"interaction", evt.Interaction,
+	)
+	defer func() { end(err) }()
+	err = s.Repo.InTx(ctx, func(ctx context.Context, repo ports.Repository) error {
 		inserted, err := repo.RecordInboundReceipt(ctx, evt)
 		if err != nil {
 			return err
@@ -82,11 +89,15 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 		return nil
 	})
 	if errors.Is(err, ErrDuplicateEvent) {
+		tracex.Logger(ctx).Info("inbound.duplicate", "event_id", evt.EventID, "provider_event_id", evt.ProviderEventID)
 		return InboundResult{Status: "duplicate"}, nil
 	}
 	if err != nil {
-		return InboundResult{}, fmt.Errorf("handle inbound at %s: %w", time.Now().Format(time.RFC3339), err)
+		tracex.Logger(ctx).Error("inbound.failed", "event_id", evt.EventID, "error", err.Error())
+		err = fmt.Errorf("handle inbound at %s: %w", time.Now().Format(time.RFC3339), err)
+		return InboundResult{}, err
 	}
+	tracex.Logger(ctx).Info("inbound.accepted", "event_id", evt.EventID, "session_id", result.SessionID, "queue_id", result.QueueID, "status", result.Status)
 	return result, nil
 }
 

@@ -724,6 +724,9 @@ func TestGatewayHealthEnvelope(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
+	if rec.Header().Get("X-Trace-ID") == "" || rec.Header().Get("X-Request-ID") == "" {
+		t.Fatalf("expected trace/request headers, got %+v", rec.Header())
+	}
 	var payload struct {
 		Data struct {
 			Status string `json:"status"`
@@ -771,6 +774,9 @@ func TestAdminHealthEnvelope(t *testing.T) {
 	app.AdminHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if rec.Header().Get("X-Trace-ID") == "" || rec.Header().Get("X-Request-ID") == "" {
+		t.Fatalf("expected trace/request headers, got %+v", rec.Header())
 	}
 	var payload struct {
 		Data struct {

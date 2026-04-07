@@ -8,6 +8,7 @@ import (
 
 	"nexus/internal/domain"
 	"nexus/internal/ports"
+	"nexus/internal/tracex"
 )
 
 type ReconcilerConfig struct {
@@ -34,23 +35,31 @@ type Reconciler struct {
 	Observer ReconcilerObserver
 }
 
-func (r Reconciler) RunOnce(ctx context.Context, limit int) error {
+func (r Reconciler) RunOnce(ctx context.Context, limit int) (err error) {
+	ctx, end := tracex.StartSpan(ctx, "reconciler.run_once", "limit", limit)
+	defer func() { end(err) }()
 	now := time.Now().UTC()
-	if err := r.requeueClaimedOutbox(ctx, now, limit); err != nil {
+	if err = r.requeueClaimedOutbox(ctx, now, limit); err != nil {
+		tracex.Logger(ctx).Error("reconciler.requeue_claimed_outbox_failed", "error", err.Error())
 		return err
 	}
-	if err := r.repairStuckQueueItems(ctx, now, limit); err != nil {
+	if err = r.repairStuckQueueItems(ctx, now, limit); err != nil {
+		tracex.Logger(ctx).Error("reconciler.repair_stuck_queue_items_failed", "error", err.Error())
 		return err
 	}
-	if err := r.refreshStaleRuns(ctx, now, limit); err != nil {
+	if err = r.refreshStaleRuns(ctx, now, limit); err != nil {
+		tracex.Logger(ctx).Error("reconciler.refresh_stale_runs_failed", "error", err.Error())
 		return err
 	}
-	if err := r.expireAwaits(ctx, now, limit); err != nil {
+	if err = r.expireAwaits(ctx, now, limit); err != nil {
+		tracex.Logger(ctx).Error("reconciler.expire_awaits_failed", "error", err.Error())
 		return err
 	}
-	if err := r.retryStaleDeliveries(ctx, now, limit); err != nil {
+	if err = r.retryStaleDeliveries(ctx, now, limit); err != nil {
+		tracex.Logger(ctx).Error("reconciler.retry_stale_deliveries_failed", "error", err.Error())
 		return err
 	}
+	tracex.Logger(ctx).Info("reconciler.completed", "limit", limit)
 	return nil
 }
 

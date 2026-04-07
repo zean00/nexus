@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -12,16 +13,19 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "gateway"))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("startup.config_load_failed", "error", err.Error())
+		os.Exit(1)
 	}
 	application, err := app.New(ctx, cfg)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("startup.app_init_failed", "error", err.Error())
+		os.Exit(1)
 	}
 	defer application.Close()
 
@@ -36,12 +40,14 @@ func main() {
 
 	go func() {
 		if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal(err)
+			slog.Error("server.admin_failed", "error", err.Error())
+			os.Exit(1)
 		}
 	}()
 	go func() {
 		if err := application.WorkerLoop(ctx); err != nil && ctx.Err() == nil {
-			log.Fatal(err)
+			slog.Error("worker.loop_failed", "error", err.Error())
+			os.Exit(1)
 		}
 	}()
 
@@ -51,8 +57,9 @@ func main() {
 		_ = adminServer.Shutdown(context.Background())
 	}()
 
-	log.Printf("gateway listening on %s admin %s", cfg.HTTPAddr, cfg.AdminAddr)
+	slog.Info("server.started", "http_addr", cfg.HTTPAddr, "admin_addr", cfg.AdminAddr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+		slog.Error("server.gateway_failed", "error", err.Error())
+		os.Exit(1)
 	}
 }

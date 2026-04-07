@@ -17,6 +17,7 @@ import (
 	"nexus/internal/httpx"
 	"nexus/internal/ports"
 	"nexus/internal/services"
+	"nexus/internal/tracex"
 )
 
 type App struct {
@@ -401,7 +402,7 @@ func (a *App) GatewayHandler() http.Handler {
 	})
 	mux.HandleFunc("/webhooks/slack", a.handleSlackWebhook)
 	mux.HandleFunc("/webhooks/telegram", a.handleTelegramWebhook)
-	return mux
+	return tracex.Middleware("gateway", mux)
 }
 
 func (a *App) AdminHandler() http.Handler {
@@ -459,7 +460,7 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/deliveries", a.handleListDeliveries)
 	mux.HandleFunc("/admin/runs/cancel", a.handleCancelRun)
 	mux.HandleFunc("/admin/deliveries/retry", a.handleRetryDelivery)
-	return mux
+	return tracex.Middleware("admin", mux)
 }
 
 func (a *App) WorkerLoop(ctx context.Context) error {
