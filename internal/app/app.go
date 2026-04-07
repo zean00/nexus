@@ -26,6 +26,7 @@ type App struct {
 	Inbound    services.InboundService
 	Await      services.AwaitService
 	Artifacts  services.ArtifactService
+	Retention  services.RetentionService
 	Catalog    *services.AgentCatalog
 	Worker     services.WorkerService
 	Reconciler services.Reconciler
@@ -43,6 +44,8 @@ type RuntimeState struct {
 	LastWorkerError           string
 	LastReconcileRunAt        time.Time
 	LastReconcileError        string
+	LastRetentionRunAt        time.Time
+	LastRetentionError        string
 	LastHealthStatus          string
 	LastReadinessStatus       string
 	RecentTransitions         []ProbeTransition
@@ -52,6 +55,11 @@ type RuntimeState struct {
 	RunRefreshCount           int
 	AwaitExpiryCount          int
 	DeliveryRetryCount        int
+	RetentionPayloadCount     int
+	RetentionArtifactCount    int
+	RetentionAuditCount       int
+	RetentionSessionCount     int
+	RetentionHistoryRowCount  int
 }
 
 type ProbeTransition struct {
@@ -66,6 +74,8 @@ type RuntimeStatus struct {
 	LastWorkerError           string            `json:"last_worker_error,omitempty"`
 	LastReconcileRunAt        time.Time         `json:"last_reconcile_run_at,omitempty"`
 	LastReconcileError        string            `json:"last_reconcile_error,omitempty"`
+	LastRetentionRunAt        time.Time         `json:"last_retention_run_at,omitempty"`
+	LastRetentionError        string            `json:"last_retention_error,omitempty"`
 	LastHealthStatus          string            `json:"last_health_status,omitempty"`
 	LastReadinessStatus       string            `json:"last_readiness_status,omitempty"`
 	RecentTransitions         []ProbeTransition `json:"recent_transitions,omitempty"`
@@ -75,6 +85,11 @@ type RuntimeStatus struct {
 	RunRefreshCount           int               `json:"run_refresh_count"`
 	AwaitExpiryCount          int               `json:"await_expiry_count"`
 	DeliveryRetryCount        int               `json:"delivery_retry_count"`
+	RetentionPayloadCount     int               `json:"retention_payload_count"`
+	RetentionArtifactCount    int               `json:"retention_artifact_count"`
+	RetentionAuditCount       int               `json:"retention_audit_count"`
+	RetentionSessionCount     int               `json:"retention_session_count"`
+	RetentionHistoryRowCount  int               `json:"retention_history_row_count"`
 }
 
 func (r *RuntimeState) MarkWorkerRun(at time.Time) {
@@ -115,6 +130,30 @@ func (r *RuntimeState) MarkReconcileError(err error) {
 	r.LastReconcileError = err.Error()
 }
 
+func (r *RuntimeState) MarkRetentionRun(at time.Time, counts domain.RetentionCounts) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.LastRetentionRunAt = at
+	r.LastRetentionError = ""
+	r.RetentionPayloadCount += counts.MessagePayloads + counts.DeliveryPayloads + counts.OutboxPayloads + counts.AwaitPayloads + counts.AwaitResponsePayloads
+	r.RetentionArtifactCount += counts.ArtifactBlobs
+	r.RetentionAuditCount += counts.AuditRows
+	r.RetentionSessionCount += counts.Sessions
+	r.RetentionHistoryRowCount += counts.HistoryRows
+}
+
+func (r *RuntimeState) MarkRetentionError(err error) {
+	if r == nil || err == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.LastRetentionError = err.Error()
+}
+
 func (r *RuntimeState) Status() RuntimeStatus {
 	if r == nil {
 		return RuntimeStatus{}
@@ -126,6 +165,8 @@ func (r *RuntimeState) Status() RuntimeStatus {
 		LastWorkerError:           r.LastWorkerError,
 		LastReconcileRunAt:        r.LastReconcileRunAt,
 		LastReconcileError:        r.LastReconcileError,
+		LastRetentionRunAt:        r.LastRetentionRunAt,
+		LastRetentionError:        r.LastRetentionError,
 		LastHealthStatus:          r.LastHealthStatus,
 		LastReadinessStatus:       r.LastReadinessStatus,
 		RecentTransitions:         append([]ProbeTransition(nil), r.RecentTransitions...),
@@ -135,6 +176,11 @@ func (r *RuntimeState) Status() RuntimeStatus {
 		RunRefreshCount:           r.RunRefreshCount,
 		AwaitExpiryCount:          r.AwaitExpiryCount,
 		DeliveryRetryCount:        r.DeliveryRetryCount,
+		RetentionPayloadCount:     r.RetentionPayloadCount,
+		RetentionArtifactCount:    r.RetentionArtifactCount,
+		RetentionAuditCount:       r.RetentionAuditCount,
+		RetentionSessionCount:     r.RetentionSessionCount,
+		RetentionHistoryRowCount:  r.RetentionHistoryRowCount,
 	}
 }
 
@@ -254,7 +300,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		StartupTimeout:   cfg.ACPStartupTimeout,
 		RPCTimeout:       cfg.ACPRPCTimeout,
 	})
-	artifactSvc := services.ArtifactService{Store: storage.New(cfg.ObjectStorageBaseURL)}
+	objectStore := storage.New(cfg.ObjectStorageBaseURL)
+	artifactSvc := services.ArtifactService{Store: objectStore}
 	catalog := &services.AgentCatalog{
 		Bridge: acpClient,
 		TTL:    cfg.ACPManifestCacheTTL,
@@ -282,7 +329,19 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 			Repo: repo,
 		},
 		Artifacts: artifactSvc,
-		Catalog:   catalog,
+		Retention: services.RetentionService{
+			Repo:  repo,
+			Store: objectStore,
+			Defaults: domain.EffectiveRetentionPolicy{
+				TenantID:            cfg.DefaultTenantID,
+				Enabled:             cfg.RetentionEnabled,
+				PayloadDays:         cfg.RetentionPayloadDays,
+				ArtifactDays:        cfg.RetentionArtifactDays,
+				AuditDays:           cfg.RetentionAuditDays,
+				RelationalGraceDays: cfg.RetentionGraceDays,
+			},
+		},
+		Catalog: catalog,
 		Worker: services.WorkerService{
 			Repo:      repo,
 			ACP:       acpClient,
@@ -391,6 +450,10 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/telegram/requests", a.handleListTelegramRequests)
 	mux.HandleFunc("/admin/telegram/requests/resolve", a.handleResolveTelegramRequest)
 	mux.HandleFunc("/admin/runtime", a.handleRuntimeStatus)
+	mux.HandleFunc("/admin/retention", a.handleRetentionStatus)
+	mux.HandleFunc("/admin/retention/run", a.handleRunRetention)
+	mux.HandleFunc("/admin/retention/policy/upsert", a.handleUpsertRetentionPolicy)
+	mux.HandleFunc("/admin/retention/policy/delete", a.handleDeleteRetentionPolicy)
 	mux.HandleFunc("/admin/messages", a.handleListMessages)
 	mux.HandleFunc("/admin/artifacts", a.handleListArtifacts)
 	mux.HandleFunc("/admin/deliveries", a.handleListDeliveries)
@@ -402,8 +465,17 @@ func (a *App) AdminHandler() http.Handler {
 func (a *App) WorkerLoop(ctx context.Context) error {
 	ticker := time.NewTicker(a.Config.WorkerPollInterval)
 	reconcileTicker := time.NewTicker(a.Config.ReconcilerInterval)
+	var retentionTicker *time.Ticker
+	var retentionCh <-chan time.Time
+	if a.Config.RetentionEnabled {
+		retentionTicker = time.NewTicker(a.Config.RetentionInterval)
+		retentionCh = retentionTicker.C
+	}
 	defer ticker.Stop()
 	defer reconcileTicker.Stop()
+	if retentionTicker != nil {
+		defer retentionTicker.Stop()
+	}
 	for {
 		if err := a.Worker.ProcessOnce(ctx, 10); err != nil {
 			a.Runtime.MarkWorkerError(err)
@@ -420,6 +492,13 @@ func (a *App) WorkerLoop(ctx context.Context) error {
 				return err
 			}
 			a.Runtime.MarkReconcileRun(time.Now().UTC())
+		case <-retentionCh:
+			summary, err := a.Retention.RunOnce(ctx, "", false, a.Config.RetentionBatchSize)
+			if err != nil {
+				a.Runtime.MarkRetentionError(err)
+				return err
+			}
+			a.Runtime.MarkRetentionRun(time.Now().UTC(), summary.Totals)
 		}
 	}
 }

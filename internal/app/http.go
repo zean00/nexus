@@ -372,6 +372,132 @@ func (a *App) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, data, map[string]any{"service": "admin"})
 }
 
+func (a *App) handleRetentionStatus(w http.ResponseWriter, r *http.Request) {
+	tenantID := queryString(r, "tenant_id")
+	if tenantID == "" {
+		tenantID = a.Config.DefaultTenantID
+	}
+	override, effective, err := a.Retention.ResolvePolicy(r.Context(), tenantID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	dryRun, err := a.Retention.DryRun(r.Context(), tenantID, a.Config.RetentionBatchSize)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if services.IsRetentionLockBusy(err) {
+			status = http.StatusConflict
+		}
+		httpx.Error(w, status, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"tenant_id": tenantID,
+		"override":  override,
+		"effective": effective,
+		"runtime":   a.Runtime.Status(),
+		"dry_run":   dryRun,
+	}, map[string]any{"service": "admin"})
+}
+
+func (a *App) handleRunRetention(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		TenantID string `json:"tenant_id"`
+		DryRun   bool   `json:"dry_run"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	summary, err := a.Retention.RunOnce(r.Context(), body.TenantID, body.DryRun, a.Config.RetentionBatchSize)
+	if err != nil {
+		code := http.StatusInternalServerError
+		if services.IsRetentionLockBusy(err) {
+			code = http.StatusConflict
+		}
+		httpx.Error(w, code, err.Error())
+		return
+	}
+	if !body.DryRun {
+		a.Runtime.MarkRetentionRun(time.Now().UTC(), summary.Totals)
+	}
+	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
+		ID:            "audit_retention_run_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "retention",
+		AggregateID:   strings.TrimSpace(body.TenantID),
+		EventType:     "retention.run_completed",
+		PayloadJSON:   mustJSON(summary),
+		CreatedAt:     time.Now().UTC(),
+	})
+	httpx.OK(w, summary, actionMeta("retention_run_completed"))
+}
+
+func (a *App) handleUpsertRetentionPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body domain.RetentionPolicy
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.TenantID) == "" {
+		httpx.Error(w, http.StatusBadRequest, "tenant_id required")
+		return
+	}
+	body.TenantID = strings.TrimSpace(body.TenantID)
+	if err := a.Retention.UpsertPolicy(r.Context(), body); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
+		ID:            "audit_retention_policy_upsert_" + body.TenantID + "_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
+		TenantID:      body.TenantID,
+		AggregateType: "retention_policy",
+		AggregateID:   body.TenantID,
+		EventType:     "retention.policy_upserted",
+		PayloadJSON:   mustJSON(body),
+		CreatedAt:     time.Now().UTC(),
+	})
+	httpx.OK(w, body, actionMeta("retention_policy_upserted"))
+}
+
+func (a *App) handleDeleteRetentionPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		TenantID string `json:"tenant_id"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.TenantID) == "" {
+		httpx.Error(w, http.StatusBadRequest, "tenant_id required")
+		return
+	}
+	body.TenantID = strings.TrimSpace(body.TenantID)
+	if err := a.Retention.DeletePolicy(r.Context(), body.TenantID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
+		ID:            "audit_retention_policy_delete_" + body.TenantID + "_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
+		TenantID:      body.TenantID,
+		AggregateType: "retention_policy",
+		AggregateID:   body.TenantID,
+		EventType:     "retention.policy_deleted",
+		PayloadJSON:   mustJSON(body),
+		CreatedAt:     time.Now().UTC(),
+	})
+	httpx.OK(w, body, actionMeta("retention_policy_deleted"))
+}
+
 func (a *App) handleListAwaits(w http.ResponseWriter, r *http.Request) {
 	page, err := parsePage(r, 50, 200)
 	if err != nil {
@@ -1464,6 +1590,7 @@ func writeMetrics(w http.ResponseWriter, ctx context.Context, service, tenantID 
 		status := runtime.Status()
 		fmt.Fprintf(&b, "nexus_worker_error{service=%q} %d\n", service, boolMetric(status.LastWorkerError != ""))
 		fmt.Fprintf(&b, "nexus_reconciler_error{service=%q} %d\n", service, boolMetric(status.LastReconcileError != ""))
+		fmt.Fprintf(&b, "nexus_retention_error{service=%q} %d\n", service, boolMetric(status.LastRetentionError != ""))
 		fmt.Fprintf(&b, "nexus_probe_transitions_total{service=%q} %d\n", service, len(status.RecentTransitions))
 		fmt.Fprintf(&b, "nexus_outbox_requeues_total{service=%q} %d\n", service, status.OutboxRequeueCount)
 		fmt.Fprintf(&b, "nexus_queue_repairs_recovered_total{service=%q} %d\n", service, status.QueueRepairRecoveredCount)
@@ -1471,11 +1598,19 @@ func writeMetrics(w http.ResponseWriter, ctx context.Context, service, tenantID 
 		fmt.Fprintf(&b, "nexus_run_refreshes_total{service=%q} %d\n", service, status.RunRefreshCount)
 		fmt.Fprintf(&b, "nexus_await_expiries_total{service=%q} %d\n", service, status.AwaitExpiryCount)
 		fmt.Fprintf(&b, "nexus_delivery_retries_total{service=%q} %d\n", service, status.DeliveryRetryCount)
+		fmt.Fprintf(&b, "nexus_retention_payload_redactions_total{service=%q} %d\n", service, status.RetentionPayloadCount)
+		fmt.Fprintf(&b, "nexus_retention_artifact_blobs_deleted_total{service=%q} %d\n", service, status.RetentionArtifactCount)
+		fmt.Fprintf(&b, "nexus_retention_audit_rows_deleted_total{service=%q} %d\n", service, status.RetentionAuditCount)
+		fmt.Fprintf(&b, "nexus_retention_sessions_deleted_total{service=%q} %d\n", service, status.RetentionSessionCount)
+		fmt.Fprintf(&b, "nexus_retention_history_rows_deleted_total{service=%q} %d\n", service, status.RetentionHistoryRowCount)
 		if !status.LastWorkerRunAt.IsZero() {
 			fmt.Fprintf(&b, "nexus_worker_last_run_unix{service=%q} %d\n", service, status.LastWorkerRunAt.Unix())
 		}
 		if !status.LastReconcileRunAt.IsZero() {
 			fmt.Fprintf(&b, "nexus_reconciler_last_run_unix{service=%q} %d\n", service, status.LastReconcileRunAt.Unix())
+		}
+		if !status.LastRetentionRunAt.IsZero() {
+			fmt.Fprintf(&b, "nexus_retention_last_run_unix{service=%q} %d\n", service, status.LastRetentionRunAt.Unix())
 		}
 	}
 	repoError := false

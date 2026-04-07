@@ -34,3 +34,18 @@ func (s ObjectStore) Save(_ context.Context, objectKey string, content []byte) (
 	}
 	return "file://" + target, nil
 }
+
+func (s ObjectStore) Delete(_ context.Context, storageURI string) error {
+	if s.rootDir == "" {
+		return fmt.Errorf("only file:// object storage is implemented")
+	}
+	target := strings.TrimSpace(storageURI)
+	if !strings.HasPrefix(target, "file://") {
+		return fmt.Errorf("unsupported storage uri %q", storageURI)
+	}
+	target = strings.TrimPrefix(target, "file://")
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}

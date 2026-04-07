@@ -21,6 +21,7 @@ import (
 
 type PostgresRepository struct {
 	pool *pgxpool.Pool
+	conn *pgxpool.Conn
 	tx   pgx.Tx
 }
 
@@ -39,11 +40,22 @@ func (r *PostgresRepository) Close() {
 }
 
 func (r *PostgresRepository) InTx(ctx context.Context, fn func(ctx context.Context, repo ports.Repository) error) error {
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	var (
+		tx  pgx.Tx
+		err error
+	)
+	switch {
+	case r.tx != nil:
+		tx, err = r.tx.Begin(ctx)
+	case r.conn != nil:
+		tx, err = r.conn.BeginTx(ctx, pgx.TxOptions{})
+	default:
+		tx, err = r.pool.BeginTx(ctx, pgx.TxOptions{})
+	}
 	if err != nil {
 		return err
 	}
-	repo := &PostgresRepository{pool: r.pool, tx: tx}
+	repo := &PostgresRepository{pool: r.pool, conn: r.conn, tx: tx}
 	if err := fn(ctx, repo); err != nil {
 		_ = tx.Rollback(ctx)
 		return err
@@ -1989,6 +2001,444 @@ func (r *PostgresRepository) upsertSessionAlias(ctx context.Context, tenantID, c
 	return err
 }
 
+func (r *PostgresRepository) WithRetentionLock(ctx context.Context, fn func(ctx context.Context, repo ports.RetentionRepository) error) error {
+	if r.conn != nil {
+		var locked bool
+		if err := r.queryRow(ctx, `select pg_try_advisory_lock($1)`, int64(8745123901)).Scan(&locked); err != nil {
+			return err
+		}
+		if !locked {
+			return domain.ErrRetentionLockBusy
+		}
+		defer func() {
+			_ = r.queryRow(context.Background(), `select pg_advisory_unlock($1)`, int64(8745123901)).Scan(&locked)
+		}()
+		return fn(ctx, r)
+	}
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	repo := &PostgresRepository{pool: r.pool, conn: conn}
+	var locked bool
+	if err := repo.queryRow(ctx, `select pg_try_advisory_lock($1)`, int64(8745123901)).Scan(&locked); err != nil {
+		conn.Release()
+		return err
+	}
+	if !locked {
+		conn.Release()
+		return domain.ErrRetentionLockBusy
+	}
+	defer func() {
+		_ = repo.queryRow(context.Background(), `select pg_advisory_unlock($1)`, int64(8745123901)).Scan(&locked)
+		conn.Release()
+	}()
+	return fn(ctx, repo)
+}
+
+func (r *PostgresRepository) ListRetentionTenantIDs(ctx context.Context) ([]string, error) {
+	rows, err := r.query(ctx, `
+		with tenant_ids as (
+			select tenant_id from sessions
+			union
+			select tenant_id from inbound_receipts
+			union
+			select tenant_id from messages
+			union
+			select tenant_id from outbound_deliveries
+			union
+			select tenant_id from outbox_events
+			union
+			select tenant_id from audit_events
+			union
+			select tenant_id from telegram_user_access
+			union
+			select tenant_id from retention_policies
+		)
+		select tenant_id from tenant_ids where tenant_id <> '' order by tenant_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var tenantID string
+		if err := rows.Scan(&tenantID); err != nil {
+			return nil, err
+		}
+		out = append(out, tenantID)
+	}
+	return out, rows.Err()
+}
+
+func (r *PostgresRepository) GetRetentionPolicy(ctx context.Context, tenantID string) (domain.RetentionPolicy, error) {
+	row := r.queryRow(ctx, `
+		select tenant_id, enabled, payload_days, artifact_days, audit_days, relational_grace_days, updated_at
+		from retention_policies
+		where tenant_id=$1
+	`, tenantID)
+	var (
+		policy   domain.RetentionPolicy
+		enabled  *bool
+		payload  *int
+		artifact *int
+		audit    *int
+		grace    *int
+	)
+	err := row.Scan(&policy.TenantID, &enabled, &payload, &artifact, &audit, &grace, &policy.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.RetentionPolicy{TenantID: tenantID}, nil
+	}
+	if err != nil {
+		return domain.RetentionPolicy{}, err
+	}
+	policy.Enabled = enabled
+	policy.PayloadDays = payload
+	policy.ArtifactDays = artifact
+	policy.AuditDays = audit
+	policy.RelationalGraceDays = grace
+	return policy, nil
+}
+
+func (r *PostgresRepository) UpsertRetentionPolicy(ctx context.Context, policy domain.RetentionPolicy) error {
+	_, err := r.exec(ctx, `
+		insert into retention_policies (
+			tenant_id, enabled, payload_days, artifact_days, audit_days, relational_grace_days, updated_at
+		) values ($1,$2,$3,$4,$5,$6,now())
+		on conflict (tenant_id) do update set
+			enabled=excluded.enabled,
+			payload_days=excluded.payload_days,
+			artifact_days=excluded.artifact_days,
+			audit_days=excluded.audit_days,
+			relational_grace_days=excluded.relational_grace_days,
+			updated_at=now()
+	`, policy.TenantID, policy.Enabled, policy.PayloadDays, policy.ArtifactDays, policy.AuditDays, policy.RelationalGraceDays)
+	return err
+}
+
+func (r *PostgresRepository) DeleteRetentionPolicy(ctx context.Context, tenantID string) error {
+	_, err := r.exec(ctx, `delete from retention_policies where tenant_id=$1`, tenantID)
+	return err
+}
+
+func (r *PostgresRepository) CountRetentionCandidates(ctx context.Context, tenantID string, cutoffs domain.RetentionCutoffs) (domain.RetentionCounts, error) {
+	var counts domain.RetentionCounts
+	if err := r.queryRow(ctx, `select count(*) from messages where tenant_id=$1 and created_at < $2 and payload_purged_at is null`, tenantID, cutoffs.PayloadBefore).Scan(&counts.MessagePayloads); err != nil {
+		return counts, err
+	}
+	if err := r.queryRow(ctx, `select count(*) from outbound_deliveries where tenant_id=$1 and created_at < $2 and payload_purged_at is null`, tenantID, cutoffs.PayloadBefore).Scan(&counts.DeliveryPayloads); err != nil {
+		return counts, err
+	}
+	if err := r.queryRow(ctx, `select count(*) from outbox_events where tenant_id=$1 and available_at < $2 and payload_purged_at is null`, tenantID, cutoffs.PayloadBefore).Scan(&counts.OutboxPayloads); err != nil {
+		return counts, err
+	}
+	if err := r.queryRow(ctx, `
+		select count(*) from awaits a
+		join sessions s on s.id = a.session_id
+		where s.tenant_id=$1 and a.expires_at < $2 and a.payload_purged_at is null
+	`, tenantID, cutoffs.PayloadBefore).Scan(&counts.AwaitPayloads); err != nil {
+		return counts, err
+	}
+	if err := r.queryRow(ctx, `
+		select count(*) from await_responses ar
+		join awaits a on a.id = ar.await_id
+		join sessions s on s.id = a.session_id
+		where s.tenant_id=$1 and ar.accepted_at < $2 and ar.payload_purged_at is null
+	`, tenantID, cutoffs.PayloadBefore).Scan(&counts.AwaitResponsePayloads); err != nil {
+		return counts, err
+	}
+	if err := r.queryRow(ctx, `
+		select count(*) from artifacts ar
+		join messages m on m.id = ar.message_id
+		where m.tenant_id=$1 and ar.created_at < $2 and ar.blob_purged_at is null and coalesce(ar.storage_uri,'') <> ''
+	`, tenantID, cutoffs.ArtifactBefore).Scan(&counts.ArtifactBlobs); err != nil {
+		return counts, err
+	}
+	if err := r.queryRow(ctx, `select count(*) from audit_events where tenant_id=$1 and created_at < $2`, tenantID, cutoffs.AuditBefore).Scan(&counts.AuditRows); err != nil {
+		return counts, err
+	}
+	sessionIDs, err := r.retentionCandidateSessionIDs(ctx, tenantID, cutoffs.RelationalBefore, 1000000)
+	if err != nil {
+		return counts, err
+	}
+	counts.Sessions = len(sessionIDs)
+	if len(sessionIDs) == 0 {
+		return counts, nil
+	}
+	if counts.HistoryRows, err = r.retentionHistoryRowCount(ctx, sessionIDs); err != nil {
+		return counts, err
+	}
+	return counts, nil
+}
+
+func (r *PostgresRepository) ApplyRetention(ctx context.Context, tenantID string, cutoffs domain.RetentionCutoffs, batchSize int, deleteBlob func(context.Context, string) error) (domain.RetentionCounts, error) {
+	var counts domain.RetentionCounts
+	var err error
+	if counts.MessagePayloads, err = r.redactMessagePayloads(ctx, tenantID, cutoffs.PayloadBefore, batchSize); err != nil {
+		return counts, err
+	}
+	if counts.DeliveryPayloads, err = r.redactDeliveryPayloads(ctx, tenantID, cutoffs.PayloadBefore, batchSize); err != nil {
+		return counts, err
+	}
+	if counts.OutboxPayloads, err = r.redactOutboxPayloads(ctx, tenantID, cutoffs.PayloadBefore, batchSize); err != nil {
+		return counts, err
+	}
+	if counts.AwaitPayloads, err = r.redactAwaitPayloads(ctx, tenantID, cutoffs.PayloadBefore, batchSize); err != nil {
+		return counts, err
+	}
+	if counts.AwaitResponsePayloads, err = r.redactAwaitResponsePayloads(ctx, tenantID, cutoffs.PayloadBefore, batchSize); err != nil {
+		return counts, err
+	}
+	if counts.ArtifactBlobs, err = r.purgeArtifactBlobs(ctx, tenantID, cutoffs.ArtifactBefore, batchSize, deleteBlob); err != nil {
+		return counts, err
+	}
+	if counts.AuditRows, err = r.deleteAuditRows(ctx, tenantID, cutoffs.AuditBefore, batchSize); err != nil {
+		return counts, err
+	}
+	sessionIDs, err := r.retentionCandidateSessionIDs(ctx, tenantID, cutoffs.RelationalBefore, batchSize)
+	if err != nil {
+		return counts, err
+	}
+	counts.Sessions = len(sessionIDs)
+	if len(sessionIDs) == 0 {
+		return counts, nil
+	}
+	if counts.HistoryRows, err = r.deleteRetentionSessions(ctx, sessionIDs); err != nil {
+		return counts, err
+	}
+	return counts, nil
+}
+
+func (r *PostgresRepository) redactMessagePayloads(ctx context.Context, tenantID string, before time.Time, limit int) (int, error) {
+	return r.redactRetentionCTE(ctx, `
+		with target as (
+			select id from messages
+			where tenant_id=$1 and created_at < $2 and payload_purged_at is null
+			order by created_at, id
+			limit $3
+		)
+		update messages m
+		set raw_payload_json='{}'::jsonb, payload_purged_at=now()
+		from target
+		where m.id = target.id
+	`, tenantID, before, limit)
+}
+
+func (r *PostgresRepository) redactDeliveryPayloads(ctx context.Context, tenantID string, before time.Time, limit int) (int, error) {
+	return r.redactRetentionCTE(ctx, `
+		with target as (
+			select id from outbound_deliveries
+			where tenant_id=$1 and created_at < $2 and payload_purged_at is null
+			order by created_at, id
+			limit $3
+		)
+		update outbound_deliveries d
+		set payload_json='{}'::jsonb, payload_purged_at=now()
+		from target
+		where d.id = target.id
+	`, tenantID, before, limit)
+}
+
+func (r *PostgresRepository) redactOutboxPayloads(ctx context.Context, tenantID string, before time.Time, limit int) (int, error) {
+	return r.redactRetentionCTE(ctx, `
+		with target as (
+			select id from outbox_events
+			where tenant_id=$1 and available_at < $2 and payload_purged_at is null
+			order by available_at, id
+			limit $3
+		)
+		update outbox_events o
+		set payload_json='{}'::jsonb, payload_purged_at=now()
+		from target
+		where o.id = target.id
+	`, tenantID, before, limit)
+}
+
+func (r *PostgresRepository) redactAwaitPayloads(ctx context.Context, tenantID string, before time.Time, limit int) (int, error) {
+	return r.redactRetentionCTE(ctx, `
+		with target as (
+			select a.id from awaits a
+			join sessions s on s.id = a.session_id
+			where s.tenant_id=$1 and a.expires_at < $2 and a.payload_purged_at is null
+			order by a.expires_at, a.id
+			limit $3
+		)
+		update awaits a
+		set schema_json='{}'::jsonb,
+		    prompt_render_model_json='{}'::jsonb,
+		    allowed_responder_ids_json='[]'::jsonb,
+		    payload_purged_at=now()
+		from target
+		where a.id = target.id
+	`, tenantID, before, limit)
+}
+
+func (r *PostgresRepository) redactAwaitResponsePayloads(ctx context.Context, tenantID string, before time.Time, limit int) (int, error) {
+	return r.redactRetentionCTE(ctx, `
+		with target as (
+			select ar.id from await_responses ar
+			join awaits a on a.id = ar.await_id
+			join sessions s on s.id = a.session_id
+			where s.tenant_id=$1 and ar.accepted_at < $2 and ar.payload_purged_at is null
+			order by ar.accepted_at, ar.id
+			limit $3
+		)
+		update await_responses ar
+		set response_payload_json='{}'::jsonb, payload_purged_at=now()
+		from target
+		where ar.id = target.id
+	`, tenantID, before, limit)
+}
+
+func (r *PostgresRepository) purgeArtifactBlobs(ctx context.Context, tenantID string, before time.Time, limit int, deleteBlob func(context.Context, string) error) (int, error) {
+	rows, err := r.query(ctx, `
+		select ar.id, ar.storage_uri
+		from artifacts ar
+		join messages m on m.id = ar.message_id
+		where m.tenant_id=$1 and ar.created_at < $2 and ar.blob_purged_at is null and coalesce(ar.storage_uri,'') <> ''
+		order by ar.created_at, ar.id
+		limit $3
+	`, tenantID, before, limit)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	type artifactBlob struct {
+		ID         string
+		StorageURI string
+	}
+	var artifacts []artifactBlob
+	for rows.Next() {
+		var item artifactBlob
+		if err := rows.Scan(&item.ID, &item.StorageURI); err != nil {
+			return 0, err
+		}
+		artifacts = append(artifacts, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, item := range artifacts {
+		if deleteBlob != nil {
+			if err := deleteBlob(ctx, item.StorageURI); err != nil {
+				return count, err
+			}
+		}
+		if _, err := r.exec(ctx, `update artifacts set storage_uri=null, blob_purged_at=now() where id=$1 and blob_purged_at is null`, item.ID); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+func (r *PostgresRepository) deleteAuditRows(ctx context.Context, tenantID string, before time.Time, limit int) (int, error) {
+	tag, err := r.exec(ctx, `
+		with target as (
+			select id from audit_events
+			where tenant_id=$1 and created_at < $2
+			order by created_at, id
+			limit $3
+		)
+		delete from audit_events a
+		using target
+		where a.id = target.id
+	`, tenantID, before, limit)
+	return int(tag.RowsAffected()), err
+}
+
+func (r *PostgresRepository) retentionCandidateSessionIDs(ctx context.Context, tenantID string, before time.Time, limit int) ([]string, error) {
+	rows, err := r.query(ctx, `
+		select s.id
+		from sessions s
+		where s.tenant_id=$1
+		  and s.last_active_at < $2
+		  and not exists (
+			select 1 from session_queue_items qi
+			where qi.session_id = s.id and qi.status not in ('completed','failed','canceled','expired')
+		  )
+		  and not exists (
+			select 1 from runs r
+			where r.session_id = s.id and r.status not in ('completed','failed','canceled','expired')
+		  )
+		  and not exists (
+			select 1 from awaits a
+			where a.session_id = s.id and a.status not in ('resolved','expired')
+		  )
+		  and not exists (
+			select 1 from outbound_deliveries d
+			where d.session_id = s.id and d.status not in ('sent','failed','canceled')
+		  )
+		order by s.last_active_at, s.id
+		limit $3
+	`, tenantID, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (r *PostgresRepository) retentionHistoryRowCount(ctx context.Context, sessionIDs []string) (int, error) {
+	var count int
+	for _, query := range []string{
+		`select count(*) from await_responses where await_id in (select id from awaits where session_id = any($1))`,
+		`select count(*) from awaits where session_id = any($1)`,
+		`select count(*) from outbound_deliveries where session_id = any($1)`,
+		`select count(*) from artifacts where message_id in (select id from messages where session_id = any($1))`,
+		`select count(*) from runs where session_id = any($1)`,
+		`select count(*) from session_queue_items where session_id = any($1)`,
+		`select count(*) from messages where session_id = any($1)`,
+		`select count(*) from session_aliases where session_id = any($1)`,
+	} {
+		var n int
+		if err := r.queryRow(ctx, query, sessionIDs).Scan(&n); err != nil {
+			return 0, err
+		}
+		count += n
+	}
+	return count, nil
+}
+
+func (r *PostgresRepository) deleteRetentionSessions(ctx context.Context, sessionIDs []string) (int, error) {
+	count, err := r.retentionHistoryRowCount(ctx, sessionIDs)
+	if err != nil {
+		return 0, err
+	}
+	for _, stmt := range []string{
+		`delete from await_responses where await_id in (select id from awaits where session_id = any($1))`,
+		`delete from awaits where session_id = any($1)`,
+		`delete from outbound_deliveries where session_id = any($1)`,
+		`delete from artifacts where message_id in (select id from messages where session_id = any($1))`,
+		`delete from runs where session_id = any($1)`,
+		`delete from session_queue_items where session_id = any($1)`,
+		`delete from messages where session_id = any($1)`,
+		`delete from session_aliases where session_id = any($1)`,
+		`update channel_surface_state set active_session_id = null, updated_at=now() where active_session_id = any($1)`,
+		`delete from sessions where id = any($1)`,
+	} {
+		if _, err := r.exec(ctx, stmt, sessionIDs); err != nil {
+			return 0, err
+		}
+	}
+	return count, nil
+}
+
+func (r *PostgresRepository) redactRetentionCTE(ctx context.Context, sql string, args ...any) (int, error) {
+	tag, err := r.exec(ctx, sql, args...)
+	return int(tag.RowsAffected()), err
+}
+
 func contains(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {
@@ -2080,6 +2530,10 @@ func (r *PostgresRepository) exec(ctx context.Context, sql string, args ...any) 
 		tag, err := r.tx.Exec(ctx, sql, args...)
 		return pgconnCommandTag(tag), err
 	}
+	if r.conn != nil {
+		tag, err := r.conn.Exec(ctx, sql, args...)
+		return pgconnCommandTag(tag), err
+	}
 	tag, err := r.pool.Exec(ctx, sql, args...)
 	return pgconnCommandTag(tag), err
 }
@@ -2088,12 +2542,18 @@ func (r *PostgresRepository) query(ctx context.Context, sql string, args ...any)
 	if r.tx != nil {
 		return r.tx.Query(ctx, sql, args...)
 	}
+	if r.conn != nil {
+		return r.conn.Query(ctx, sql, args...)
+	}
 	return r.pool.Query(ctx, sql, args...)
 }
 
 func (r *PostgresRepository) queryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if r.tx != nil {
 		return r.tx.QueryRow(ctx, sql, args...)
+	}
+	if r.conn != nil {
+		return r.conn.QueryRow(ctx, sql, args...)
 	}
 	return r.pool.QueryRow(ctx, sql, args...)
 }

@@ -35,6 +35,13 @@ type Config struct {
 	RunStaleTimeout        time.Duration
 	DeliverySendingTimeout time.Duration
 	DeliveryMaxAttempts    int
+	RetentionEnabled       bool
+	RetentionInterval      time.Duration
+	RetentionBatchSize     int
+	RetentionPayloadDays   int
+	RetentionArtifactDays  int
+	RetentionAuditDays     int
+	RetentionGraceDays     int
 	TelegramBotToken       string
 	TelegramWebhookSecret  string
 	TelegramAllowedUserIDs []string
@@ -99,6 +106,32 @@ func Load() (Config, error) {
 	cfg.DeliveryMaxAttempts, err = envInt("DELIVERY_MAX_ATTEMPTS", 5)
 	if err != nil {
 		return Config{}, fmt.Errorf("parse DELIVERY_MAX_ATTEMPTS: %w", err)
+	}
+	cfg.RetentionEnabled = envBool("RETENTION_ENABLED", false)
+	retentionSeconds, err := envInt("RETENTION_INTERVAL_SECONDS", 3600)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse RETENTION_INTERVAL_SECONDS: %w", err)
+	}
+	cfg.RetentionInterval = time.Duration(retentionSeconds) * time.Second
+	cfg.RetentionBatchSize, err = envInt("RETENTION_BATCH_SIZE", 500)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse RETENTION_BATCH_SIZE: %w", err)
+	}
+	cfg.RetentionPayloadDays, err = envInt("RETENTION_DEFAULT_PAYLOAD_DAYS", 30)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse RETENTION_DEFAULT_PAYLOAD_DAYS: %w", err)
+	}
+	cfg.RetentionArtifactDays, err = envInt("RETENTION_DEFAULT_ARTIFACT_DAYS", 30)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse RETENTION_DEFAULT_ARTIFACT_DAYS: %w", err)
+	}
+	cfg.RetentionAuditDays, err = envInt("RETENTION_DEFAULT_AUDIT_DAYS", 30)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse RETENTION_DEFAULT_AUDIT_DAYS: %w", err)
+	}
+	cfg.RetentionGraceDays, err = envInt("RETENTION_RELATIONAL_GRACE_DAYS", 30)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse RETENTION_RELATIONAL_GRACE_DAYS: %w", err)
 	}
 	cfg.ValidateACPOnStartup = envBool("VALIDATE_ACP_ON_STARTUP", false)
 	cacheTTLSeconds, err := envInt("ACP_MANIFEST_CACHE_TTL_SECONDS", 60)

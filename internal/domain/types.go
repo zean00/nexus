@@ -296,6 +296,60 @@ type PagedResult[T any] struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
+type RetentionPolicy struct {
+	TenantID            string    `json:"tenant_id"`
+	Enabled             *bool     `json:"enabled,omitempty"`
+	PayloadDays         *int      `json:"payload_days,omitempty"`
+	ArtifactDays        *int      `json:"artifact_days,omitempty"`
+	AuditDays           *int      `json:"audit_days,omitempty"`
+	RelationalGraceDays *int      `json:"relational_grace_days,omitempty"`
+	UpdatedAt           time.Time `json:"updated_at,omitempty"`
+}
+
+type EffectiveRetentionPolicy struct {
+	TenantID            string `json:"tenant_id"`
+	Enabled             bool   `json:"enabled"`
+	PayloadDays         int    `json:"payload_days"`
+	ArtifactDays        int    `json:"artifact_days"`
+	AuditDays           int    `json:"audit_days"`
+	RelationalGraceDays int    `json:"relational_grace_days"`
+}
+
+type RetentionCutoffs struct {
+	PayloadBefore    time.Time
+	ArtifactBefore   time.Time
+	AuditBefore      time.Time
+	RelationalBefore time.Time
+}
+
+type RetentionCounts struct {
+	MessagePayloads       int `json:"message_payloads"`
+	DeliveryPayloads      int `json:"delivery_payloads"`
+	OutboxPayloads        int `json:"outbox_payloads"`
+	AwaitPayloads         int `json:"await_payloads"`
+	AwaitResponsePayloads int `json:"await_response_payloads"`
+	ArtifactBlobs         int `json:"artifact_blobs"`
+	AuditRows             int `json:"audit_rows"`
+	Sessions              int `json:"sessions"`
+	HistoryRows           int `json:"history_rows"`
+}
+
+type RetentionTenantSummary struct {
+	TenantID      string                   `json:"tenant_id"`
+	Enabled       bool                     `json:"enabled"`
+	SkippedReason string                   `json:"skipped_reason,omitempty"`
+	Effective     EffectiveRetentionPolicy `json:"effective"`
+	Counts        RetentionCounts          `json:"counts"`
+}
+
+type RetentionRunSummary struct {
+	DryRun    bool                     `json:"dry_run"`
+	StartedAt time.Time                `json:"started_at,omitempty"`
+	EndedAt   time.Time                `json:"ended_at,omitempty"`
+	Tenants   []RetentionTenantSummary `json:"tenants,omitempty"`
+	Totals    RetentionCounts          `json:"totals"`
+}
+
 type AwaitDetail struct {
 	Await     Await           `json:"await"`
 	Responses []AwaitResponse `json:"responses"`

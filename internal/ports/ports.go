@@ -27,6 +27,17 @@ type ACPBridge interface {
 	CancelRun(ctx context.Context, run domain.Run) error
 }
 
+type RetentionRepository interface {
+	WithRetentionLock(ctx context.Context, fn func(ctx context.Context, repo RetentionRepository) error) error
+	ListRetentionTenantIDs(ctx context.Context) ([]string, error)
+	GetRetentionPolicy(ctx context.Context, tenantID string) (domain.RetentionPolicy, error)
+	UpsertRetentionPolicy(ctx context.Context, policy domain.RetentionPolicy) error
+	DeleteRetentionPolicy(ctx context.Context, tenantID string) error
+	CountRetentionCandidates(ctx context.Context, tenantID string, cutoffs domain.RetentionCutoffs) (domain.RetentionCounts, error)
+	ApplyRetention(ctx context.Context, tenantID string, cutoffs domain.RetentionCutoffs, batchSize int, deleteBlob func(context.Context, string) error) (domain.RetentionCounts, error)
+	Audit(ctx context.Context, event domain.AuditEvent) error
+}
+
 type Repository interface {
 	InTx(ctx context.Context, fn func(ctx context.Context, repo Repository) error) error
 	RecordInboundReceipt(ctx context.Context, evt domain.CanonicalInboundEvent) (bool, error)
