@@ -15,6 +15,7 @@ var (
 	ErrLinkedIdentityNotFound            = errors.New("linked identity not found")
 	ErrStepUpChallengeNotFound           = errors.New("step-up challenge not found")
 	ErrStepUpChallengeExpired            = errors.New("step-up challenge expired")
+	ErrTrustPolicyNotFound               = errors.New("trust policy not found")
 	ErrRecentStepUpRequired              = errors.New("recent step-up required")
 	ErrLinkedIdentityRequired            = errors.New("linked identity required")
 	ErrApprovalChannelNotAllowed         = errors.New("approval channel not allowed")

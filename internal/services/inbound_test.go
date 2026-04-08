@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -32,6 +33,9 @@ func (r *fakeIdentityRepo) GetUser(context.Context, string, string) (domain.User
 func (r *fakeIdentityRepo) GetUserByEmail(context.Context, string, string) (domain.User, error) {
 	return domain.User{}, domain.ErrIdentityUserNotFound
 }
+func (r *fakeIdentityRepo) ListUsers(context.Context, string, int) ([]domain.User, error) {
+	return nil, nil
+}
 func (r *fakeIdentityRepo) MarkUserStepUp(context.Context, string, string, time.Time) error {
 	return nil
 }
@@ -58,6 +62,11 @@ func (r *fakeIdentityRepo) UpsertLinkedIdentity(_ context.Context, identity doma
 	return nil
 }
 func (r *fakeIdentityRepo) GetLinkedIdentity(context.Context, string, string, string) (domain.LinkedIdentity, error) {
+	if r.identities != nil {
+		for _, item := range r.identities {
+			return item, nil
+		}
+	}
 	return domain.LinkedIdentity{}, domain.ErrLinkedIdentityNotFound
 }
 func (r *fakeIdentityRepo) ListLinkedIdentitiesForUser(context.Context, string, string) ([]domain.LinkedIdentity, error) {
@@ -65,6 +74,16 @@ func (r *fakeIdentityRepo) ListLinkedIdentitiesForUser(context.Context, string, 
 }
 func (r *fakeIdentityRepo) DeleteLinkedIdentity(context.Context, string, string, string) error {
 	return nil
+}
+func (r *fakeIdentityRepo) GetTrustPolicy(context.Context, string, string) (domain.TrustPolicy, error) {
+	return domain.TrustPolicy{}, domain.ErrTrustPolicyNotFound
+}
+func (r *fakeIdentityRepo) ListTrustPolicies(context.Context, string, int) ([]domain.TrustPolicy, error) {
+	return nil, nil
+}
+func (r *fakeIdentityRepo) UpsertTrustPolicy(context.Context, domain.TrustPolicy) error { return nil }
+func (r *fakeIdentityRepo) CountLinkedIdentitiesByChannel(context.Context, string) (map[string]int, error) {
+	return map[string]int{}, nil
 }
 
 func (r *fakeRepo) InTx(ctx context.Context, fn func(ctx context.Context, repo ports.Repository) error) error {
@@ -110,7 +129,7 @@ func (r *fakeRepo) EnqueueNextQueueItem(context.Context, string) (*domain.Outbox
 	return nil, nil
 }
 func (r *fakeRepo) StoreAwait(context.Context, domain.Await) error { return nil }
-func (r *fakeRepo) ResolveAwait(context.Context, string, string, []byte) (domain.Await, error) {
+func (r *fakeRepo) ResolveAwait(context.Context, string, string, string, string, []byte) (domain.Await, error) {
 	return domain.Await{}, nil
 }
 func (r *fakeRepo) GetAwait(context.Context, string) (domain.Await, error) {
@@ -141,6 +160,13 @@ func (r *fakeRepo) UpdateSessionACPSessionID(context.Context, string, string) er
 func (r *fakeRepo) GetRouteDecision(context.Context, string) (domain.RouteDecision, error) {
 	return domain.RouteDecision{}, nil
 }
+func (r *fakeRepo) GetTrustPolicy(context.Context, string, string) (domain.TrustPolicy, error) {
+	return domain.TrustPolicy{}, domain.ErrTrustPolicyNotFound
+}
+func (r *fakeRepo) ListTrustPolicies(context.Context, string, int) ([]domain.TrustPolicy, error) {
+	return nil, nil
+}
+func (r *fakeRepo) UpsertTrustPolicy(context.Context, domain.TrustPolicy) error { return nil }
 func (r *fakeRepo) GetInboundMessage(context.Context, string) (domain.Message, error) {
 	return domain.Message{}, nil
 }
@@ -267,6 +293,14 @@ func (r *fakeRepo) UpsertTelegramUserAccess(context.Context, domain.TelegramUser
 	return nil
 }
 func (r *fakeRepo) DeleteTelegramUserAccess(context.Context, string, string) error { return nil }
+func (r *fakeRepo) ListUsers(context.Context, string, int) ([]domain.User, error)  { return nil, nil }
+func (r *fakeRepo) CountLinkedIdentitiesByChannel(context.Context, string) (map[string]int, error) {
+	return map[string]int{}, nil
+}
+func (r *fakeRepo) ListLinkedIdentitiesForUser(context.Context, string, string) ([]domain.LinkedIdentity, error) {
+	return nil, nil
+}
+func (r *fakeRepo) DeleteLinkedIdentity(context.Context, string, string, string) error { return nil }
 func (r *fakeRepo) RequestTelegramAccess(context.Context, domain.TelegramUserAccess) (domain.TelegramUserAccess, error) {
 	return domain.TelegramUserAccess{}, nil
 }
@@ -402,5 +436,40 @@ func TestInboundServiceLinksIdentityFromCommand(t *testing.T) {
 	}
 	if len(repo.queue) != 0 {
 		t.Fatalf("expected no queued items, got %d", len(repo.queue))
+	}
+}
+
+func TestInboundServiceRequiresPreLinkedIdentityForExecution(t *testing.T) {
+	repo := &fakeRepo{
+		receipts: map[string]bool{},
+		sessions: map[string]domain.Session{},
+	}
+	identity := &fakeIdentityRepo{}
+	svc := InboundService{
+		Repo:     repo,
+		Identity: identity,
+		Router: StaticRouter{
+			DefaultAgentProfileID: "agent_profile_default",
+			FallbackPolicy: domain.TrustPolicy{
+				TenantID:                          "tenant_default",
+				AgentProfileID:                    "agent_profile_default",
+				RequireLinkedIdentityForExecution: true,
+			},
+		},
+	}
+	raw, _ := json.Marshal(map[string]string{"ok": "true"})
+	_, err := svc.Handle(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_exec_link_required",
+		TenantID:        "tenant_default",
+		Channel:         "webchat",
+		ProviderEventID: "provider_exec_link_required",
+		ReceivedAt:      time.Now(),
+		Sender:          domain.Sender{ChannelUserID: "user@example.com"},
+		Conversation:    domain.Conversation{ChannelSurfaceKey: "webchat_surface_1"},
+		Message:         domain.Message{MessageID: "msg_exec_link_required", Text: "hello"},
+		Metadata:        domain.Metadata{RawPayload: raw},
+	})
+	if err == nil || !errors.Is(err, domain.ErrLinkedIdentityRequired) {
+		t.Fatalf("expected ErrLinkedIdentityRequired, got %v", err)
 	}
 }

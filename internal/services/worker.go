@@ -190,6 +190,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 				Status:           "pending",
 				SchemaJSON:       runEvent.AwaitSchema,
 				PromptRenderJSON: runEvent.AwaitPrompt,
+				TrustPolicyJSON:  marshalTrustPolicy(route),
 				ExpiresAt:        time.Now().UTC().Add(24 * time.Hour),
 			}
 			if err := s.Repo.StoreAwait(ctx, await); err != nil {
@@ -219,6 +220,17 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 		}
 	}
 	return nil
+}
+
+func marshalTrustPolicy(route domain.RouteDecision) []byte {
+	payload, _ := json.Marshal(domain.TrustPolicy{
+		AgentProfileID:                    route.AgentProfileID,
+		RequireLinkedIdentityForExecution: route.RequireLinkedIdentityForExecution,
+		RequireLinkedIdentityForApproval:  route.RequireLinkedIdentityForApproval,
+		RequireRecentStepUpForApproval:    route.RequireRecentStepUpForApproval,
+		AllowedApprovalChannels:           append([]string(nil), route.AllowedApprovalChannels...),
+	})
+	return payload
 }
 
 const openCodeAwaitBlockedReason = "opencode_bridge_structured_await_blocked"

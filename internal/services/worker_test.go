@@ -75,7 +75,7 @@ func (r *workerRepo) StoreAwait(_ context.Context, await domain.Await) error {
 	r.storedAwaits = append(r.storedAwaits, await)
 	return nil
 }
-func (r *workerRepo) ResolveAwait(context.Context, string, string, []byte) (domain.Await, error) {
+func (r *workerRepo) ResolveAwait(context.Context, string, string, string, string, []byte) (domain.Await, error) {
 	return domain.Await{}, nil
 }
 func (r *workerRepo) GetAwait(context.Context, string) (domain.Await, error) {
@@ -109,6 +109,11 @@ func (r *workerRepo) UpdateSessionACPSessionID(_ context.Context, sessionID, acp
 func (r *workerRepo) GetRouteDecision(context.Context, string) (domain.RouteDecision, error) {
 	return r.route, nil
 }
+func (r *workerRepo) GetTrustPolicy(context.Context, string, string) (domain.TrustPolicy, error) {
+	return domain.TrustPolicy{}, domain.ErrTrustPolicyNotFound
+}
+func (r *workerRepo) ListTrustPolicies(context.Context, string, int) ([]domain.TrustPolicy, error) { return nil, nil }
+func (r *workerRepo) UpsertTrustPolicy(context.Context, domain.TrustPolicy) error                   { return nil }
 func (r *workerRepo) GetInboundMessage(context.Context, string) (domain.Message, error) {
 	return r.message, nil
 }
@@ -164,6 +169,14 @@ func (r *workerRepo) CountMessages(context.Context, domain.MessageListQuery) (in
 func (r *workerRepo) CountArtifacts(context.Context, domain.ArtifactListQuery) (int, error) {
 	return 0, nil
 }
+func (r *workerRepo) ListUsers(context.Context, string, int) ([]domain.User, error) { return nil, nil }
+func (r *workerRepo) CountLinkedIdentitiesByChannel(context.Context, string) (map[string]int, error) {
+	return map[string]int{}, nil
+}
+func (r *workerRepo) ListLinkedIdentitiesForUser(context.Context, string, string) ([]domain.LinkedIdentity, error) {
+	return nil, nil
+}
+func (r *workerRepo) DeleteLinkedIdentity(context.Context, string, string, string) error { return nil }
 func (r *workerRepo) CountDeliveries(context.Context, domain.DeliveryListQuery) (int, error) {
 	return 0, nil
 }

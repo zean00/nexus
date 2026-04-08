@@ -20,12 +20,12 @@ func (s AwaitService) HandleResponse(ctx context.Context, evt domain.CanonicalIn
 	)
 	defer func() { end(err) }()
 	err = s.Repo.InTx(ctx, func(ctx context.Context, repo ports.Repository) error {
-		await, err := repo.ResolveAwait(ctx, evt.Metadata.AwaitID, evt.Sender.ChannelUserID, evt.Metadata.ResumePayload)
+		await, err := repo.ResolveAwait(ctx, evt.Metadata.AwaitID, evt.Sender.ChannelUserID, evt.Metadata.ActorUserID, evt.Sender.IdentityAssurance, evt.Metadata.ResumePayload)
 		if err != nil {
 			tracex.Logger(ctx).Error("await.resolve_failed", "await_id", evt.Metadata.AwaitID, "error", err.Error())
 			return err
 		}
-		tracex.Logger(ctx).Info("await.resolved", "await_id", await.ID, "actor_id", evt.Sender.ChannelUserID)
+		tracex.Logger(ctx).Info("await.resolved", "await_id", await.ID, "actor_id", evt.Sender.ChannelUserID, "actor_user_id", evt.Metadata.ActorUserID)
 		return repo.EnqueueAwaitResume(ctx, domain.ResumeRequest{
 			AwaitID: await.ID,
 			Payload: evt.Metadata.ResumePayload,

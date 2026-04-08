@@ -343,21 +343,23 @@ func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	payload, _ := json.Marshal(map[string]string{"reply": body.Reply})
-	if err := a.authorizeAwaitResponse(r.Context(), domain.CanonicalInboundEvent{
+	evt := domain.CanonicalInboundEvent{
 		TenantID: a.Config.DefaultTenantID,
 		Channel:  "webchat",
 		Sender: domain.Sender{
 			ChannelUserID: authSession.Email,
+			IdentityAssurance: "first_party_session",
 		},
 		Metadata: domain.Metadata{
 			AwaitID:       body.AwaitID,
 			ResumePayload: payload,
 		},
-	}); err != nil {
+	}
+	if _, err := a.authorizeAwaitResponse(r.Context(), &evt); err != nil {
 		httpx.Error(w, http.StatusForbidden, err.Error())
 		return
 	}
-	err = a.Await.HandleResponse(r.Context(), domain.CanonicalInboundEvent{
+	evt = domain.CanonicalInboundEvent{
 		EventID:         "webchat_await_" + randomToken(8),
 		TenantID:        a.Config.DefaultTenantID,
 		Channel:         "webchat",
@@ -385,8 +387,10 @@ func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) 
 		Metadata: domain.Metadata{
 			AwaitID:       body.AwaitID,
 			ResumePayload: payload,
+			ActorUserID:   evt.Metadata.ActorUserID,
 		},
-	})
+	}
+	err = a.Await.HandleResponse(r.Context(), evt)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -464,6 +468,15 @@ func (a *App) handleWebChatIdentityLinkCode(w http.ResponseWriter, r *http.Reque
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
+		ID:            "audit_trust_link_code_" + randomToken(6),
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "user",
+		AggregateID:   user.ID,
+		EventType:     "trust.link_code_issued",
+		PayloadJSON:   mustJSON(map[string]any{"channel": channel, "expires_at": challenge.ExpiresAt}),
+		CreatedAt:     time.Now().UTC(),
+	})
 	httpx.OK(w, map[string]any{
 		"channel":    channel,
 		"code":       code,
@@ -511,6 +524,15 @@ func (a *App) handleWebChatIdentityUnlink(w http.ResponseWriter, r *http.Request
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
+		ID:            "audit_trust_unlink_" + randomToken(6),
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "user",
+		AggregateID:   user.ID,
+		EventType:     "trust.identity_unlinked",
+		PayloadJSON:   mustJSON(identity),
+		CreatedAt:     time.Now().UTC(),
+	})
 	httpx.OK(w, map[string]any{"status": "unlinked"}, nil)
 }
 
@@ -556,6 +578,15 @@ func (a *App) handleWebChatStepUpRequest(w http.ResponseWriter, r *http.Request)
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
+		ID:            "audit_trust_stepup_request_" + randomToken(6),
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "user",
+		AggregateID:   user.ID,
+		EventType:     "trust.step_up_requested",
+		PayloadJSON:   mustJSON(map[string]any{"email": authSession.Email}),
+		CreatedAt:     time.Now().UTC(),
+	})
 	httpx.Accepted(w, map[string]any{"status": "sent"}, nil)
 }
 
@@ -585,6 +616,15 @@ func (a *App) handleWebChatStepUpVerify(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if _, err := a.Identity.ConsumeStepUpChallenge(r.Context(), a.Config.DefaultTenantID, user.ID, "step_up", "", sha256Hex(strings.TrimSpace(body.Code)), time.Now().UTC()); err != nil {
+		_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
+			ID:            "audit_trust_stepup_rejected_" + randomToken(6),
+			TenantID:      a.Config.DefaultTenantID,
+			AggregateType: "user",
+			AggregateID:   user.ID,
+			EventType:     "trust.step_up_rejected",
+			PayloadJSON:   mustJSON(map[string]any{"email": authSession.Email}),
+			CreatedAt:     time.Now().UTC(),
+		})
 		httpx.Error(w, http.StatusUnauthorized, err.Error())
 		return
 	}
@@ -592,6 +632,15 @@ func (a *App) handleWebChatStepUpVerify(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
+		ID:            "audit_trust_stepup_verified_" + randomToken(6),
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "user",
+		AggregateID:   user.ID,
+		EventType:     "trust.step_up_verified",
+		PayloadJSON:   mustJSON(map[string]any{"email": authSession.Email}),
+		CreatedAt:     time.Now().UTC(),
+	})
 	httpx.OK(w, map[string]any{"recent_step_up": true}, nil)
 }
 

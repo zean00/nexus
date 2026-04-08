@@ -144,7 +144,7 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 		return
 	}
 	if evt.Interaction == "await_response" {
-		if err := a.authorizeAwaitResponse(r.Context(), evt); err != nil {
+		if _, err := a.authorizeAwaitResponse(r.Context(), &evt); err != nil {
 			httpx.Error(w, http.StatusForbidden, err.Error())
 			return
 		}
@@ -168,7 +168,7 @@ func (a *App) processBatchChannelEvent(ctx context.Context, adapter ports.Channe
 		return err
 	}
 	if evt.Interaction == "await_response" {
-		if err := a.authorizeAwaitResponse(ctx, evt); err != nil {
+		if _, err := a.authorizeAwaitResponse(ctx, &evt); err != nil {
 			return err
 		}
 		return a.Await.HandleResponse(ctx, evt)
@@ -180,30 +180,88 @@ func (a *App) processBatchChannelEvent(ctx context.Context, adapter ports.Channe
 	return err
 }
 
-func (a *App) authorizeAwaitResponse(ctx context.Context, evt domain.CanonicalInboundEvent) error {
+func (a *App) authorizeAwaitResponse(ctx context.Context, evt *domain.CanonicalInboundEvent) (domain.User, error) {
 	if a.Identity == nil {
-		return nil
+		return domain.User{}, nil
 	}
-	if len(a.Config.AllowedApprovalChannels) > 0 && !slices.Contains(a.Config.AllowedApprovalChannels, evt.Channel) {
-		return domain.ErrApprovalChannelNotAllowed
-	}
-	user, err := a.resolveCanonicalUser(ctx, evt)
+	policy, err := a.awaitTrustPolicy(ctx, evt.TenantID, evt.Metadata.AwaitID)
 	if err != nil {
-		if a.Config.RequireLinkedIdentity {
-			return domain.ErrLinkedIdentityRequired
-		}
-		return nil
+		return domain.User{}, err
 	}
-	if a.Config.RequireRecentStepUp {
+	if len(policy.AllowedApprovalChannels) > 0 && !slices.Contains(policy.AllowedApprovalChannels, evt.Channel) {
+		_ = a.Repo.Audit(ctx, domain.AuditEvent{
+			ID:            "audit_trust_blocked_channel_" + randomToken(6),
+			TenantID:      evt.TenantID,
+			AwaitID:       evt.Metadata.AwaitID,
+			AggregateType: "await",
+			AggregateID:   evt.Metadata.AwaitID,
+			EventType:     "trust.approval_blocked",
+			PayloadJSON:   mustJSON(map[string]any{"reason": "channel_not_allowed", "channel": evt.Channel}),
+			CreatedAt:     time.Now().UTC(),
+		})
+		return domain.User{}, domain.ErrApprovalChannelNotAllowed
+	}
+	user, err := a.resolveCanonicalUser(ctx, *evt)
+	if err != nil {
+		if policy.RequireLinkedIdentityForApproval {
+			_ = a.Repo.Audit(ctx, domain.AuditEvent{
+				ID:            "audit_trust_blocked_link_" + randomToken(6),
+				TenantID:      evt.TenantID,
+				AwaitID:       evt.Metadata.AwaitID,
+				AggregateType: "await",
+				AggregateID:   evt.Metadata.AwaitID,
+				EventType:     "trust.approval_blocked",
+				PayloadJSON:   mustJSON(map[string]any{"reason": "linked_identity_required", "channel": evt.Channel, "actor": evt.Sender.ChannelUserID}),
+				CreatedAt:     time.Now().UTC(),
+			})
+			return domain.User{}, domain.ErrLinkedIdentityRequired
+		}
+		return domain.User{}, nil
+	}
+	if policy.RequireRecentStepUpForApproval {
 		ok, err := a.Identity.HasRecentStepUp(ctx, evt.TenantID, user.ID, time.Now().UTC().Add(-time.Duration(a.Config.StepUpWindowMinutes)*time.Minute))
 		if err != nil {
-			return err
+			return domain.User{}, err
 		}
 		if !ok {
-			return domain.ErrRecentStepUpRequired
+			_ = a.Repo.Audit(ctx, domain.AuditEvent{
+				ID:            "audit_trust_blocked_stepup_" + randomToken(6),
+				TenantID:      evt.TenantID,
+				AwaitID:       evt.Metadata.AwaitID,
+				AggregateType: "await",
+				AggregateID:   evt.Metadata.AwaitID,
+				EventType:     "trust.approval_blocked",
+				PayloadJSON:   mustJSON(map[string]any{"reason": "recent_step_up_required", "user_id": user.ID}),
+				CreatedAt:     time.Now().UTC(),
+			})
+			return domain.User{}, domain.ErrRecentStepUpRequired
 		}
 	}
-	return nil
+	evt.Metadata.ActorUserID = user.ID
+	if evt.Sender.IdentityAssurance == "" {
+		evt.Sender.IdentityAssurance = "linked_identity"
+	}
+	return user, nil
+}
+
+func (a *App) awaitTrustPolicy(ctx context.Context, tenantID, awaitID string) (domain.TrustPolicy, error) {
+	await, err := a.Repo.GetAwait(ctx, awaitID)
+	if err != nil {
+		return domain.TrustPolicy{}, err
+	}
+	if len(await.TrustPolicyJSON) > 0 && string(await.TrustPolicyJSON) != "{}" {
+		var policy domain.TrustPolicy
+		if err := json.Unmarshal(await.TrustPolicyJSON, &policy); err == nil {
+			return policy, nil
+		}
+	}
+	return domain.TrustPolicy{
+		TenantID:                         tenantID,
+		AgentProfileID:                   a.Config.DefaultAgentProfileID,
+		RequireLinkedIdentityForApproval: a.Config.RequireLinkedIdentity,
+		RequireRecentStepUpForApproval:   a.Config.RequireRecentStepUp,
+		AllowedApprovalChannels:          append([]string(nil), a.Config.AllowedApprovalChannels...),
+	}, nil
 }
 
 func (a *App) resolveCanonicalUser(ctx context.Context, evt domain.CanonicalInboundEvent) (domain.User, error) {
@@ -458,6 +516,9 @@ func (a *App) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if summary, err := acpCompactSummary(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, a.Config.DefaultACPAgentName); err == nil {
 		data["acp"] = summary
+	}
+	if trust, err := a.trustSummary(r.Context()); err == nil {
+		data["trust"] = trust
 	}
 	httpx.OK(w, data, map[string]any{"service": "admin"})
 }
@@ -1618,6 +1679,7 @@ func writeMetrics(w http.ResponseWriter, ctx context.Context, service, tenantID 
 		runtime.RecordProbeStatus("health", health, time.Now().UTC())
 		runtime.RecordProbeStatus("readiness", readiness, time.Now().UTC())
 	}
+	repoError := false
 	var b strings.Builder
 	fmt.Fprintf(&b, "nexus_health_status{service=%q} %d\n", service, boolMetric(health == "ok"))
 	fmt.Fprintf(&b, "nexus_readiness_status{service=%q} %d\n", service, boolMetric(readiness == "ready"))
@@ -1676,6 +1738,30 @@ func writeMetrics(w http.ResponseWriter, ctx context.Context, service, tenantID 
 			}
 		}
 	}
+	if repo != nil && tenantID != "" {
+		if users, err := repo.ListUsers(ctx, tenantID, 1000); err == nil {
+			fmt.Fprintf(&b, "nexus_trust_users{service=%q,tenant=%q} %d\n", service, tenantID, len(users))
+		} else {
+			repoError = true
+		}
+		if counts, err := repo.CountLinkedIdentitiesByChannel(ctx, tenantID); err == nil {
+			for channel, count := range counts {
+				fmt.Fprintf(&b, "nexus_trust_linked_identities{service=%q,tenant=%q,channel=%q} %d\n", service, tenantID, channel, count)
+			}
+		} else {
+			repoError = true
+		}
+		if count, err := repo.CountAuditEvents(ctx, domain.AuditEventListQuery{TenantID: tenantID, EventType: "trust.approval_blocked"}); err == nil {
+			fmt.Fprintf(&b, "nexus_trust_blocked_approvals_total{service=%q,tenant=%q} %d\n", service, tenantID, count)
+		} else {
+			repoError = true
+		}
+		if count, err := repo.CountAuditEvents(ctx, domain.AuditEventListQuery{TenantID: tenantID, EventType: "trust.step_up_rejected"}); err == nil {
+			fmt.Fprintf(&b, "nexus_trust_step_up_failures_total{service=%q,tenant=%q} %d\n", service, tenantID, count)
+		} else {
+			repoError = true
+		}
+	}
 	if runtime != nil {
 		status := runtime.Status()
 		fmt.Fprintf(&b, "nexus_worker_error{service=%q} %d\n", service, boolMetric(status.LastWorkerError != ""))
@@ -1703,7 +1789,6 @@ func writeMetrics(w http.ResponseWriter, ctx context.Context, service, tenantID 
 			fmt.Fprintf(&b, "nexus_retention_last_run_unix{service=%q} %d\n", service, status.LastRetentionRunAt.Unix())
 		}
 	}
-	repoError := false
 	persisted, persistedErr := persistentLifecycleCounts(ctx, repo, tenantID)
 	if persistedErr != nil {
 		repoError = true

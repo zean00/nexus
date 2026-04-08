@@ -116,6 +116,15 @@ func (s *identityStub) GetUser(_ context.Context, tenantID, userID string) (doma
 func (s *identityStub) GetUserByEmail(_ context.Context, tenantID, email string) (domain.User, error) {
 	return s.EnsureUserByEmail(context.Background(), tenantID, email)
 }
+func (s *identityStub) ListUsers(_ context.Context, tenantID string, _ int) ([]domain.User, error) {
+	var out []domain.User
+	for _, user := range s.users {
+		if user.TenantID == tenantID {
+			out = append(out, user)
+		}
+	}
+	return out, nil
+}
 func (s *identityStub) MarkUserStepUp(_ context.Context, tenantID, userID string, at time.Time) error {
 	for key, user := range s.users {
 		if user.TenantID == tenantID && user.ID == userID {
@@ -176,6 +185,22 @@ func (s *identityStub) ListLinkedIdentitiesForUser(_ context.Context, tenantID, 
 func (s *identityStub) DeleteLinkedIdentity(_ context.Context, tenantID, channelType, channelUserID string) error {
 	delete(s.identities, tenantID+"|"+channelType+"|"+channelUserID)
 	return nil
+}
+func (s *identityStub) GetTrustPolicy(context.Context, string, string) (domain.TrustPolicy, error) {
+	return domain.TrustPolicy{}, domain.ErrTrustPolicyNotFound
+}
+func (s *identityStub) ListTrustPolicies(context.Context, string, int) ([]domain.TrustPolicy, error) {
+	return nil, nil
+}
+func (s *identityStub) UpsertTrustPolicy(context.Context, domain.TrustPolicy) error { return nil }
+func (s *identityStub) CountLinkedIdentitiesByChannel(_ context.Context, tenantID string) (map[string]int, error) {
+	out := map[string]int{}
+	for _, item := range s.identities {
+		if item.TenantID == tenantID {
+			out[item.ChannelType]++
+		}
+	}
+	return out, nil
 }
 
 func (r *webchatRepoStub) ResolveSession(context.Context, domain.CanonicalInboundEvent, string) (domain.Session, bool, error) {

@@ -303,12 +303,18 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	webchatAdapter := webchat.New()
 	telegramAdapter := telegram.New(cfg.TelegramBotToken, cfg.TelegramWebhookSecret)
 	telegramAdapter.HTTP = policy.HTTPClient("telegram.api", 10*time.Second)
-	router := services.StaticRouter{
-		DefaultAgentProfileID:   cfg.DefaultAgentProfileID,
-		DefaultACPAgentName:     cfg.DefaultACPAgentName,
-		RequireLinkedIdentity:   cfg.RequireLinkedIdentity,
-		RequireRecentStepUp:     cfg.RequireRecentStepUp,
-		AllowedApprovalChannels: append([]string(nil), cfg.AllowedApprovalChannels...),
+	router := services.PolicyRouter{
+		Repo:                  repo,
+		DefaultAgentProfileID: cfg.DefaultAgentProfileID,
+		DefaultACPAgentName:   cfg.DefaultACPAgentName,
+		FallbackPolicy: domain.TrustPolicy{
+			TenantID:                         cfg.DefaultTenantID,
+			AgentProfileID:                   cfg.DefaultAgentProfileID,
+			RequireLinkedIdentityForExecution: false,
+			RequireLinkedIdentityForApproval: cfg.RequireLinkedIdentity,
+			RequireRecentStepUpForApproval:  cfg.RequireRecentStepUp,
+			AllowedApprovalChannels:         append([]string(nil), cfg.AllowedApprovalChannels...),
+		},
 	}
 	renderers := map[string]ports.Renderer{
 		"slack":    services.SlackRenderer{},
@@ -525,6 +531,16 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/telegram/requests", a.handleListTelegramRequests)
 	mux.HandleFunc("/admin/telegram/requests/resolve", a.handleResolveTelegramRequest)
 	mux.HandleFunc("/admin/runtime", a.handleRuntimeStatus)
+	mux.HandleFunc("/admin/trust", a.handleTrustAdminIndex)
+	mux.HandleFunc("/admin/trust/app.js", a.handleTrustAdminJS)
+	mux.HandleFunc("/admin/trust/app.css", a.handleTrustAdminCSS)
+	mux.HandleFunc("/admin/trust/summary", a.handleTrustSummary)
+	mux.HandleFunc("/admin/trust/policies", a.handleListTrustPolicies)
+	mux.HandleFunc("/admin/trust/policies/upsert", a.handleUpsertTrustPolicy)
+	mux.HandleFunc("/admin/trust/users", a.handleListTrustUsers)
+	mux.HandleFunc("/admin/trust/users/detail", a.handleTrustUserDetail)
+	mux.HandleFunc("/admin/trust/links/revoke", a.handleTrustRevokeLink)
+	mux.HandleFunc("/admin/trust/events", a.handleTrustEvents)
 	mux.HandleFunc("/admin/retention", a.handleRetentionStatus)
 	mux.HandleFunc("/admin/retention/run", a.handleRunRetention)
 	mux.HandleFunc("/admin/retention/policy/upsert", a.handleUpsertRetentionPolicy)

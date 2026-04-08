@@ -147,7 +147,7 @@ func (r *appRepoStub) EnqueueNextQueueItem(context.Context, string) (*domain.Out
 	return nil, nil
 }
 func (r *appRepoStub) StoreAwait(context.Context, domain.Await) error { return nil }
-func (r *appRepoStub) ResolveAwait(context.Context, string, string, []byte) (domain.Await, error) {
+func (r *appRepoStub) ResolveAwait(context.Context, string, string, string, string, []byte) (domain.Await, error) {
 	return domain.Await{}, nil
 }
 func (r *appRepoStub) GetAwait(context.Context, string) (domain.Await, error) {
@@ -180,6 +180,13 @@ func (r *appRepoStub) UpdateSessionACPSessionID(context.Context, string, string)
 func (r *appRepoStub) GetRouteDecision(context.Context, string) (domain.RouteDecision, error) {
 	return domain.RouteDecision{}, nil
 }
+func (r *appRepoStub) GetTrustPolicy(context.Context, string, string) (domain.TrustPolicy, error) {
+	return domain.TrustPolicy{}, domain.ErrTrustPolicyNotFound
+}
+func (r *appRepoStub) ListTrustPolicies(context.Context, string, int) ([]domain.TrustPolicy, error) {
+	return nil, nil
+}
+func (r *appRepoStub) UpsertTrustPolicy(context.Context, domain.TrustPolicy) error { return nil }
 func (r *appRepoStub) GetInboundMessage(context.Context, string) (domain.Message, error) {
 	return domain.Message{}, nil
 }
@@ -216,6 +223,14 @@ func (r *appRepoStub) ListArtifacts(context.Context, domain.ArtifactListQuery) (
 func (r *appRepoStub) CountArtifacts(context.Context, domain.ArtifactListQuery) (int, error) {
 	return 1, nil
 }
+func (r *appRepoStub) ListUsers(context.Context, string, int) ([]domain.User, error) { return nil, nil }
+func (r *appRepoStub) CountLinkedIdentitiesByChannel(context.Context, string) (map[string]int, error) {
+	return map[string]int{}, nil
+}
+func (r *appRepoStub) ListLinkedIdentitiesForUser(context.Context, string, string) ([]domain.LinkedIdentity, error) {
+	return nil, nil
+}
+func (r *appRepoStub) DeleteLinkedIdentity(context.Context, string, string, string) error { return nil }
 func (r *appRepoStub) ListDeliveries(context.Context, domain.DeliveryListQuery) (domain.PagedResult[domain.OutboundDelivery], error) {
 	return domain.PagedResult[domain.OutboundDelivery]{}, nil
 }
@@ -3026,6 +3041,58 @@ func TestHandleSwitchSurfaceSession(t *testing.T) {
 	}
 	if len(repo.auditEvents) != 1 || repo.auditEvents[0].EventType != "admin.surface_session_switched" {
 		t.Fatalf("expected switch audit event, got %+v", repo.auditEvents)
+	}
+}
+
+func TestHandleTrustEventsQueriesTrustTypesDirectly(t *testing.T) {
+	repo := &appRepoStub{
+		auditPagesByEventType: map[string]domain.PagedResult[domain.AuditEvent]{
+			"trust.identity_linked": {
+				Items: []domain.AuditEvent{{
+					ID:        "audit_linked_1",
+					TenantID:  "tenant_default",
+					EventType: "trust.identity_linked",
+					CreatedAt: time.Unix(20, 0),
+				}},
+			},
+			"trust.step_up_verified": {
+				Items: []domain.AuditEvent{{
+					ID:        "audit_stepup_1",
+					TenantID:  "tenant_default",
+					EventType: "trust.step_up_verified",
+					CreatedAt: time.Unix(30, 0),
+				}},
+			},
+		},
+	}
+	app := &App{
+		Config: config.Config{DefaultTenantID: "tenant_default"},
+		Repo:   repo,
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/trust/events", nil)
+	rec := httptest.NewRecorder()
+	app.handleTrustEvents(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if len(repo.auditQueries) == 0 {
+		t.Fatalf("expected trust event queries")
+	}
+	sawLinked := false
+	sawStepUp := false
+	for _, query := range repo.auditQueries {
+		if query.EventType == "trust.identity_linked" {
+			sawLinked = true
+		}
+		if query.EventType == "trust.step_up_verified" {
+			sawStepUp = true
+		}
+		if query.EventType == "" {
+			t.Fatalf("expected event-specific trust queries, got %+v", query)
+		}
+	}
+	if !sawLinked || !sawStepUp {
+		t.Fatalf("expected direct trust event queries, got %+v", repo.auditQueries)
 	}
 }
 

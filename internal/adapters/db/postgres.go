@@ -300,6 +300,29 @@ func (r *PostgresRepository) GetUserByEmail(ctx context.Context, tenantID, email
 	return scanUser(row)
 }
 
+func (r *PostgresRepository) ListUsers(ctx context.Context, tenantID string, limit int) ([]domain.User, error) {
+	rows, err := r.query(ctx, `
+		select id, tenant_id, primary_email, primary_email_verified, coalesce(last_step_up_at,'epoch'::timestamptz), created_at, updated_at
+		from users
+		where tenant_id=$1
+		order by updated_at desc, id desc
+		limit $2
+	`, tenantID, normalizeLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.User
+	for rows.Next() {
+		var user domain.User
+		if err := rows.Scan(&user.ID, &user.TenantID, &user.PrimaryEmail, &user.PrimaryEmailVerified, &user.LastStepUpAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, user)
+	}
+	return out, rows.Err()
+}
+
 func (r *PostgresRepository) MarkUserStepUp(ctx context.Context, tenantID, userID string, at time.Time) error {
 	_, err := r.exec(ctx, `update users set last_step_up_at=$3, updated_at=$3 where tenant_id=$1 and id=$2`, tenantID, userID, at)
 	return err
@@ -439,6 +462,94 @@ func (r *PostgresRepository) ListLinkedIdentitiesForUser(ctx context.Context, te
 func (r *PostgresRepository) DeleteLinkedIdentity(ctx context.Context, tenantID, channelType, channelUserID string) error {
 	_, err := r.exec(ctx, `delete from linked_identities where tenant_id=$1 and channel_type=$2 and channel_user_id=$3`, tenantID, channelType, channelUserID)
 	return err
+}
+
+func (r *PostgresRepository) GetTrustPolicy(ctx context.Context, tenantID, agentProfileID string) (domain.TrustPolicy, error) {
+	row := r.queryRow(ctx, `
+		select tenant_id, agent_profile_id, require_linked_identity_for_execution, require_linked_identity_for_approval,
+		       require_recent_step_up_for_approval, allowed_approval_channels_json, updated_at
+		from trust_policies
+		where tenant_id=$1 and agent_profile_id=$2
+	`, tenantID, agentProfileID)
+	var policy domain.TrustPolicy
+	var allowedJSON []byte
+	if err := row.Scan(&policy.TenantID, &policy.AgentProfileID, &policy.RequireLinkedIdentityForExecution, &policy.RequireLinkedIdentityForApproval, &policy.RequireRecentStepUpForApproval, &allowedJSON, &policy.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.TrustPolicy{}, domain.ErrTrustPolicyNotFound
+		}
+		return domain.TrustPolicy{}, err
+	}
+	_ = json.Unmarshal(allowedJSON, &policy.AllowedApprovalChannels)
+	return policy, nil
+}
+
+func (r *PostgresRepository) ListTrustPolicies(ctx context.Context, tenantID string, limit int) ([]domain.TrustPolicy, error) {
+	rows, err := r.query(ctx, `
+		select tenant_id, agent_profile_id, require_linked_identity_for_execution, require_linked_identity_for_approval,
+		       require_recent_step_up_for_approval, allowed_approval_channels_json, updated_at
+		from trust_policies
+		where tenant_id=$1
+		order by agent_profile_id
+		limit $2
+	`, tenantID, normalizeLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.TrustPolicy
+	for rows.Next() {
+		var item domain.TrustPolicy
+		var allowedJSON []byte
+		if err := rows.Scan(&item.TenantID, &item.AgentProfileID, &item.RequireLinkedIdentityForExecution, &item.RequireLinkedIdentityForApproval, &item.RequireRecentStepUpForApproval, &allowedJSON, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(allowedJSON, &item.AllowedApprovalChannels)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (r *PostgresRepository) UpsertTrustPolicy(ctx context.Context, policy domain.TrustPolicy) error {
+	allowedJSON, _ := json.Marshal(policy.AllowedApprovalChannels)
+	if policy.UpdatedAt.IsZero() {
+		policy.UpdatedAt = time.Now().UTC()
+	}
+	_, err := r.exec(ctx, `
+		insert into trust_policies (
+			tenant_id, agent_profile_id, require_linked_identity_for_execution, require_linked_identity_for_approval,
+			require_recent_step_up_for_approval, allowed_approval_channels_json, updated_at
+		) values ($1,$2,$3,$4,$5,$6,$7)
+		on conflict (tenant_id, agent_profile_id) do update
+		set require_linked_identity_for_execution=excluded.require_linked_identity_for_execution,
+		    require_linked_identity_for_approval=excluded.require_linked_identity_for_approval,
+		    require_recent_step_up_for_approval=excluded.require_recent_step_up_for_approval,
+		    allowed_approval_channels_json=excluded.allowed_approval_channels_json,
+		    updated_at=excluded.updated_at
+	`, policy.TenantID, policy.AgentProfileID, policy.RequireLinkedIdentityForExecution, policy.RequireLinkedIdentityForApproval, policy.RequireRecentStepUpForApproval, allowedJSON, policy.UpdatedAt)
+	return err
+}
+
+func (r *PostgresRepository) CountLinkedIdentitiesByChannel(ctx context.Context, tenantID string) (map[string]int, error) {
+	rows, err := r.query(ctx, `
+		select channel_type, count(*)
+		from linked_identities
+		where tenant_id=$1
+		group by channel_type
+	`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var channel string
+		var count int
+		if err := rows.Scan(&channel, &count); err != nil {
+			return nil, err
+		}
+		out[channel] = count
+	}
+	return out, rows.Err()
 }
 
 func (r *PostgresRepository) HasActiveRun(ctx context.Context, sessionID string) (bool, error) {
@@ -619,20 +730,20 @@ func (r *PostgresRepository) StoreAwait(ctx context.Context, await domain.Await)
 	_, err := r.exec(ctx, `
 		insert into awaits (
 			id, run_id, session_id, channel_type, status, schema_json, prompt_render_model_json,
-			allowed_responder_ids_json, expires_at
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-	`, await.ID, await.RunID, await.SessionID, await.ChannelType, await.Status, await.SchemaJSON, await.PromptRenderJSON, allowed, await.ExpiresAt)
+			allowed_responder_ids_json, trust_policy_json, expires_at
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+	`, await.ID, await.RunID, await.SessionID, await.ChannelType, await.Status, await.SchemaJSON, await.PromptRenderJSON, allowed, await.TrustPolicyJSON, await.ExpiresAt)
 	return err
 }
 
-func (r *PostgresRepository) ResolveAwait(ctx context.Context, awaitID string, actorID string, payload []byte) (domain.Await, error) {
+func (r *PostgresRepository) ResolveAwait(ctx context.Context, awaitID string, actorID, actorUserID, actorIdentityAssurance string, payload []byte) (domain.Await, error) {
 	var await domain.Await
 	var allowedJSON []byte
 	row := r.queryRow(ctx, `
-		select id, run_id, session_id, channel_type, status, schema_json, prompt_render_model_json, allowed_responder_ids_json, expires_at
+		select id, run_id, session_id, channel_type, status, schema_json, prompt_render_model_json, allowed_responder_ids_json, trust_policy_json, expires_at
 		from awaits where id=$1
 	`, awaitID)
-	if err := row.Scan(&await.ID, &await.RunID, &await.SessionID, &await.ChannelType, &await.Status, &await.SchemaJSON, &await.PromptRenderJSON, &allowedJSON, &await.ExpiresAt); err != nil {
+	if err := row.Scan(&await.ID, &await.RunID, &await.SessionID, &await.ChannelType, &await.Status, &await.SchemaJSON, &await.PromptRenderJSON, &allowedJSON, &await.TrustPolicyJSON, &await.ExpiresAt); err != nil {
 		return domain.Await{}, err
 	}
 	if err := json.Unmarshal(allowedJSON, &await.AllowedResponderIDs); err != nil {
@@ -645,9 +756,9 @@ func (r *PostgresRepository) ResolveAwait(ctx context.Context, awaitID string, a
 		return domain.Await{}, fmt.Errorf("actor %s is not allowed to resolve await", actorID)
 	}
 	_, err := r.exec(ctx, `
-		insert into await_responses (id, await_id, actor_channel_user_id, actor_identity_assurance, response_payload_json, idempotency_key, accepted_at, rejected_reason)
-		values ($1,$2,$3,'provider_verified',$4,$5,now(),'')
-	`, "await_response_"+awaitID, awaitID, actorID, payload, awaitID+":"+actorID)
+		insert into await_responses (id, await_id, actor_channel_user_id, actor_user_id, actor_identity_assurance, response_payload_json, idempotency_key, accepted_at, rejected_reason)
+		values ($1,$2,$3,$4,$5,$6,$7,now(),'')
+	`, "await_response_"+awaitID, awaitID, actorID, actorUserID, actorIdentityAssurance, payload, awaitID+":"+actorID)
 	if err != nil {
 		return domain.Await{}, err
 	}
@@ -659,10 +770,10 @@ func (r *PostgresRepository) GetAwait(ctx context.Context, awaitID string) (doma
 	var await domain.Await
 	var allowedJSON []byte
 	row := r.queryRow(ctx, `
-		select id, run_id, session_id, channel_type, status, schema_json, prompt_render_model_json, allowed_responder_ids_json, expires_at
+		select id, run_id, session_id, channel_type, status, schema_json, prompt_render_model_json, allowed_responder_ids_json, trust_policy_json, expires_at
 		from awaits where id=$1
 	`, awaitID)
-	if err := row.Scan(&await.ID, &await.RunID, &await.SessionID, &await.ChannelType, &await.Status, &await.SchemaJSON, &await.PromptRenderJSON, &allowedJSON, &await.ExpiresAt); err != nil {
+	if err := row.Scan(&await.ID, &await.RunID, &await.SessionID, &await.ChannelType, &await.Status, &await.SchemaJSON, &await.PromptRenderJSON, &allowedJSON, &await.TrustPolicyJSON, &await.ExpiresAt); err != nil {
 		return domain.Await{}, err
 	}
 	_ = json.Unmarshal(allowedJSON, &await.AllowedResponderIDs)
@@ -1433,7 +1544,7 @@ func (r *PostgresRepository) ListAwaits(ctx context.Context, query domain.AwaitL
 	}
 	args = append(args, limit+1)
 	rows, err := r.query(ctx, fmt.Sprintf(`
-		select a.id, a.run_id, a.session_id, a.channel_type, a.status, a.schema_json, a.prompt_render_model_json, a.allowed_responder_ids_json, a.expires_at
+		select a.id, a.run_id, a.session_id, a.channel_type, a.status, a.schema_json, a.prompt_render_model_json, a.allowed_responder_ids_json, a.trust_policy_json, a.expires_at
 		from awaits a join sessions s on s.id = a.session_id
 		where %s
 		order by a.expires_at desc, a.id desc
@@ -1448,7 +1559,7 @@ func (r *PostgresRepository) ListAwaits(ctx context.Context, query domain.AwaitL
 	for rows.Next() {
 		var item domain.Await
 		var allowedJSON []byte
-		if err := rows.Scan(&item.ID, &item.RunID, &item.SessionID, &item.ChannelType, &item.Status, &item.SchemaJSON, &item.PromptRenderJSON, &allowedJSON, &item.ExpiresAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.RunID, &item.SessionID, &item.ChannelType, &item.Status, &item.SchemaJSON, &item.PromptRenderJSON, &allowedJSON, &item.TrustPolicyJSON, &item.ExpiresAt); err != nil {
 			return domain.PagedResult[domain.Await]{}, err
 		}
 		_ = json.Unmarshal(allowedJSON, &item.AllowedResponderIDs)
@@ -1574,7 +1685,7 @@ func (r *PostgresRepository) GetRunByACP(ctx context.Context, acpRunID string) (
 
 func (r *PostgresRepository) GetAwaitsForRun(ctx context.Context, runID string, limit int) ([]domain.Await, error) {
 	rows, err := r.query(ctx, `
-		select id, run_id, session_id, channel_type, status, schema_json, prompt_render_model_json, allowed_responder_ids_json, expires_at
+		select id, run_id, session_id, channel_type, status, schema_json, prompt_render_model_json, allowed_responder_ids_json, trust_policy_json, expires_at
 		from awaits where run_id=$1 order by expires_at desc, id desc limit $2
 	`, runID, normalizeLimit(limit))
 	if err != nil {
@@ -1585,7 +1696,7 @@ func (r *PostgresRepository) GetAwaitsForRun(ctx context.Context, runID string, 
 	for rows.Next() {
 		var item domain.Await
 		var allowedJSON []byte
-		if err := rows.Scan(&item.ID, &item.RunID, &item.SessionID, &item.ChannelType, &item.Status, &item.SchemaJSON, &item.PromptRenderJSON, &allowedJSON, &item.ExpiresAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.RunID, &item.SessionID, &item.ChannelType, &item.Status, &item.SchemaJSON, &item.PromptRenderJSON, &allowedJSON, &item.TrustPolicyJSON, &item.ExpiresAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(allowedJSON, &item.AllowedResponderIDs)
@@ -1596,7 +1707,7 @@ func (r *PostgresRepository) GetAwaitsForRun(ctx context.Context, runID string, 
 
 func (r *PostgresRepository) GetAwaitResponses(ctx context.Context, awaitID string, limit int) ([]domain.AwaitResponse, error) {
 	rows, err := r.query(ctx, `
-		select id, await_id, actor_channel_user_id, actor_identity_assurance, response_payload_json, idempotency_key, accepted_at, rejected_reason
+		select id, await_id, actor_channel_user_id, actor_user_id, actor_identity_assurance, response_payload_json, idempotency_key, accepted_at, rejected_reason
 		from await_responses
 		where await_id=$1
 		order by accepted_at desc, id desc
@@ -1609,7 +1720,7 @@ func (r *PostgresRepository) GetAwaitResponses(ctx context.Context, awaitID stri
 	var out []domain.AwaitResponse
 	for rows.Next() {
 		var item domain.AwaitResponse
-		if err := rows.Scan(&item.ID, &item.AwaitID, &item.ActorChannelUserID, &item.ActorIdentityAssurance, &item.ResponsePayloadJSON, &item.IdempotencyKey, &item.AcceptedAt, &item.RejectedReason); err != nil {
+		if err := rows.Scan(&item.ID, &item.AwaitID, &item.ActorChannelUserID, &item.ActorUserID, &item.ActorIdentityAssurance, &item.ResponsePayloadJSON, &item.IdempotencyKey, &item.AcceptedAt, &item.RejectedReason); err != nil {
 			return nil, err
 		}
 		out = append(out, item)
@@ -1836,7 +1947,7 @@ func (r *PostgresRepository) ListStaleRuns(ctx context.Context, before time.Time
 
 func (r *PostgresRepository) ListExpiredAwaits(ctx context.Context, before time.Time, limit int) ([]domain.Await, error) {
 	rows, err := r.query(ctx, `
-		select id, run_id, session_id, channel_type, status, schema_json, prompt_render_model_json, allowed_responder_ids_json, expires_at
+		select id, run_id, session_id, channel_type, status, schema_json, prompt_render_model_json, allowed_responder_ids_json, trust_policy_json, expires_at
 		from awaits
 		where status='pending' and expires_at < $1
 		order by expires_at asc
@@ -1850,7 +1961,7 @@ func (r *PostgresRepository) ListExpiredAwaits(ctx context.Context, before time.
 	for rows.Next() {
 		var item domain.Await
 		var allowedJSON []byte
-		if err := rows.Scan(&item.ID, &item.RunID, &item.SessionID, &item.ChannelType, &item.Status, &item.SchemaJSON, &item.PromptRenderJSON, &allowedJSON, &item.ExpiresAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.RunID, &item.SessionID, &item.ChannelType, &item.Status, &item.SchemaJSON, &item.PromptRenderJSON, &allowedJSON, &item.TrustPolicyJSON, &item.ExpiresAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(allowedJSON, &item.AllowedResponderIDs)

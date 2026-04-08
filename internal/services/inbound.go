@@ -69,6 +69,18 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 		if session.AgentProfileID == "" {
 			session.AgentProfileID = route.AgentProfileID
 		}
+		identityRepo := s.Identity
+		if txIdentity, ok := repo.(ports.IdentityRepository); ok {
+			identityRepo = txIdentity
+		}
+		if route.RequireLinkedIdentityForExecution {
+			if _, err := s.resolveExistingCanonicalUser(ctx, identityRepo, evt); err != nil {
+				if errors.Is(err, domain.ErrLinkedIdentityNotFound) || errors.Is(err, domain.ErrIdentityUserNotFound) {
+					return domain.ErrLinkedIdentityRequired
+				}
+				return err
+			}
+		}
 
 		inboundMessageID, err := repo.StoreInboundMessage(ctx, evt, session.ID)
 		if err != nil {
@@ -110,6 +122,53 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 	return result, nil
 }
 
+func (s InboundService) resolveCanonicalUser(ctx context.Context, identityRepo ports.IdentityRepository, evt domain.CanonicalInboundEvent) (domain.User, error) {
+	if identityRepo == nil {
+		return domain.User{}, domain.ErrIdentityUserNotFound
+	}
+	switch evt.Channel {
+	case "webchat", "email":
+		user, err := identityRepo.EnsureUserByEmail(ctx, evt.TenantID, evt.Sender.ChannelUserID)
+		if err != nil {
+			return domain.User{}, err
+		}
+		if err := identityRepo.UpsertLinkedIdentity(ctx, domain.LinkedIdentity{
+			TenantID:       evt.TenantID,
+			UserID:         user.ID,
+			ChannelType:    evt.Channel,
+			ChannelUserID:  strings.ToLower(strings.TrimSpace(evt.Sender.ChannelUserID)),
+			Status:         "linked",
+			LinkedAt:       time.Now().UTC(),
+			LastVerifiedAt: time.Now().UTC(),
+		}); err != nil {
+			return domain.User{}, err
+		}
+		return user, nil
+	default:
+		identity, err := identityRepo.GetLinkedIdentity(ctx, evt.TenantID, evt.Channel, evt.Sender.ChannelUserID)
+		if err != nil {
+			return domain.User{}, err
+		}
+		return identityRepo.GetUser(ctx, evt.TenantID, identity.UserID)
+	}
+}
+
+func (s InboundService) resolveExistingCanonicalUser(ctx context.Context, identityRepo ports.IdentityRepository, evt domain.CanonicalInboundEvent) (domain.User, error) {
+	if identityRepo == nil {
+		return domain.User{}, domain.ErrIdentityUserNotFound
+	}
+	switch evt.Channel {
+	case "webchat", "email":
+		identity, err := identityRepo.GetLinkedIdentity(ctx, evt.TenantID, evt.Channel, strings.ToLower(strings.TrimSpace(evt.Sender.ChannelUserID)))
+		if err != nil {
+			return domain.User{}, err
+		}
+		return identityRepo.GetUser(ctx, evt.TenantID, identity.UserID)
+	default:
+		return s.resolveCanonicalUser(ctx, identityRepo, evt)
+	}
+}
+
 func (s InboundService) handleIdentityCommand(ctx context.Context, evt domain.CanonicalInboundEvent) (bool, InboundResult, error) {
 	if s.Identity == nil {
 		return false, InboundResult{}, nil
@@ -138,6 +197,19 @@ func (s InboundService) handleIdentityCommand(ctx context.Context, evt domain.Ca
 	}); err != nil {
 		return true, InboundResult{Status: "identity_link_rejected"}, err
 	}
+	if auditRepo, ok := s.Repo.(interface {
+		Audit(context.Context, domain.AuditEvent) error
+	}); ok {
+		_ = auditRepo.Audit(ctx, domain.AuditEvent{
+			ID:            trustAuditID("identity_linked", evt.TenantID, challenge.UserID, evt.Channel, evt.Sender.ChannelUserID, evt.EventID),
+			TenantID:      evt.TenantID,
+			AggregateType: "user",
+			AggregateID:   challenge.UserID,
+			EventType:     "trust.identity_linked",
+			PayloadJSON:   mustJSON(map[string]any{"channel": evt.Channel, "channel_user_id": evt.Sender.ChannelUserID}),
+			CreatedAt:     time.Now().UTC(),
+		})
+	}
 	return true, InboundResult{Status: "identity_linked"}, nil
 }
 
@@ -161,6 +233,10 @@ func parseLinkToken(token string) (string, string) {
 func sha256Hex(input string) string {
 	sum := sha256.Sum256([]byte(input))
 	return hex.EncodeToString(sum[:])
+}
+
+func trustAuditID(parts ...string) string {
+	return "audit_" + sha256Hex(strings.Join(parts, "|"))[:24]
 }
 
 func (s InboundService) handleSessionCommand(ctx context.Context, repo ports.Repository, evt domain.CanonicalInboundEvent, session domain.Session) (bool, InboundResult, error) {

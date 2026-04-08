@@ -46,7 +46,7 @@ func (r *awaitRepo) EnqueueNextQueueItem(context.Context, string) (*domain.Outbo
 	return nil, nil
 }
 func (r *awaitRepo) StoreAwait(context.Context, domain.Await) error { return nil }
-func (r *awaitRepo) ResolveAwait(_ context.Context, awaitID string, actorID string, payload []byte) (domain.Await, error) {
+func (r *awaitRepo) ResolveAwait(_ context.Context, awaitID string, actorID, actorUserID, identityAssurance string, payload []byte) (domain.Await, error) {
 	r.resolved = domain.Await{ID: awaitID, RunID: "run_1", SessionID: "session_1", ExpiresAt: time.Now().Add(time.Hour)}
 	if actorID == "" || len(payload) == 0 {
 		return domain.Await{}, nil
@@ -80,6 +80,11 @@ func (r *awaitRepo) UpdateSessionACPSessionID(context.Context, string, string) e
 func (r *awaitRepo) GetRouteDecision(context.Context, string) (domain.RouteDecision, error) {
 	return domain.RouteDecision{}, nil
 }
+func (r *awaitRepo) GetTrustPolicy(context.Context, string, string) (domain.TrustPolicy, error) {
+	return domain.TrustPolicy{}, domain.ErrTrustPolicyNotFound
+}
+func (r *awaitRepo) ListTrustPolicies(context.Context, string, int) ([]domain.TrustPolicy, error) { return nil, nil }
+func (r *awaitRepo) UpsertTrustPolicy(context.Context, domain.TrustPolicy) error                   { return nil }
 func (r *awaitRepo) GetInboundMessage(context.Context, string) (domain.Message, error) {
 	return domain.Message{}, nil
 }
@@ -128,6 +133,14 @@ func (r *awaitRepo) CountMessages(context.Context, domain.MessageListQuery) (int
 func (r *awaitRepo) CountArtifacts(context.Context, domain.ArtifactListQuery) (int, error) {
 	return 0, nil
 }
+func (r *awaitRepo) ListUsers(context.Context, string, int) ([]domain.User, error) { return nil, nil }
+func (r *awaitRepo) CountLinkedIdentitiesByChannel(context.Context, string) (map[string]int, error) {
+	return map[string]int{}, nil
+}
+func (r *awaitRepo) ListLinkedIdentitiesForUser(context.Context, string, string) ([]domain.LinkedIdentity, error) {
+	return nil, nil
+}
+func (r *awaitRepo) DeleteLinkedIdentity(context.Context, string, string, string) error { return nil }
 func (r *awaitRepo) CountDeliveries(context.Context, domain.DeliveryListQuery) (int, error) {
 	return 0, nil
 }

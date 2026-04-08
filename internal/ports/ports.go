@@ -42,6 +42,7 @@ type IdentityRepository interface {
 	EnsureUserByEmail(ctx context.Context, tenantID, email string) (domain.User, error)
 	GetUser(ctx context.Context, tenantID, userID string) (domain.User, error)
 	GetUserByEmail(ctx context.Context, tenantID, email string) (domain.User, error)
+	ListUsers(ctx context.Context, tenantID string, limit int) ([]domain.User, error)
 	MarkUserStepUp(ctx context.Context, tenantID, userID string, at time.Time) error
 	HasRecentStepUp(ctx context.Context, tenantID, userID string, since time.Time) (bool, error)
 	CreateStepUpChallenge(ctx context.Context, challenge domain.StepUpChallenge, minInterval time.Duration) error
@@ -50,6 +51,10 @@ type IdentityRepository interface {
 	GetLinkedIdentity(ctx context.Context, tenantID, channelType, channelUserID string) (domain.LinkedIdentity, error)
 	ListLinkedIdentitiesForUser(ctx context.Context, tenantID, userID string) ([]domain.LinkedIdentity, error)
 	DeleteLinkedIdentity(ctx context.Context, tenantID, channelType, channelUserID string) error
+	GetTrustPolicy(ctx context.Context, tenantID, agentProfileID string) (domain.TrustPolicy, error)
+	ListTrustPolicies(ctx context.Context, tenantID string, limit int) ([]domain.TrustPolicy, error)
+	UpsertTrustPolicy(ctx context.Context, policy domain.TrustPolicy) error
+	CountLinkedIdentitiesByChannel(ctx context.Context, tenantID string) (map[string]int, error)
 }
 
 type ACPBridge interface {
@@ -89,7 +94,7 @@ type Repository interface {
 	UpdateActiveQueueItemStatus(ctx context.Context, sessionID, status string) error
 	EnqueueNextQueueItem(ctx context.Context, sessionID string) (*domain.OutboxEvent, error)
 	StoreAwait(ctx context.Context, await domain.Await) error
-	ResolveAwait(ctx context.Context, awaitID string, actorID string, payload []byte) (domain.Await, error)
+	ResolveAwait(ctx context.Context, awaitID string, actorChannelID, actorUserID, actorIdentityAssurance string, payload []byte) (domain.Await, error)
 	GetAwait(ctx context.Context, awaitID string) (domain.Await, error)
 	EnqueueAwaitResume(ctx context.Context, req domain.ResumeRequest, tenantID string) error
 	EnqueueDelivery(ctx context.Context, delivery domain.OutboundDelivery) error
@@ -101,6 +106,9 @@ type Repository interface {
 	GetSession(ctx context.Context, sessionID string) (domain.Session, error)
 	UpdateSessionACPSessionID(ctx context.Context, sessionID, acpSessionID string) error
 	GetRouteDecision(ctx context.Context, queueItemID string) (domain.RouteDecision, error)
+	GetTrustPolicy(ctx context.Context, tenantID, agentProfileID string) (domain.TrustPolicy, error)
+	ListTrustPolicies(ctx context.Context, tenantID string, limit int) ([]domain.TrustPolicy, error)
+	UpsertTrustPolicy(ctx context.Context, policy domain.TrustPolicy) error
 	GetInboundMessage(ctx context.Context, messageID string) (domain.Message, error)
 	GetDelivery(ctx context.Context, deliveryID string) (domain.OutboundDelivery, error)
 	GetLatestDeliveryByLogicalMessage(ctx context.Context, logicalMessageID string) (*domain.OutboundDelivery, error)
@@ -149,8 +157,12 @@ type Repository interface {
 	GetTelegramUserAccess(ctx context.Context, tenantID, telegramUserID string) (domain.TelegramUserAccess, error)
 	UpsertTelegramUserAccess(ctx context.Context, entry domain.TelegramUserAccess) error
 	DeleteTelegramUserAccess(ctx context.Context, tenantID, telegramUserID string) error
+	ListUsers(ctx context.Context, tenantID string, limit int) ([]domain.User, error)
+	CountLinkedIdentitiesByChannel(ctx context.Context, tenantID string) (map[string]int, error)
 	RequestTelegramAccess(ctx context.Context, entry domain.TelegramUserAccess) (domain.TelegramUserAccess, error)
 	ResolveTelegramAccessRequest(ctx context.Context, tenantID, telegramUserID, status, addedBy string) (domain.TelegramUserAccess, error)
+	ListLinkedIdentitiesForUser(ctx context.Context, tenantID, userID string) ([]domain.LinkedIdentity, error)
+	DeleteLinkedIdentity(ctx context.Context, tenantID, channelType, channelUserID string) error
 	CountAuditEvents(ctx context.Context, query domain.AuditEventListQuery) (int, error)
 	Audit(ctx context.Context, event domain.AuditEvent) error
 	ForceCancelRun(ctx context.Context, runID string) error

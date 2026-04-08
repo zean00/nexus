@@ -64,6 +64,7 @@ type Metadata struct {
 	RawPayload       []byte
 	AwaitID          string
 	ResumePayload    []byte
+	ActorUserID      string
 }
 
 type ResponderBinding struct {
@@ -84,14 +85,17 @@ type Session struct {
 }
 
 type RouteDecision struct {
-	AgentProfileID          string
-	ACPConnectionID         string
-	ACPAgentName            string
-	Mode                    string
-	RequiresApproval        bool
-	RequiresLinkedIdentity  bool
-	RequiresRecentStepUp    bool
-	AllowedApprovalChannels []string
+	AgentProfileID                    string
+	ACPConnectionID                   string
+	ACPAgentName                      string
+	Mode                              string
+	RequiresApproval                  bool
+	RequiresLinkedIdentity            bool
+	RequiresRecentStepUp              bool
+	AllowedApprovalChannels           []string
+	RequireLinkedIdentityForExecution bool
+	RequireLinkedIdentityForApproval  bool
+	RequireRecentStepUpForApproval    bool
 }
 
 type QueueItem struct {
@@ -122,6 +126,7 @@ type Await struct {
 	Status              string
 	SchemaJSON          []byte
 	PromptRenderJSON    []byte
+	TrustPolicyJSON     []byte
 	AllowedResponderIDs []string
 	ExpiresAt           time.Time
 }
@@ -219,6 +224,16 @@ type StepUpChallenge struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 	ConsumedAt  time.Time `json:"consumed_at,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+type TrustPolicy struct {
+	TenantID                         string    `json:"tenant_id"`
+	AgentProfileID                   string    `json:"agent_profile_id"`
+	RequireLinkedIdentityForExecution bool      `json:"require_linked_identity_for_execution"`
+	RequireLinkedIdentityForApproval bool      `json:"require_linked_identity_for_approval"`
+	RequireRecentStepUpForApproval  bool      `json:"require_recent_step_up_for_approval"`
+	AllowedApprovalChannels         []string  `json:"allowed_approval_channels,omitempty"`
+	UpdatedAt                       time.Time `json:"updated_at,omitempty"`
 }
 
 type WebChatItem struct {
@@ -439,6 +454,7 @@ type AwaitResponse struct {
 	ID                     string    `json:"id"`
 	AwaitID                string    `json:"await_id"`
 	ActorChannelUserID     string    `json:"actor_channel_user_id"`
+	ActorUserID            string    `json:"actor_user_id,omitempty"`
 	ActorIdentityAssurance string    `json:"actor_identity_assurance"`
 	ResponsePayloadJSON    []byte    `json:"response_payload_json"`
 	IdempotencyKey         string    `json:"idempotency_key"`
