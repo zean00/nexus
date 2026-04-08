@@ -83,8 +83,10 @@ func (r *awaitRepo) GetRouteDecision(context.Context, string) (domain.RouteDecis
 func (r *awaitRepo) GetTrustPolicy(context.Context, string, string) (domain.TrustPolicy, error) {
 	return domain.TrustPolicy{}, domain.ErrTrustPolicyNotFound
 }
-func (r *awaitRepo) ListTrustPolicies(context.Context, string, int) ([]domain.TrustPolicy, error) { return nil, nil }
-func (r *awaitRepo) UpsertTrustPolicy(context.Context, domain.TrustPolicy) error                   { return nil }
+func (r *awaitRepo) ListTrustPolicies(context.Context, string, int) ([]domain.TrustPolicy, error) {
+	return nil, nil
+}
+func (r *awaitRepo) UpsertTrustPolicy(context.Context, domain.TrustPolicy) error { return nil }
 func (r *awaitRepo) GetInboundMessage(context.Context, string) (domain.Message, error) {
 	return domain.Message{}, nil
 }
@@ -134,6 +136,10 @@ func (r *awaitRepo) CountArtifacts(context.Context, domain.ArtifactListQuery) (i
 	return 0, nil
 }
 func (r *awaitRepo) ListUsers(context.Context, string, int) ([]domain.User, error) { return nil, nil }
+func (r *awaitRepo) UpdateUserPhone(context.Context, string, string, string, string, bool, time.Time) error {
+	return nil
+}
+func (r *awaitRepo) ClearUserPhone(context.Context, string, string) error { return nil }
 func (r *awaitRepo) CountLinkedIdentitiesByChannel(context.Context, string) (map[string]int, error) {
 	return map[string]int{}, nil
 }

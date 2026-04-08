@@ -123,6 +123,7 @@ func (a *App) handleListTrustUsers(w http.ResponseWriter, r *http.Request) {
 		items = append(items, map[string]any{
 			"user":              user,
 			"linked_identities": identities,
+			"link_hints":        buildWebChatLinkHints(user, identities),
 		})
 	}
 	httpx.OK(w, map[string]any{"items": items}, nil)
@@ -156,6 +157,7 @@ func (a *App) handleTrustUserDetail(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]any{
 		"user":              user,
 		"linked_identities": identities,
+		"link_hints":        buildWebChatLinkHints(user, identities),
 		"events":            events.Items,
 	}, nil)
 }

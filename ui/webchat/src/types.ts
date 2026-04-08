@@ -33,6 +33,18 @@ export interface BootstrapData {
   session_id: string;
   csrf_token: string;
   items: WebChatItem[];
+  primary_phone?: string;
+  primary_phone_verified?: boolean;
+}
+
+export interface IdentityProfileData {
+  user_id: string;
+  email: string;
+  primary_phone?: string;
+  primary_phone_verified?: boolean;
+  linked_identities?: Array<Record<string, unknown>>;
+  link_hints?: Record<string, Record<string, unknown>>;
+  recent_step_up?: boolean;
 }
 
 export interface WebChatEventsPayload {
@@ -58,6 +70,9 @@ export interface WebChatLabels {
   logout?: string;
   composerPlaceholder?: string;
   send?: string;
+  phoneLabel?: string;
+  savePhone?: string;
+  removePhone?: string;
   sendSuccess?: string;
   sendFailed?: string;
   signedInAsPrefix?: string;

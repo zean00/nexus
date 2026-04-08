@@ -100,6 +100,7 @@ function App() {
           {users.map((entry) => (
             <div key={entry.user.id} className="user">
               <strong>{entry.user.primary_email}</strong>
+              {entry.user.primary_phone ? <div>{entry.user.primary_phone} {entry.user.primary_phone_verified ? "(verified)" : "(unverified)"}</div> : null}
               <ul>
                 {(entry.linked_identities ?? []).map((identity: any) => (
                   <li key={`${identity.channel_type}:${identity.channel_user_id}`}>
@@ -108,6 +109,7 @@ function App() {
                   </li>
                 ))}
               </ul>
+              {entry.link_hints ? <pre>{JSON.stringify(entry.link_hints, null, 2)}</pre> : null}
             </div>
           ))}
         </section>
@@ -129,4 +131,3 @@ async function getJSON(url: string) {
 }
 
 createRoot(document.getElementById("app")!).render(<App />);
-

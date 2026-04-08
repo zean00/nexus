@@ -1,5 +1,6 @@
 import type {
   BootstrapData,
+  IdentityProfileData,
   WebChatClientConfig,
   WebChatEventsPayload
 } from "./types";
@@ -50,6 +51,32 @@ export class WebChatClient {
       method: "GET"
     });
     return payload.data;
+  }
+
+  async getIdentityProfile(): Promise<IdentityProfileData> {
+    const payload = await this.requestJSON<{ data: IdentityProfileData }>("/identity/profile", {
+      method: "GET"
+    });
+    return payload.data;
+  }
+
+  async updatePhone(phone: string): Promise<IdentityProfileData> {
+    const payload = await this.requestJSON<{ data: IdentityProfileData }>("/identity/phone", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.csrfHeaders()
+      },
+      body: JSON.stringify({ phone })
+    });
+    return payload.data;
+  }
+
+  async deletePhone(): Promise<void> {
+    await this.requestJSON("/identity/phone/delete", {
+      method: "POST",
+      headers: this.csrfHeaders()
+    });
   }
 
   async sendMessage(input: { text: string; files?: File[] }): Promise<void> {

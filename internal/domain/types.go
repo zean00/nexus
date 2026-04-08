@@ -194,13 +194,17 @@ type WebAuthSession struct {
 }
 
 type User struct {
-	ID                   string    `json:"id"`
-	TenantID             string    `json:"tenant_id"`
-	PrimaryEmail         string    `json:"primary_email"`
-	PrimaryEmailVerified bool      `json:"primary_email_verified"`
-	LastStepUpAt         time.Time `json:"last_step_up_at,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	ID                     string    `json:"id"`
+	TenantID               string    `json:"tenant_id"`
+	PrimaryEmail           string    `json:"primary_email"`
+	PrimaryEmailVerified   bool      `json:"primary_email_verified"`
+	PrimaryPhone           string    `json:"primary_phone,omitempty"`
+	PrimaryPhoneNormalized string    `json:"primary_phone_normalized,omitempty"`
+	PrimaryPhoneVerified   bool      `json:"primary_phone_verified"`
+	PrimaryPhoneAddedAt    time.Time `json:"primary_phone_added_at,omitempty"`
+	LastStepUpAt           time.Time `json:"last_step_up_at,omitempty"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 type LinkedIdentity struct {
@@ -227,13 +231,13 @@ type StepUpChallenge struct {
 }
 
 type TrustPolicy struct {
-	TenantID                         string    `json:"tenant_id"`
-	AgentProfileID                   string    `json:"agent_profile_id"`
+	TenantID                          string    `json:"tenant_id"`
+	AgentProfileID                    string    `json:"agent_profile_id"`
 	RequireLinkedIdentityForExecution bool      `json:"require_linked_identity_for_execution"`
-	RequireLinkedIdentityForApproval bool      `json:"require_linked_identity_for_approval"`
-	RequireRecentStepUpForApproval  bool      `json:"require_recent_step_up_for_approval"`
-	AllowedApprovalChannels         []string  `json:"allowed_approval_channels,omitempty"`
-	UpdatedAt                       time.Time `json:"updated_at,omitempty"`
+	RequireLinkedIdentityForApproval  bool      `json:"require_linked_identity_for_approval"`
+	RequireRecentStepUpForApproval    bool      `json:"require_recent_step_up_for_approval"`
+	AllowedApprovalChannels           []string  `json:"allowed_approval_channels,omitempty"`
+	UpdatedAt                         time.Time `json:"updated_at,omitempty"`
 }
 
 type WebChatItem struct {

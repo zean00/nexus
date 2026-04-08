@@ -224,6 +224,10 @@ func (r *appRepoStub) CountArtifacts(context.Context, domain.ArtifactListQuery) 
 	return 1, nil
 }
 func (r *appRepoStub) ListUsers(context.Context, string, int) ([]domain.User, error) { return nil, nil }
+func (r *appRepoStub) UpdateUserPhone(context.Context, string, string, string, string, bool, time.Time) error {
+	return nil
+}
+func (r *appRepoStub) ClearUserPhone(context.Context, string, string) error { return nil }
 func (r *appRepoStub) CountLinkedIdentitiesByChannel(context.Context, string) (map[string]int, error) {
 	return map[string]int{}, nil
 }

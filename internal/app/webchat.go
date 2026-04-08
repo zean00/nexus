@@ -216,13 +216,15 @@ func (a *App) handleWebChatBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.OK(w, map[string]any{
-		"email":             authSession.Email,
-		"session_id":        session.ID,
-		"csrf_token":        csrfToken,
-		"items":             items,
-		"user_id":           user.ID,
-		"linked_identities": identities,
-		"recent_step_up":    recentStepUp,
+		"email":                  authSession.Email,
+		"session_id":             session.ID,
+		"csrf_token":             csrfToken,
+		"items":                  items,
+		"user_id":                user.ID,
+		"primary_phone":          user.PrimaryPhone,
+		"primary_phone_verified": user.PrimaryPhoneVerified,
+		"linked_identities":      identities,
+		"recent_step_up":         recentStepUp,
 	}, nil)
 }
 
@@ -347,7 +349,7 @@ func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) 
 		TenantID: a.Config.DefaultTenantID,
 		Channel:  "webchat",
 		Sender: domain.Sender{
-			ChannelUserID: authSession.Email,
+			ChannelUserID:     authSession.Email,
 			IdentityAssurance: "first_party_session",
 		},
 		Metadata: domain.Metadata{
@@ -410,11 +412,136 @@ func (a *App) handleWebChatIdentityLinks(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	httpx.OK(w, map[string]any{
-		"user_id":            user.ID,
-		"linked_identities":  identities,
-		"recent_step_up":     recentStepUp,
-		"step_up_window_min": a.Config.StepUpWindowMinutes,
+		"user_id":                user.ID,
+		"primary_phone":          user.PrimaryPhone,
+		"primary_phone_verified": user.PrimaryPhoneVerified,
+		"linked_identities":      identities,
+		"link_hints":             buildWebChatLinkHints(user, identities),
+		"recent_step_up":         recentStepUp,
+		"step_up_window_min":     a.Config.StepUpWindowMinutes,
 	}, nil)
+}
+
+func (a *App) handleWebChatIdentityProfile(w http.ResponseWriter, r *http.Request) {
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	user, identities, recentStepUp, err := a.currentWebChatIdentityState(r.Context(), authSession)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"user_id":                user.ID,
+		"email":                  user.PrimaryEmail,
+		"primary_phone":          user.PrimaryPhone,
+		"primary_phone_verified": user.PrimaryPhoneVerified,
+		"linked_identities":      identities,
+		"link_hints":             buildWebChatLinkHints(user, identities),
+		"recent_step_up":         recentStepUp,
+	}, nil)
+}
+
+func (a *App) handleWebChatIdentityPhone(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err := a.validateWebChatCSRF(r, authSession.ID); err != nil {
+		httpx.Error(w, http.StatusForbidden, err.Error())
+		return
+	}
+	var body struct {
+		Phone string `json:"phone"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	rawPhone, normalizedPhone, err := normalizePhone(body.Phone)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	eventType := "trust.phone_updated"
+	if user.PrimaryPhone == "" {
+		eventType = "trust.phone_added"
+	}
+	addedAt := user.PrimaryPhoneAddedAt
+	if addedAt.IsZero() || addedAt.Equal(time.Unix(0, 0).UTC()) {
+		addedAt = time.Now().UTC()
+	}
+	if err := a.Identity.UpdateUserPhone(r.Context(), a.Config.DefaultTenantID, user.ID, rawPhone, normalizedPhone, false, addedAt); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	user, err = a.Identity.GetUser(r.Context(), a.Config.DefaultTenantID, user.ID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
+		ID:            trustAdminAuditID(strings.TrimPrefix(eventType, "trust."), a.Config.DefaultTenantID, user.ID, normalizedPhone, time.Now().UTC().Format(time.RFC3339Nano)),
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "user",
+		AggregateID:   user.ID,
+		EventType:     eventType,
+		PayloadJSON:   mustJSON(map[string]any{"primary_phone": user.PrimaryPhone, "primary_phone_verified": user.PrimaryPhoneVerified}),
+		CreatedAt:     time.Now().UTC(),
+	})
+	httpx.OK(w, map[string]any{
+		"user_id":                user.ID,
+		"email":                  user.PrimaryEmail,
+		"primary_phone":          user.PrimaryPhone,
+		"primary_phone_verified": user.PrimaryPhoneVerified,
+		"link_hints":             buildWebChatLinkHints(user, nil),
+	}, actionMeta("webchat_phone_saved"))
+}
+
+func (a *App) handleWebChatIdentityPhoneDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err := a.validateWebChatCSRF(r, authSession.ID); err != nil {
+		httpx.Error(w, http.StatusForbidden, err.Error())
+		return
+	}
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.Identity.ClearUserPhone(r.Context(), a.Config.DefaultTenantID, user.ID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
+		ID:            trustAdminAuditID("phone_removed", a.Config.DefaultTenantID, user.ID, time.Now().UTC().Format(time.RFC3339Nano)),
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "user",
+		AggregateID:   user.ID,
+		EventType:     "trust.phone_removed",
+		PayloadJSON:   mustJSON(map[string]any{"primary_phone": ""}),
+		CreatedAt:     time.Now().UTC(),
+	})
+	httpx.OK(w, map[string]any{"status": "removed"}, actionMeta("webchat_phone_removed"))
 }
 
 func (a *App) handleWebChatIdentityLinkCode(w http.ResponseWriter, r *http.Request) {
@@ -953,6 +1080,76 @@ func normalizeEmail(input string) (string, error) {
 		return "", fmt.Errorf("invalid email")
 	}
 	return strings.ToLower(strings.TrimSpace(addr.Address)), nil
+}
+
+func normalizePhone(input string) (string, string, error) {
+	raw := strings.TrimSpace(input)
+	if raw == "" {
+		return "", "", fmt.Errorf("missing phone")
+	}
+	var b strings.Builder
+	for i, r := range raw {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '+' && i == 0:
+			b.WriteRune(r)
+		case r == ' ' || r == '-' || r == '(' || r == ')' || r == '.':
+		default:
+			return "", "", fmt.Errorf("invalid phone")
+		}
+	}
+	normalized := b.String()
+	if normalized == "" {
+		return "", "", fmt.Errorf("invalid phone")
+	}
+	if normalized[0] != '+' {
+		normalized = "+" + normalized
+	}
+	digits := strings.TrimPrefix(normalized, "+")
+	if len(digits) < 8 || len(digits) > 15 {
+		return "", "", fmt.Errorf("invalid phone")
+	}
+	return raw, normalized, nil
+}
+
+func buildWebChatLinkHints(user domain.User, identities []domain.LinkedIdentity) map[string]map[string]any {
+	hints := map[string]map[string]any{}
+	for _, channel := range []string{"telegram", "whatsapp"} {
+		hint := map[string]any{}
+		if user.PrimaryPhone != "" {
+			hint["primary_phone"] = user.PrimaryPhone
+			hint["primary_phone_verified"] = user.PrimaryPhoneVerified
+			hint["phone_hint"] = fmt.Sprintf("Use the %s account that matches %s when pairing.", channel, user.PrimaryPhone)
+		}
+		if channel == "whatsapp" && user.PrimaryPhoneNormalized != "" {
+			matched := false
+			for _, identity := range identities {
+				if identity.ChannelType != "whatsapp" {
+					continue
+				}
+				if normalizePhoneDigits(identity.ChannelUserID) == normalizePhoneDigits(user.PrimaryPhoneNormalized) {
+					matched = true
+					break
+				}
+			}
+			hint["phone_match"] = matched
+		}
+		if len(hint) > 0 {
+			hints[channel] = hint
+		}
+	}
+	return hints
+}
+
+func normalizePhoneDigits(input string) string {
+	var b strings.Builder
+	for _, r := range input {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func setWebChatCookie(w http.ResponseWriter, r *http.Request, name, value string, expiresAt time.Time) {

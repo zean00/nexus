@@ -480,6 +480,148 @@ func TestSlackWebhookWorkerRoundTripIntegration(t *testing.T) {
 	}
 }
 
+func TestWebChatPhoneIdentityIntegration(t *testing.T) {
+	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
+		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")
+	}
+
+	ctx := context.Background()
+	dbURL := startAppPostgresContainer(t)
+	repo, err := db.New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(repo.Close)
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	applyAppMigrations(t, ctx, pool)
+	appMustExec(t, ctx, pool, `truncate table outbox_events, outbound_deliveries, audit_events, await_responses, awaits, runs, session_queue_items, artifacts, messages, channel_surface_state, session_aliases, linked_identities, step_up_challenges, users, webchat_auth_sessions, webchat_auth_challenges, sessions restart identity cascade`)
+
+	authSession := domain.WebAuthSession{
+		ID:         "websess_phone_1",
+		TenantID:   "tenant_default",
+		Email:      "user@example.com",
+		ExpiresAt:  time.Now().UTC().Add(time.Hour),
+		LastSeenAt: time.Now().UTC(),
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := repo.CreateWebAuthSession(ctx, authSession); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateWebAuthSessionCSRFHash(ctx, authSession.ID, sha256Hex("csrf-phone"), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{
+		Config: config.Config{
+			DefaultTenantID:       "tenant_default",
+			DefaultAgentProfileID: "agent_profile_default",
+			WebChatCookieName:     "nexus_webchat_session",
+			StepUpWindowMinutes:   15,
+		},
+		Repo:     repo,
+		DB:       repo,
+		Identity: repo,
+		WebAuth:  repo,
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPost, "/webchat/identity/phone", strings.NewReader(`{"phone":"+62 812-3456-789"}`))
+	updateReq.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: authSession.ID})
+	updateReq.Header.Set("X-CSRF-Token", "csrf-phone")
+	updateRec := httptest.NewRecorder()
+	app.GatewayHandler().ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("expected phone update ok, got status=%d body=%s", updateRec.Code, updateRec.Body.String())
+	}
+
+	profileReq := httptest.NewRequest(http.MethodGet, "/webchat/identity/profile", nil)
+	profileReq.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: authSession.ID})
+	profileRec := httptest.NewRecorder()
+	app.GatewayHandler().ServeHTTP(profileRec, profileReq)
+	if profileRec.Code != http.StatusOK {
+		t.Fatalf("expected profile ok, got status=%d body=%s", profileRec.Code, profileRec.Body.String())
+	}
+	var profilePayload struct {
+		Data struct {
+			PrimaryPhone string         `json:"primary_phone"`
+			LinkHints    map[string]any `json:"link_hints"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(profileRec.Body).Decode(&profilePayload); err != nil {
+		t.Fatal(err)
+	}
+	if profilePayload.Data.PrimaryPhone != "+62 812-3456-789" {
+		t.Fatalf("unexpected profile payload: %+v", profilePayload)
+	}
+	if _, ok := profilePayload.Data.LinkHints["telegram"]; !ok {
+		t.Fatalf("expected telegram link hint in profile payload: %+v", profilePayload)
+	}
+
+	bootstrapReq := httptest.NewRequest(http.MethodGet, "/webchat/bootstrap", nil)
+	bootstrapReq.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: authSession.ID})
+	bootstrapRec := httptest.NewRecorder()
+	app.GatewayHandler().ServeHTTP(bootstrapRec, bootstrapReq)
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("expected bootstrap ok, got status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
+	}
+	var bootstrapPayload struct {
+		Data struct {
+			PrimaryPhone string `json:"primary_phone"`
+			CSRFToken    string `json:"csrf_token"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(bootstrapRec.Body).Decode(&bootstrapPayload); err != nil {
+		t.Fatal(err)
+	}
+	if bootstrapPayload.Data.PrimaryPhone != "+62 812-3456-789" {
+		t.Fatalf("unexpected bootstrap payload: %+v", bootstrapPayload)
+	}
+
+	trustReq := httptest.NewRequest(http.MethodGet, "/admin/trust/users", nil)
+	trustRec := httptest.NewRecorder()
+	app.AdminHandler().ServeHTTP(trustRec, trustReq)
+	if trustRec.Code != http.StatusOK {
+		t.Fatalf("expected trust users ok, got status=%d body=%s", trustRec.Code, trustRec.Body.String())
+	}
+	var trustPayload struct {
+		Data struct {
+			Items []struct {
+				User struct {
+					PrimaryPhone string `json:"primary_phone"`
+				} `json:"user"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(trustRec.Body).Decode(&trustPayload); err != nil {
+		t.Fatal(err)
+	}
+	if len(trustPayload.Data.Items) != 1 || trustPayload.Data.Items[0].User.PrimaryPhone != "+62 812-3456-789" {
+		t.Fatalf("unexpected trust users payload: %+v", trustPayload)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodPost, "/webchat/identity/phone/delete", nil)
+	deleteReq.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: authSession.ID})
+	deleteReq.Header.Set("X-CSRF-Token", bootstrapPayload.Data.CSRFToken)
+	deleteRec := httptest.NewRecorder()
+	app.GatewayHandler().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("expected phone delete ok, got status=%d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+
+	user, err := repo.GetUserByEmail(ctx, "tenant_default", "user@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.PrimaryPhone != "" || user.PrimaryPhoneNormalized != "" || user.PrimaryPhoneVerified {
+		t.Fatalf("expected cleared phone on user, got %+v", user)
+	}
+}
+
 func TestSlackWebhookStrictACPRoundTripIntegration(t *testing.T) {
 	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
 		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")

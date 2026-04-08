@@ -36,6 +36,10 @@ func (r *fakeIdentityRepo) GetUserByEmail(context.Context, string, string) (doma
 func (r *fakeIdentityRepo) ListUsers(context.Context, string, int) ([]domain.User, error) {
 	return nil, nil
 }
+func (r *fakeIdentityRepo) UpdateUserPhone(context.Context, string, string, string, string, bool, time.Time) error {
+	return nil
+}
+func (r *fakeIdentityRepo) ClearUserPhone(context.Context, string, string) error { return nil }
 func (r *fakeIdentityRepo) MarkUserStepUp(context.Context, string, string, time.Time) error {
 	return nil
 }
@@ -294,6 +298,10 @@ func (r *fakeRepo) UpsertTelegramUserAccess(context.Context, domain.TelegramUser
 }
 func (r *fakeRepo) DeleteTelegramUserAccess(context.Context, string, string) error { return nil }
 func (r *fakeRepo) ListUsers(context.Context, string, int) ([]domain.User, error)  { return nil, nil }
+func (r *fakeRepo) UpdateUserPhone(context.Context, string, string, string, string, bool, time.Time) error {
+	return nil
+}
+func (r *fakeRepo) ClearUserPhone(context.Context, string, string) error { return nil }
 func (r *fakeRepo) CountLinkedIdentitiesByChannel(context.Context, string) (map[string]int, error) {
 	return map[string]int{}, nil
 }

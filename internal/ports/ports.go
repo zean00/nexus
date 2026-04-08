@@ -43,6 +43,8 @@ type IdentityRepository interface {
 	GetUser(ctx context.Context, tenantID, userID string) (domain.User, error)
 	GetUserByEmail(ctx context.Context, tenantID, email string) (domain.User, error)
 	ListUsers(ctx context.Context, tenantID string, limit int) ([]domain.User, error)
+	UpdateUserPhone(ctx context.Context, tenantID, userID, rawPhone, normalizedPhone string, verified bool, addedAt time.Time) error
+	ClearUserPhone(ctx context.Context, tenantID, userID string) error
 	MarkUserStepUp(ctx context.Context, tenantID, userID string, at time.Time) error
 	HasRecentStepUp(ctx context.Context, tenantID, userID string, since time.Time) (bool, error)
 	CreateStepUpChallenge(ctx context.Context, challenge domain.StepUpChallenge, minInterval time.Duration) error
@@ -158,6 +160,8 @@ type Repository interface {
 	UpsertTelegramUserAccess(ctx context.Context, entry domain.TelegramUserAccess) error
 	DeleteTelegramUserAccess(ctx context.Context, tenantID, telegramUserID string) error
 	ListUsers(ctx context.Context, tenantID string, limit int) ([]domain.User, error)
+	UpdateUserPhone(ctx context.Context, tenantID, userID, rawPhone, normalizedPhone string, verified bool, addedAt time.Time) error
+	ClearUserPhone(ctx context.Context, tenantID, userID string) error
 	CountLinkedIdentitiesByChannel(ctx context.Context, tenantID string) (map[string]int, error)
 	RequestTelegramAccess(ctx context.Context, entry domain.TelegramUserAccess) (domain.TelegramUserAccess, error)
 	ResolveTelegramAccessRequest(ctx context.Context, tenantID, telegramUserID, status, addedBy string) (domain.TelegramUserAccess, error)

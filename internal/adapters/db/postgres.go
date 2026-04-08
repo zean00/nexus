@@ -284,7 +284,9 @@ func (r *PostgresRepository) EnsureUserByEmail(ctx context.Context, tenantID, em
 
 func (r *PostgresRepository) GetUser(ctx context.Context, tenantID, userID string) (domain.User, error) {
 	row := r.queryRow(ctx, `
-		select id, tenant_id, primary_email, primary_email_verified, coalesce(last_step_up_at,'epoch'::timestamptz), created_at, updated_at
+		select id, tenant_id, primary_email, primary_email_verified,
+		       coalesce(primary_phone,''), coalesce(primary_phone_normalized,''), primary_phone_verified, coalesce(primary_phone_added_at,'epoch'::timestamptz),
+		       coalesce(last_step_up_at,'epoch'::timestamptz), created_at, updated_at
 		from users
 		where tenant_id=$1 and id=$2
 	`, tenantID, userID)
@@ -293,7 +295,9 @@ func (r *PostgresRepository) GetUser(ctx context.Context, tenantID, userID strin
 
 func (r *PostgresRepository) GetUserByEmail(ctx context.Context, tenantID, email string) (domain.User, error) {
 	row := r.queryRow(ctx, `
-		select id, tenant_id, primary_email, primary_email_verified, coalesce(last_step_up_at,'epoch'::timestamptz), created_at, updated_at
+		select id, tenant_id, primary_email, primary_email_verified,
+		       coalesce(primary_phone,''), coalesce(primary_phone_normalized,''), primary_phone_verified, coalesce(primary_phone_added_at,'epoch'::timestamptz),
+		       coalesce(last_step_up_at,'epoch'::timestamptz), created_at, updated_at
 		from users
 		where tenant_id=$1 and primary_email=$2
 	`, tenantID, strings.ToLower(strings.TrimSpace(email)))
@@ -302,7 +306,9 @@ func (r *PostgresRepository) GetUserByEmail(ctx context.Context, tenantID, email
 
 func (r *PostgresRepository) ListUsers(ctx context.Context, tenantID string, limit int) ([]domain.User, error) {
 	rows, err := r.query(ctx, `
-		select id, tenant_id, primary_email, primary_email_verified, coalesce(last_step_up_at,'epoch'::timestamptz), created_at, updated_at
+		select id, tenant_id, primary_email, primary_email_verified,
+		       coalesce(primary_phone,''), coalesce(primary_phone_normalized,''), primary_phone_verified, coalesce(primary_phone_added_at,'epoch'::timestamptz),
+		       coalesce(last_step_up_at,'epoch'::timestamptz), created_at, updated_at
 		from users
 		where tenant_id=$1
 		order by updated_at desc, id desc
@@ -315,12 +321,38 @@ func (r *PostgresRepository) ListUsers(ctx context.Context, tenantID string, lim
 	var out []domain.User
 	for rows.Next() {
 		var user domain.User
-		if err := rows.Scan(&user.ID, &user.TenantID, &user.PrimaryEmail, &user.PrimaryEmailVerified, &user.LastStepUpAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
+		if err := rows.Scan(&user.ID, &user.TenantID, &user.PrimaryEmail, &user.PrimaryEmailVerified, &user.PrimaryPhone, &user.PrimaryPhoneNormalized, &user.PrimaryPhoneVerified, &user.PrimaryPhoneAddedAt, &user.LastStepUpAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, user)
 	}
 	return out, rows.Err()
+}
+
+func (r *PostgresRepository) UpdateUserPhone(ctx context.Context, tenantID, userID, rawPhone, normalizedPhone string, verified bool, addedAt time.Time) error {
+	_, err := r.exec(ctx, `
+		update users
+		set primary_phone=$3,
+		    primary_phone_normalized=$4,
+		    primary_phone_verified=$5,
+		    primary_phone_added_at=$6,
+		    updated_at=now()
+		where tenant_id=$1 and id=$2
+	`, tenantID, userID, strings.TrimSpace(rawPhone), strings.TrimSpace(normalizedPhone), verified, nullableTimeValue(addedAt))
+	return err
+}
+
+func (r *PostgresRepository) ClearUserPhone(ctx context.Context, tenantID, userID string) error {
+	_, err := r.exec(ctx, `
+		update users
+		set primary_phone=null,
+		    primary_phone_normalized=null,
+		    primary_phone_verified=false,
+		    primary_phone_added_at=null,
+		    updated_at=now()
+		where tenant_id=$1 and id=$2
+	`, tenantID, userID)
+	return err
 }
 
 func (r *PostgresRepository) MarkUserStepUp(ctx context.Context, tenantID, userID string, at time.Time) error {
@@ -2924,9 +2956,16 @@ func nullableTimePtr(ts *time.Time) any {
 	return *ts
 }
 
+func nullableTimeValue(ts time.Time) any {
+	if ts.IsZero() {
+		return nil
+	}
+	return ts
+}
+
 func scanUser(row pgx.Row) (domain.User, error) {
 	var user domain.User
-	if err := row.Scan(&user.ID, &user.TenantID, &user.PrimaryEmail, &user.PrimaryEmailVerified, &user.LastStepUpAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
+	if err := row.Scan(&user.ID, &user.TenantID, &user.PrimaryEmail, &user.PrimaryEmailVerified, &user.PrimaryPhone, &user.PrimaryPhoneNormalized, &user.PrimaryPhoneVerified, &user.PrimaryPhoneAddedAt, &user.LastStepUpAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.User{}, domain.ErrIdentityUserNotFound
 		}

@@ -308,12 +308,12 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		DefaultAgentProfileID: cfg.DefaultAgentProfileID,
 		DefaultACPAgentName:   cfg.DefaultACPAgentName,
 		FallbackPolicy: domain.TrustPolicy{
-			TenantID:                         cfg.DefaultTenantID,
-			AgentProfileID:                   cfg.DefaultAgentProfileID,
+			TenantID:                          cfg.DefaultTenantID,
+			AgentProfileID:                    cfg.DefaultAgentProfileID,
 			RequireLinkedIdentityForExecution: false,
-			RequireLinkedIdentityForApproval: cfg.RequireLinkedIdentity,
-			RequireRecentStepUpForApproval:  cfg.RequireRecentStepUp,
-			AllowedApprovalChannels:         append([]string(nil), cfg.AllowedApprovalChannels...),
+			RequireLinkedIdentityForApproval:  cfg.RequireLinkedIdentity,
+			RequireRecentStepUpForApproval:    cfg.RequireRecentStepUp,
+			AllowedApprovalChannels:           append([]string(nil), cfg.AllowedApprovalChannels...),
 		},
 	}
 	renderers := map[string]ports.Renderer{
@@ -473,6 +473,9 @@ func (a *App) GatewayHandler() http.Handler {
 	mux.HandleFunc("/webchat/awaits/respond", a.handleWebChatAwaitRespond)
 	mux.HandleFunc("/webchat/chats/new", a.handleWebChatNewChat)
 	mux.HandleFunc("/webchat/chats/close", a.handleWebChatCloseChat)
+	mux.HandleFunc("/webchat/identity/profile", a.handleWebChatIdentityProfile)
+	mux.HandleFunc("/webchat/identity/phone", a.handleWebChatIdentityPhone)
+	mux.HandleFunc("/webchat/identity/phone/delete", a.handleWebChatIdentityPhoneDelete)
 	mux.HandleFunc("/webchat/identity/links", a.handleWebChatIdentityLinks)
 	mux.HandleFunc("/webchat/identity/link-code", a.handleWebChatIdentityLinkCode)
 	mux.HandleFunc("/webchat/identity/unlink", a.handleWebChatIdentityUnlink)

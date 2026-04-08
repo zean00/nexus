@@ -402,6 +402,47 @@ func TestPostgresRepositoryIntegrationAdminQueries(t *testing.T) {
 	})
 }
 
+func TestPostgresRepositoryIntegrationUserPhone(t *testing.T) {
+	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
+		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")
+	}
+
+	ctx := context.Background()
+	dbURL := startPostgresContainer(t)
+	repo, err := New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(repo.Close)
+	applyAllMigrations(t, ctx, repo)
+
+	user, err := repo.EnsureUserByEmail(ctx, "tenant_default", "user@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addedAt := time.Now().UTC().Truncate(time.Second)
+	if err := repo.UpdateUserPhone(ctx, "tenant_default", user.ID, "+62 812-3456-789", "+628123456789", false, addedAt); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetUser(ctx, "tenant_default", user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PrimaryPhone != "+62 812-3456-789" || got.PrimaryPhoneNormalized != "+628123456789" || got.PrimaryPhoneVerified {
+		t.Fatalf("unexpected user phone after update: %+v", got)
+	}
+	if err := repo.ClearUserPhone(ctx, "tenant_default", user.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.GetUser(ctx, "tenant_default", user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PrimaryPhone != "" || got.PrimaryPhoneNormalized != "" || got.PrimaryPhoneVerified || !got.PrimaryPhoneAddedAt.Equal(time.Unix(0, 0).UTC()) {
+		t.Fatalf("expected cleared phone fields, got %+v", got)
+	}
+}
+
 func TestPostgresRepositoryIntegrationWebAuthChallengeReplacement(t *testing.T) {
 	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
 		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")

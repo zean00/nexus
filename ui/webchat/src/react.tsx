@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from "
 import { WebChatClient, createWebChatClient } from "./client";
 import type {
   Artifact,
+  IdentityProfileData,
   WebChatFeatures,
   WebChatItem,
   WebChatLabels,
@@ -51,6 +52,9 @@ const defaultLabels: Required<WebChatLabels> = {
   logout: "Log out",
   composerPlaceholder: "Send a message",
   send: "Send",
+  phoneLabel: "Phone",
+  savePhone: "Save phone",
+  removePhone: "Remove phone",
   sendSuccess: "Sent.",
   sendFailed: "Send failed.",
   signedInAsPrefix: "Signed in as",
@@ -85,6 +89,9 @@ export function WebChat(props: WebChatProps) {
   const [sendStatus, setSendStatus] = useState("");
   const [messageText, setMessageText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [phone, setPhone] = useState("");
+  const [phoneVerified, setPhoneVerified] = useState(false);
+  const [identityProfile, setIdentityProfile] = useState<IdentityProfileData | null>(null);
 
   useEffect(() => {
     let ignore = false;
@@ -95,6 +102,8 @@ export function WebChat(props: WebChatProps) {
       setAuthenticated(true);
       setEmail(data.email);
       setItems(data.items ?? []);
+      setPhone(data.primary_phone ?? "");
+      setPhoneVerified(Boolean(data.primary_phone_verified));
       props.onAuthChange?.(true);
     }).catch((error: Error) => {
       if (ignore) {
@@ -143,6 +152,8 @@ export function WebChat(props: WebChatProps) {
       setAuthenticated(true);
       setEmail(data.email);
       setItems(data.items ?? []);
+      setPhone(data.primary_phone ?? "");
+      setPhoneVerified(Boolean(data.primary_phone_verified));
       setStatus("");
       setVerifyCode("");
       props.onAuthChange?.(true);
@@ -183,6 +194,34 @@ export function WebChat(props: WebChatProps) {
       setItems(history.items ?? []);
     } catch (error) {
       props.onError?.(asError(error));
+    }
+  }
+
+  async function handleSavePhone(event: React.FormEvent) {
+    event.preventDefault();
+    try {
+      const profile = await client.updatePhone(phone);
+      setIdentityProfile(profile);
+      setPhone(profile.primary_phone ?? "");
+      setPhoneVerified(Boolean(profile.primary_phone_verified));
+      setStatus("Phone saved.");
+    } catch (error) {
+      props.onError?.(asError(error));
+      setStatus("Phone update failed.");
+    }
+  }
+
+  async function handleRemovePhone() {
+    try {
+      await client.deletePhone();
+      setPhone("");
+      setPhoneVerified(false);
+      const profile = await client.getIdentityProfile();
+      setIdentityProfile(profile);
+      setStatus("Phone removed.");
+    } catch (error) {
+      props.onError?.(asError(error));
+      setStatus("Phone removal failed.");
     }
   }
 
@@ -245,6 +284,22 @@ export function WebChat(props: WebChatProps) {
           {features.logout ? <button onClick={handleLogout} type="button">{labels.logout}</button> : null}
         </div>
       </header>
+      <section className="nexus-webchat-panel">
+        <form className="nexus-webchat-identity-form" onSubmit={handleSavePhone}>
+          <label>
+            <span>{labels.phoneLabel}</span>
+            <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+628123456789" />
+          </label>
+          <div className="nexus-webchat-actions">
+            <button type="submit">{labels.savePhone}</button>
+            {phone ? <button className="secondary" onClick={handleRemovePhone} type="button">{labels.removePhone}</button> : null}
+          </div>
+          <p className="nexus-webchat-status">
+            {phone ? `${phoneVerified ? "Verified" : "Unverified"} phone on profile.` : "Optional phone helps with explicit Telegram or WhatsApp pairing."}
+          </p>
+          {identityProfile?.link_hints ? <pre className="nexus-webchat-hints">{JSON.stringify(identityProfile.link_hints, null, 2)}</pre> : null}
+        </form>
+      </section>
       <section className="nexus-webchat-panel nexus-webchat-timeline">
         {items.length === 0 ? <div className="nexus-webchat-empty">{labels.emptyTimeline}</div> : null}
         {items.map((item) => <TimelineItem key={item.id} item={item} onAwaitChoice={handleAwaitChoice} />)}

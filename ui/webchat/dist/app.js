@@ -7326,6 +7326,29 @@ var WebChatClient = class {
     });
     return payload.data;
   }
+  async getIdentityProfile() {
+    const payload = await this.requestJSON("/identity/profile", {
+      method: "GET"
+    });
+    return payload.data;
+  }
+  async updatePhone(phone) {
+    const payload = await this.requestJSON("/identity/phone", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.csrfHeaders()
+      },
+      body: JSON.stringify({ phone })
+    });
+    return payload.data;
+  }
+  async deletePhone() {
+    await this.requestJSON("/identity/phone/delete", {
+      method: "POST",
+      headers: this.csrfHeaders()
+    });
+  }
   async sendMessage(input) {
     const body = new FormData();
     if (input.text) {
@@ -7420,6 +7443,9 @@ var defaultLabels = {
   logout: "Log out",
   composerPlaceholder: "Send a message",
   send: "Send",
+  phoneLabel: "Phone",
+  savePhone: "Save phone",
+  removePhone: "Remove phone",
   sendSuccess: "Sent.",
   sendFailed: "Send failed.",
   signedInAsPrefix: "Signed in as",
@@ -7451,6 +7477,9 @@ function WebChat(props) {
   const [sendStatus, setSendStatus] = (0, import_react.useState)("");
   const [messageText, setMessageText] = (0, import_react.useState)("");
   const [files, setFiles] = (0, import_react.useState)([]);
+  const [phone, setPhone] = (0, import_react.useState)("");
+  const [phoneVerified, setPhoneVerified] = (0, import_react.useState)(false);
+  const [identityProfile, setIdentityProfile] = (0, import_react.useState)(null);
   (0, import_react.useEffect)(() => {
     let ignore = false;
     client.bootstrap().then((data) => {
@@ -7460,6 +7489,8 @@ function WebChat(props) {
       setAuthenticated(true);
       setEmail(data.email);
       setItems(data.items ?? []);
+      setPhone(data.primary_phone ?? "");
+      setPhoneVerified(Boolean(data.primary_phone_verified));
       props.onAuthChange?.(true);
     }).catch((error) => {
       if (ignore) {
@@ -7504,6 +7535,8 @@ function WebChat(props) {
       setAuthenticated(true);
       setEmail(data.email);
       setItems(data.items ?? []);
+      setPhone(data.primary_phone ?? "");
+      setPhoneVerified(Boolean(data.primary_phone_verified));
       setStatus("");
       setVerifyCode("");
       props.onAuthChange?.(true);
@@ -7541,6 +7574,32 @@ function WebChat(props) {
       setItems(history.items ?? []);
     } catch (error) {
       props.onError?.(asError(error));
+    }
+  }
+  async function handleSavePhone(event) {
+    event.preventDefault();
+    try {
+      const profile = await client.updatePhone(phone);
+      setIdentityProfile(profile);
+      setPhone(profile.primary_phone ?? "");
+      setPhoneVerified(Boolean(profile.primary_phone_verified));
+      setStatus("Phone saved.");
+    } catch (error) {
+      props.onError?.(asError(error));
+      setStatus("Phone update failed.");
+    }
+  }
+  async function handleRemovePhone() {
+    try {
+      await client.deletePhone();
+      setPhone("");
+      setPhoneVerified(false);
+      const profile = await client.getIdentityProfile();
+      setIdentityProfile(profile);
+      setStatus("Phone removed.");
+    } catch (error) {
+      props.onError?.(asError(error));
+      setStatus("Phone removal failed.");
     }
   }
   async function handleLogout() {
@@ -7599,6 +7658,18 @@ function WebChat(props) {
         features.logout ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { onClick: handleLogout, type: "button", children: labels.logout }) : null
       ] })
     ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "nexus-webchat-panel", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", { className: "nexus-webchat-identity-form", onSubmit: handleSavePhone, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: labels.phoneLabel }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", { value: phone, onChange: (event) => setPhone(event.target.value), placeholder: "+628123456789" })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-actions", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "submit", children: labels.savePhone }),
+        phone ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "secondary", onClick: handleRemovePhone, type: "button", children: labels.removePhone }) : null
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-status", children: phone ? `${phoneVerified ? "Verified" : "Unverified"} phone on profile.` : "Optional phone helps with explicit Telegram or WhatsApp pairing." }),
+      identityProfile?.link_hints ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { className: "nexus-webchat-hints", children: JSON.stringify(identityProfile.link_hints, null, 2) }) : null
+    ] }) }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "nexus-webchat-panel nexus-webchat-timeline", children: [
       items.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-empty", children: labels.emptyTimeline }) : null,
       items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TimelineItem, { item, onAwaitChoice: handleAwaitChoice }, item.id))

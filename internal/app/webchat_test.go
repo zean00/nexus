@@ -125,6 +125,34 @@ func (s *identityStub) ListUsers(_ context.Context, tenantID string, _ int) ([]d
 	}
 	return out, nil
 }
+func (s *identityStub) UpdateUserPhone(_ context.Context, tenantID, userID, rawPhone, normalizedPhone string, verified bool, addedAt time.Time) error {
+	for key, user := range s.users {
+		if user.TenantID == tenantID && user.ID == userID {
+			user.PrimaryPhone = rawPhone
+			user.PrimaryPhoneNormalized = normalizedPhone
+			user.PrimaryPhoneVerified = verified
+			user.PrimaryPhoneAddedAt = addedAt
+			user.UpdatedAt = time.Now().UTC()
+			s.users[key] = user
+			return nil
+		}
+	}
+	return domain.ErrIdentityUserNotFound
+}
+func (s *identityStub) ClearUserPhone(_ context.Context, tenantID, userID string) error {
+	for key, user := range s.users {
+		if user.TenantID == tenantID && user.ID == userID {
+			user.PrimaryPhone = ""
+			user.PrimaryPhoneNormalized = ""
+			user.PrimaryPhoneVerified = false
+			user.PrimaryPhoneAddedAt = time.Time{}
+			user.UpdatedAt = time.Now().UTC()
+			s.users[key] = user
+			return nil
+		}
+	}
+	return domain.ErrIdentityUserNotFound
+}
 func (s *identityStub) MarkUserStepUp(_ context.Context, tenantID, userID string, at time.Time) error {
 	for key, user := range s.users {
 		if user.TenantID == tenantID && user.ID == userID {
@@ -340,6 +368,137 @@ func TestWebChatBootstrapReturnsTimelineAndCSRF(t *testing.T) {
 	}
 	if payload.Data.Email != "user@example.com" || payload.Data.CSRFToken == "" || len(payload.Data.Items) != 2 {
 		t.Fatalf("unexpected bootstrap payload %+v", payload)
+	}
+}
+
+func TestWebChatBootstrapIncludesPhone(t *testing.T) {
+	auth := &webAuthStub{
+		sessions: map[string]domain.WebAuthSession{
+			"websess_1": {
+				ID:        "websess_1",
+				TenantID:  "tenant_default",
+				Email:     "user@example.com",
+				ExpiresAt: time.Now().UTC().Add(time.Hour),
+			},
+		},
+	}
+	identity := &identityStub{
+		users: map[string]domain.User{
+			"tenant_default|user@example.com": {
+				ID:                     "user_user@example.com",
+				TenantID:               "tenant_default",
+				PrimaryEmail:           "user@example.com",
+				PrimaryEmailVerified:   true,
+				PrimaryPhone:           "+628123456789",
+				PrimaryPhoneNormalized: "+628123456789",
+				CreatedAt:              time.Now().UTC(),
+				UpdatedAt:              time.Now().UTC(),
+			},
+		},
+	}
+	repo := &webchatRepoStub{}
+	app := &App{
+		Config:   config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_profile_default", WebChatCookieName: "nexus_webchat_session"},
+		Repo:     repo,
+		WebAuth:  auth,
+		Identity: identity,
+	}
+	req := httptest.NewRequest(http.MethodGet, "/webchat/bootstrap", nil)
+	req.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: "websess_1"})
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatBootstrap(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Data struct {
+			PrimaryPhone string `json:"primary_phone"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.PrimaryPhone != "+628123456789" {
+		t.Fatalf("unexpected phone payload %+v", payload)
+	}
+}
+
+func TestWebChatIdentityPhoneUpdateAndDelete(t *testing.T) {
+	auth := &webAuthStub{
+		sessions: map[string]domain.WebAuthSession{
+			"websess_1": {
+				ID:            "websess_1",
+				TenantID:      "tenant_default",
+				Email:         "user@example.com",
+				CSRFTokenHash: sha256Hex("csrf-token"),
+				ExpiresAt:     time.Now().UTC().Add(time.Hour),
+			},
+		},
+	}
+	identity := &identityStub{}
+	app := &App{
+		Config:   config.Config{DefaultTenantID: "tenant_default", WebChatCookieName: "nexus_webchat_session"},
+		Repo:     &webchatRepoStub{},
+		WebAuth:  auth,
+		Identity: identity,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/webchat/identity/phone", strings.NewReader(`{"phone":"+62 812-3456-789"}`))
+	req.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: "websess_1"})
+	req.Header.Set("X-CSRF-Token", "csrf-token")
+	rec := httptest.NewRecorder()
+	app.handleWebChatIdentityPhone(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	user, err := identity.GetUser(context.Background(), "tenant_default", "user_user@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.PrimaryPhone != "+62 812-3456-789" || user.PrimaryPhoneNormalized != "+628123456789" {
+		t.Fatalf("unexpected stored phone %+v", user)
+	}
+	if user.PrimaryPhoneAddedAt.IsZero() || user.PrimaryPhoneAddedAt.Equal(time.Unix(0, 0).UTC()) {
+		t.Fatalf("expected real phone added timestamp, got %+v", user)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/webchat/identity/phone/delete", nil)
+	req.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: "websess_1"})
+	req.Header.Set("X-CSRF-Token", "csrf-token")
+	rec = httptest.NewRecorder()
+	app.handleWebChatIdentityPhoneDelete(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	user, err = identity.GetUser(context.Background(), "tenant_default", "user_user@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.PrimaryPhone != "" || user.PrimaryPhoneNormalized != "" {
+		t.Fatalf("expected phone to be cleared, got %+v", user)
+	}
+}
+
+func TestBuildWebChatLinkHintsWhatsAppMatchAnyIdentity(t *testing.T) {
+	user := domain.User{
+		PrimaryPhone:           "+62 812-3456-789",
+		PrimaryPhoneNormalized: "+628123456789",
+	}
+	identities := []domain.LinkedIdentity{
+		{ChannelType: "whatsapp", ChannelUserID: "628123456789"},
+		{ChannelType: "whatsapp", ChannelUserID: "628000000000"},
+	}
+
+	hints := buildWebChatLinkHints(user, identities)
+
+	whatsapp, ok := hints["whatsapp"]
+	if !ok {
+		t.Fatalf("expected whatsapp hints, got %+v", hints)
+	}
+	if matched, _ := whatsapp["phone_match"].(bool); !matched {
+		t.Fatalf("expected whatsapp phone_match to stay true when any identity matches, got %+v", whatsapp)
 	}
 }
 
