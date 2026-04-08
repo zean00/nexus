@@ -822,6 +822,23 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 	if text != "" {
 		parts = append(parts, domain.Part{ContentType: "text/plain", Content: text})
 	}
+	rawPayload, _ := json.Marshal(map[string]any{
+		"event_id": eventID,
+		"text":     text,
+		"artifacts": func() []map[string]any {
+			out := make([]map[string]any, 0, len(artifacts))
+			for _, artifact := range artifacts {
+				out = append(out, map[string]any{
+					"id":          artifact.ID,
+					"name":        artifact.Name,
+					"mime_type":   artifact.MIMEType,
+					"size_bytes":  artifact.SizeBytes,
+					"storage_uri": artifact.StorageURI,
+				})
+			}
+			return out
+		}(),
+	})
 	return domain.CanonicalInboundEvent{
 		EventID:         eventID,
 		TenantID:        tenantID,
@@ -854,6 +871,7 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 				Mode:                  "same-user-only",
 				AllowedChannelUserIDs: []string{authSession.Email},
 			},
+			RawPayload: rawPayload,
 		},
 	}
 }

@@ -399,6 +399,23 @@ func TestWebChatStaticAssetsServed(t *testing.T) {
 	}
 }
 
+func TestBuildWebChatMessageEventIncludesRawPayload(t *testing.T) {
+	evt := buildWebChatMessageEvent("tenant_default", domain.WebAuthSession{
+		ID:    "websess_1",
+		Email: "user@example.com",
+	}, "hello from webchat", nil)
+	if len(evt.Metadata.RawPayload) == 0 {
+		t.Fatal("expected raw payload to be populated")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(evt.Metadata.RawPayload, &payload); err != nil {
+		t.Fatalf("expected valid raw payload json: %v", err)
+	}
+	if payload["text"] != "hello from webchat" {
+		t.Fatalf("unexpected raw payload: %+v", payload)
+	}
+}
+
 func TestAbsoluteURLUsesForwardedSchemeAndHost(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/webchat", nil)
 	req.Host = "internal:8080"
