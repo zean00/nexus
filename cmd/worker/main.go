@@ -9,6 +9,7 @@ import (
 
 	"nexus/internal/app"
 	"nexus/internal/config"
+	"nexus/internal/tracex"
 )
 
 func main() {
@@ -21,6 +22,12 @@ func main() {
 		slog.Error("startup.config_load_failed", "error", err.Error())
 		os.Exit(1)
 	}
+	shutdownTrace, err := tracex.Setup(ctx, "worker", cfg.OTLPEndpoint, cfg.OTELSampleRatio)
+	if err != nil {
+		slog.Error("startup.trace_init_failed", "error", err.Error())
+		os.Exit(1)
+	}
+	defer func() { _ = shutdownTrace(context.Background()) }()
 	application, err := app.New(ctx, cfg)
 	if err != nil {
 		slog.Error("startup.app_init_failed", "error", err.Error())

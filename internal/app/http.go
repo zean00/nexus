@@ -144,6 +144,10 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 		return
 	}
 	if evt.Interaction == "await_response" {
+		if err := a.authorizeAwaitResponse(r.Context(), evt); err != nil {
+			httpx.Error(w, http.StatusForbidden, err.Error())
+			return
+		}
 		if err := a.Await.HandleResponse(r.Context(), evt); err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
@@ -164,6 +168,9 @@ func (a *App) processBatchChannelEvent(ctx context.Context, adapter ports.Channe
 		return err
 	}
 	if evt.Interaction == "await_response" {
+		if err := a.authorizeAwaitResponse(ctx, evt); err != nil {
+			return err
+		}
 		return a.Await.HandleResponse(ctx, evt)
 	}
 	if evt.Interaction == "challenge" {
@@ -171,6 +178,61 @@ func (a *App) processBatchChannelEvent(ctx context.Context, adapter ports.Channe
 	}
 	_, err := a.Inbound.Handle(ctx, evt)
 	return err
+}
+
+func (a *App) authorizeAwaitResponse(ctx context.Context, evt domain.CanonicalInboundEvent) error {
+	if a.Identity == nil {
+		return nil
+	}
+	if len(a.Config.AllowedApprovalChannels) > 0 && !slices.Contains(a.Config.AllowedApprovalChannels, evt.Channel) {
+		return domain.ErrApprovalChannelNotAllowed
+	}
+	user, err := a.resolveCanonicalUser(ctx, evt)
+	if err != nil {
+		if a.Config.RequireLinkedIdentity {
+			return domain.ErrLinkedIdentityRequired
+		}
+		return nil
+	}
+	if a.Config.RequireRecentStepUp {
+		ok, err := a.Identity.HasRecentStepUp(ctx, evt.TenantID, user.ID, time.Now().UTC().Add(-time.Duration(a.Config.StepUpWindowMinutes)*time.Minute))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return domain.ErrRecentStepUpRequired
+		}
+	}
+	return nil
+}
+
+func (a *App) resolveCanonicalUser(ctx context.Context, evt domain.CanonicalInboundEvent) (domain.User, error) {
+	switch evt.Channel {
+	case "webchat", "email":
+		user, err := a.Identity.EnsureUserByEmail(ctx, evt.TenantID, evt.Sender.ChannelUserID)
+		if err != nil {
+			return domain.User{}, err
+		}
+		channelType := evt.Channel
+		if err := a.Identity.UpsertLinkedIdentity(ctx, domain.LinkedIdentity{
+			TenantID:       evt.TenantID,
+			UserID:         user.ID,
+			ChannelType:    channelType,
+			ChannelUserID:  strings.ToLower(strings.TrimSpace(evt.Sender.ChannelUserID)),
+			Status:         "linked",
+			LinkedAt:       time.Now().UTC(),
+			LastVerifiedAt: time.Now().UTC(),
+		}); err != nil {
+			return domain.User{}, err
+		}
+		return user, nil
+	default:
+		identity, err := a.Identity.GetLinkedIdentity(ctx, evt.TenantID, evt.Channel, evt.Sender.ChannelUserID)
+		if err != nil {
+			return domain.User{}, err
+		}
+		return a.Identity.GetUser(ctx, evt.TenantID, identity.UserID)
+	}
 }
 
 func (a *App) persistInboundArtifacts(ctx context.Context, adapter ports.ChannelAdapter, evt *domain.CanonicalInboundEvent) error {

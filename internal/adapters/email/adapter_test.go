@@ -2,11 +2,17 @@ package email
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"nexus/internal/domain"
 	"nexus/internal/services"
@@ -100,5 +106,25 @@ func TestSendMessageNoopsWithoutSMTP(t *testing.T) {
 	}
 	if _, err := adapter.SendMessage(context.Background(), domain.OutboundDelivery{PayloadJSON: payload}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestVerifyInboundTimestampSignature(t *testing.T) {
+	adapter := New("secret", "", "", "", "nexus@example.com")
+	body := []byte(`{"event_id":"evt_1"}`)
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	mac := hmac.New(sha256.New, []byte("secret"))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write(body)
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/email", strings.NewReader(string(body)))
+	req.Header.Set("X-Nexus-Email-Timestamp", timestamp)
+	req.Header.Set("X-Nexus-Email-Signature", hex.EncodeToString(mac.Sum(nil)))
+	if err := adapter.VerifyInbound(context.Background(), req, body); err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Nexus-Email-Timestamp", time.Now().UTC().Add(-10*time.Minute).Format(time.RFC3339))
+	if err := adapter.VerifyInbound(context.Background(), req, body); err == nil {
+		t.Fatal("expected stale timestamp rejection")
 	}
 }

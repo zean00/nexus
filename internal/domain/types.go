@@ -84,11 +84,14 @@ type Session struct {
 }
 
 type RouteDecision struct {
-	AgentProfileID   string
-	ACPConnectionID  string
-	ACPAgentName     string
-	Mode             string
-	RequiresApproval bool
+	AgentProfileID          string
+	ACPConnectionID         string
+	ACPAgentName            string
+	Mode                    string
+	RequiresApproval        bool
+	RequiresLinkedIdentity  bool
+	RequiresRecentStepUp    bool
+	AllowedApprovalChannels []string
 }
 
 type QueueItem struct {
@@ -183,6 +186,39 @@ type WebAuthSession struct {
 	ExpiresAt     time.Time
 	LastSeenAt    time.Time
 	CreatedAt     time.Time
+}
+
+type User struct {
+	ID                   string    `json:"id"`
+	TenantID             string    `json:"tenant_id"`
+	PrimaryEmail         string    `json:"primary_email"`
+	PrimaryEmailVerified bool      `json:"primary_email_verified"`
+	LastStepUpAt         time.Time `json:"last_step_up_at,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+type LinkedIdentity struct {
+	ID             string    `json:"id"`
+	TenantID       string    `json:"tenant_id"`
+	UserID         string    `json:"user_id"`
+	ChannelType    string    `json:"channel_type"`
+	ChannelUserID  string    `json:"channel_user_id"`
+	Status         string    `json:"status"`
+	LinkedAt       time.Time `json:"linked_at"`
+	LastVerifiedAt time.Time `json:"last_verified_at,omitempty"`
+}
+
+type StepUpChallenge struct {
+	ID          string    `json:"id"`
+	TenantID    string    `json:"tenant_id"`
+	UserID      string    `json:"user_id"`
+	Purpose     string    `json:"purpose"`
+	ChannelType string    `json:"channel_type,omitempty"`
+	CodeHash    string    `json:"code_hash"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	ConsumedAt  time.Time `json:"consumed_at,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type WebChatItem struct {

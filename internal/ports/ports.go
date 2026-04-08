@@ -38,6 +38,20 @@ type WebAuthRepository interface {
 	DeleteWebAuthSession(ctx context.Context, sessionID string) error
 }
 
+type IdentityRepository interface {
+	EnsureUserByEmail(ctx context.Context, tenantID, email string) (domain.User, error)
+	GetUser(ctx context.Context, tenantID, userID string) (domain.User, error)
+	GetUserByEmail(ctx context.Context, tenantID, email string) (domain.User, error)
+	MarkUserStepUp(ctx context.Context, tenantID, userID string, at time.Time) error
+	HasRecentStepUp(ctx context.Context, tenantID, userID string, since time.Time) (bool, error)
+	CreateStepUpChallenge(ctx context.Context, challenge domain.StepUpChallenge, minInterval time.Duration) error
+	ConsumeStepUpChallenge(ctx context.Context, tenantID, userID, purpose, channelType, codeHash string, now time.Time) (domain.StepUpChallenge, error)
+	UpsertLinkedIdentity(ctx context.Context, identity domain.LinkedIdentity) error
+	GetLinkedIdentity(ctx context.Context, tenantID, channelType, channelUserID string) (domain.LinkedIdentity, error)
+	ListLinkedIdentitiesForUser(ctx context.Context, tenantID, userID string) ([]domain.LinkedIdentity, error)
+	DeleteLinkedIdentity(ctx context.Context, tenantID, channelType, channelUserID string) error
+}
+
 type ACPBridge interface {
 	DiscoverAgents(ctx context.Context) ([]domain.AgentManifest, error)
 	EnsureSession(ctx context.Context, session domain.Session) (string, error)

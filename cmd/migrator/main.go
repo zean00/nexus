@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"nexus/internal/config"
+	"nexus/internal/tracex"
 )
 
 func main() {
@@ -22,6 +23,12 @@ func main() {
 		slog.Error("startup.config_load_failed", "error", err.Error())
 		os.Exit(1)
 	}
+	shutdownTrace, err := tracex.Setup(ctx, "migrator", cfg.OTLPEndpoint, cfg.OTELSampleRatio)
+	if err != nil {
+		slog.Error("startup.trace_init_failed", "error", err.Error())
+		os.Exit(1)
+	}
+	defer func() { _ = shutdownTrace(context.Background()) }()
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("startup.db_init_failed", "error", err.Error())

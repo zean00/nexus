@@ -18,6 +18,55 @@ type fakeRepo struct {
 	deliveries []domain.OutboundDelivery
 }
 
+type fakeIdentityRepo struct {
+	challenges map[string]domain.StepUpChallenge
+	identities map[string]domain.LinkedIdentity
+}
+
+func (r *fakeIdentityRepo) EnsureUserByEmail(context.Context, string, string) (domain.User, error) {
+	return domain.User{}, nil
+}
+func (r *fakeIdentityRepo) GetUser(context.Context, string, string) (domain.User, error) {
+	return domain.User{}, domain.ErrIdentityUserNotFound
+}
+func (r *fakeIdentityRepo) GetUserByEmail(context.Context, string, string) (domain.User, error) {
+	return domain.User{}, domain.ErrIdentityUserNotFound
+}
+func (r *fakeIdentityRepo) MarkUserStepUp(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (r *fakeIdentityRepo) HasRecentStepUp(context.Context, string, string, time.Time) (bool, error) {
+	return false, nil
+}
+func (r *fakeIdentityRepo) CreateStepUpChallenge(context.Context, domain.StepUpChallenge, time.Duration) error {
+	return nil
+}
+func (r *fakeIdentityRepo) ConsumeStepUpChallenge(_ context.Context, tenantID, userID, purpose, channelType, codeHash string, now time.Time) (domain.StepUpChallenge, error) {
+	challenge, ok := r.challenges[tenantID+"|"+userID+"|"+purpose+"|"+channelType+"|"+codeHash]
+	if !ok {
+		return domain.StepUpChallenge{}, domain.ErrStepUpChallengeNotFound
+	}
+	challenge.ConsumedAt = now
+	r.challenges[tenantID+"|"+purpose+"|"+channelType+"|"+codeHash] = challenge
+	return challenge, nil
+}
+func (r *fakeIdentityRepo) UpsertLinkedIdentity(_ context.Context, identity domain.LinkedIdentity) error {
+	if r.identities == nil {
+		r.identities = map[string]domain.LinkedIdentity{}
+	}
+	r.identities[identity.TenantID+"|"+identity.ChannelType+"|"+identity.ChannelUserID] = identity
+	return nil
+}
+func (r *fakeIdentityRepo) GetLinkedIdentity(context.Context, string, string, string) (domain.LinkedIdentity, error) {
+	return domain.LinkedIdentity{}, domain.ErrLinkedIdentityNotFound
+}
+func (r *fakeIdentityRepo) ListLinkedIdentitiesForUser(context.Context, string, string) ([]domain.LinkedIdentity, error) {
+	return nil, nil
+}
+func (r *fakeIdentityRepo) DeleteLinkedIdentity(context.Context, string, string, string) error {
+	return nil
+}
+
 func (r *fakeRepo) InTx(ctx context.Context, fn func(ctx context.Context, repo ports.Repository) error) error {
 	return fn(ctx, r)
 }
@@ -301,5 +350,57 @@ func TestInboundServiceHandlesTelegramSessionListCommand(t *testing.T) {
 	}
 	if len(repo.deliveries) != 1 {
 		t.Fatalf("expected one control delivery, got %d", len(repo.deliveries))
+	}
+}
+
+func TestInboundServiceLinksIdentityFromCommand(t *testing.T) {
+	repo := &fakeRepo{
+		receipts: map[string]bool{},
+		sessions: map[string]domain.Session{},
+	}
+	identity := &fakeIdentityRepo{
+		challenges: map[string]domain.StepUpChallenge{
+			"tenant_default|user_1|link|telegram|" + sha256Hex("12345678"): {
+				ID:          "challenge_1",
+				TenantID:    "tenant_default",
+				UserID:      "user_1",
+				Purpose:     "link",
+				ChannelType: "telegram",
+				CodeHash:    sha256Hex("12345678"),
+				ExpiresAt:   time.Now().UTC().Add(5 * time.Minute),
+			},
+		},
+	}
+	svc := InboundService{
+		Repo:     repo,
+		Identity: identity,
+		Router: StaticRouter{
+			DefaultAgentProfileID: "agent_profile_default",
+		},
+	}
+	raw, _ := json.Marshal(map[string]string{"ok": "true"})
+	result, err := svc.Handle(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_link_1",
+		TenantID:        "tenant_default",
+		Channel:         "telegram",
+		ProviderEventID: "provider_link_1",
+		ReceivedAt:      time.Now(),
+		Sender:          domain.Sender{ChannelUserID: "tg_user_1"},
+		Conversation:    domain.Conversation{ChannelSurfaceKey: "tg_surface_1"},
+		Message:         domain.Message{MessageID: "msg_link_1", Text: "link user_1.12345678"},
+		Metadata:        domain.Metadata{RawPayload: raw},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "identity_linked" {
+		t.Fatalf("expected identity_linked, got %s", result.Status)
+	}
+	linked, ok := identity.identities["tenant_default|telegram|tg_user_1"]
+	if !ok || linked.UserID != "user_1" {
+		t.Fatalf("expected linked identity, got %+v", identity.identities)
+	}
+	if len(repo.queue) != 0 {
+		t.Fatalf("expected no queued items, got %d", len(repo.queue))
 	}
 }

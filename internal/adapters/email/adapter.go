@@ -3,6 +3,7 @@ package email
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -22,27 +23,56 @@ import (
 )
 
 type Adapter struct {
-	WebhookSecret string
-	SMTPAddr      string
-	SMTPUsername  string
-	SMTPPassword  string
-	FromAddress   string
+	WebhookSecret      string
+	SMTPAddr           string
+	SMTPUsername       string
+	SMTPPassword       string
+	FromAddress        string
+	MaxWebhookSkew     time.Duration
+	MaxAttachmentBytes int64
+	MaxAttachments     int
+	RetryDo            func(context.Context, string, func(context.Context) error) error
 }
 
 func New(webhookSecret, smtpAddr, smtpUsername, smtpPassword, fromAddress string) Adapter {
 	return Adapter{
-		WebhookSecret: webhookSecret,
-		SMTPAddr:      smtpAddr,
-		SMTPUsername:  smtpUsername,
-		SMTPPassword:  smtpPassword,
-		FromAddress:   fromAddress,
+		WebhookSecret:      webhookSecret,
+		SMTPAddr:           smtpAddr,
+		SMTPUsername:       smtpUsername,
+		SMTPPassword:       smtpPassword,
+		FromAddress:        fromAddress,
+		MaxWebhookSkew:     5 * time.Minute,
+		MaxAttachmentBytes: 10 << 20,
+		MaxAttachments:     10,
 	}
 }
 
 func (a Adapter) Channel() string { return "email" }
 
-func (a Adapter) VerifyInbound(_ context.Context, r *http.Request, _ []byte) error {
+func (a Adapter) VerifyInbound(_ context.Context, r *http.Request, body []byte) error {
 	if a.WebhookSecret == "" {
+		return nil
+	}
+	if ts := strings.TrimSpace(r.Header.Get("X-Nexus-Email-Timestamp")); ts != "" {
+		sig := strings.TrimSpace(r.Header.Get("X-Nexus-Email-Signature"))
+		if sig == "" {
+			return errors.New("missing email webhook signature")
+		}
+		parsed, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			return errors.New("invalid email webhook timestamp")
+		}
+		if a.MaxWebhookSkew > 0 && time.Since(parsed.UTC()) > a.MaxWebhookSkew {
+			return errors.New("stale email webhook timestamp")
+		}
+		mac := hmac.New(sha256.New, []byte(a.WebhookSecret))
+		mac.Write([]byte(ts))
+		mac.Write([]byte("."))
+		mac.Write(body)
+		expected := hex.EncodeToString(mac.Sum(nil))
+		if !hmac.Equal([]byte(expected), []byte(sig)) {
+			return errors.New("invalid email webhook signature")
+		}
 		return nil
 	}
 	if r.Header.Get("X-Nexus-Email-Secret") != a.WebhookSecret {
@@ -94,14 +124,23 @@ func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, t
 	if text == "" {
 		text = stripHTML(payload.HTML)
 	}
+	if isAutomatedEmail(payload.Headers) {
+		return domain.CanonicalInboundEvent{}, errors.New("ignored automated email")
+	}
 	normalizedSender := strings.ToLower(fromAddr.Address)
 	subject := strings.TrimSpace(payload.Subject)
 	parts := []domain.Part{{ContentType: "text/plain", Content: text}}
 	if payload.HTML != "" {
 		parts = append(parts, domain.Part{ContentType: "text/html", Content: payload.HTML})
 	}
+	if a.MaxAttachments > 0 && len(payload.Attachments) > a.MaxAttachments {
+		return domain.CanonicalInboundEvent{}, errors.New("too many email attachments")
+	}
 	artifacts := make([]domain.Artifact, 0, len(payload.Attachments))
 	for _, attachment := range payload.Attachments {
+		if a.MaxAttachmentBytes > 0 && decodedBase64Size(attachment.ContentBase64) > a.MaxAttachmentBytes {
+			return domain.CanonicalInboundEvent{}, errors.New("email attachment too large")
+		}
 		name := attachment.Name
 		if name == "" {
 			name = attachment.ID
@@ -183,6 +222,9 @@ func (a Adapter) HydrateInboundArtifacts(ctx context.Context, evt *domain.Canoni
 		if err != nil {
 			return err
 		}
+		if a.MaxAttachmentBytes > 0 && int64(len(content)) > a.MaxAttachmentBytes {
+			return errors.New("email attachment too large")
+		}
 		saved, err := store.SaveInbound(ctx, artifact.Name, artifact.MIMEType, content)
 		if err != nil {
 			return err
@@ -216,7 +258,7 @@ func (a Adapter) SendMail(ctx context.Context, to, subject, text, html string) (
 	return a.send(ctx, payload)
 }
 
-func (a Adapter) send(_ context.Context, payload []byte) (domain.DeliveryResult, error) {
+func (a Adapter) send(ctx context.Context, payload []byte) (domain.DeliveryResult, error) {
 	if a.SMTPAddr == "" {
 		return domain.DeliveryResult{}, nil
 	}
@@ -243,7 +285,14 @@ func (a Adapter) send(_ context.Context, payload []byte) (domain.DeliveryResult,
 	if a.SMTPUsername != "" {
 		auth = smtp.PlainAuth("", a.SMTPUsername, a.SMTPPassword, host)
 	}
-	if err := smtp.SendMail(a.SMTPAddr, auth, a.FromAddress, []string{to}, raw); err != nil {
+	send := func(context.Context) error {
+		return smtp.SendMail(a.SMTPAddr, auth, a.FromAddress, []string{to}, raw)
+	}
+	if a.RetryDo != nil {
+		if err := a.RetryDo(ctx, "email.smtp", send); err != nil {
+			return domain.DeliveryResult{}, err
+		}
+	} else if err := send(ctx); err != nil {
 		return domain.DeliveryResult{}, err
 	}
 	return domain.DeliveryResult{ProviderMessageID: messageID, ProviderRequestID: to}, nil
@@ -394,4 +443,29 @@ func readStorageURI(uri string) ([]byte, error) {
 func HashThreadID(input string) string {
 	sum := sha256.Sum256([]byte(input))
 	return hex.EncodeToString(sum[:8])
+}
+
+func isAutomatedEmail(headers map[string]string) bool {
+	for key, value := range headers {
+		lk := strings.ToLower(strings.TrimSpace(key))
+		lv := strings.ToLower(strings.TrimSpace(value))
+		if lk == "auto-submitted" && lv != "" && lv != "no" {
+			return true
+		}
+		if lk == "precedence" && (strings.Contains(lv, "bulk") || strings.Contains(lv, "list") || strings.Contains(lv, "auto_reply")) {
+			return true
+		}
+		if lk == "from" && (strings.Contains(lv, "mailer-daemon") || strings.Contains(lv, "postmaster")) {
+			return true
+		}
+	}
+	return false
+}
+
+func decodedBase64Size(in string) int64 {
+	in = strings.TrimRight(strings.TrimSpace(in), "=")
+	if in == "" {
+		return 0
+	}
+	return int64(len(in) * 3 / 4)
 }

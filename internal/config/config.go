@@ -9,92 +9,123 @@ import (
 )
 
 type Config struct {
-	ServiceName            string
-	HTTPAddr               string
-	AdminAddr              string
-	DatabaseURL            string
-	ACPImplementation      string
-	ACPBaseURL             string
-	ACPToken               string
-	ACPCommand             string
-	ACPArgs                []string
-	ACPEnv                 []string
-	ACPWorkdir             string
-	ACPStartupTimeout      time.Duration
-	ACPRPCTimeout          time.Duration
-	DefaultACPAgentName    string
-	ValidateACPOnStartup   bool
-	ACPManifestCacheTTL    time.Duration
-	SlackSigningSecret     string
-	SlackBotToken          string
-	WhatsAppVerifyToken    string
-	WhatsAppAccessToken    string
-	WhatsAppAppSecret      string
-	WhatsAppPhoneNumberID  string
-	WhatsAppAPIBaseURL     string
-	EmailWebhookSecret     string
-	EmailSMTPAddr          string
-	EmailSMTPUsername      string
-	EmailSMTPPassword      string
-	EmailFromAddress       string
-	WebChatCookieName      string
-	WebChatSessionHours    int
-	WebChatOTPMinutes      int
-	ObjectStorageBaseURL   string
-	WorkerPollInterval     time.Duration
-	ReconcilerInterval     time.Duration
-	OutboxClaimTimeout     time.Duration
-	QueueStartingTimeout   time.Duration
-	RunStaleTimeout        time.Duration
-	DeliverySendingTimeout time.Duration
-	DeliveryMaxAttempts    int
-	RetentionEnabled       bool
-	RetentionInterval      time.Duration
-	RetentionBatchSize     int
-	RetentionPayloadDays   int
-	RetentionArtifactDays  int
-	RetentionAuditDays     int
-	RetentionGraceDays     int
-	TelegramBotToken       string
-	TelegramWebhookSecret  string
-	TelegramAllowedUserIDs []string
-	DefaultTenantID        string
-	DefaultAgentProfileID  string
+	ServiceName                   string
+	HTTPAddr                      string
+	AdminAddr                     string
+	DatabaseURL                   string
+	ACPImplementation             string
+	ACPBaseURL                    string
+	ACPToken                      string
+	ACPCommand                    string
+	ACPArgs                       []string
+	ACPEnv                        []string
+	ACPWorkdir                    string
+	ACPStartupTimeout             time.Duration
+	ACPRPCTimeout                 time.Duration
+	DefaultACPAgentName           string
+	ValidateACPOnStartup          bool
+	ACPManifestCacheTTL           time.Duration
+	SlackSigningSecret            string
+	SlackBotToken                 string
+	WhatsAppVerifyToken           string
+	WhatsAppAccessToken           string
+	WhatsAppAppSecret             string
+	WhatsAppPhoneNumberID         string
+	WhatsAppAPIBaseURL            string
+	EmailWebhookSecret            string
+	EmailSMTPAddr                 string
+	EmailSMTPUsername             string
+	EmailSMTPPassword             string
+	EmailFromAddress              string
+	WebChatCookieName             string
+	WebChatSessionHours           int
+	WebChatOTPMinutes             int
+	IdentityLinkMinutes           int
+	StepUpOTPMinutes              int
+	StepUpWindowMinutes           int
+	RequireLinkedIdentity         bool
+	RequireRecentStepUp           bool
+	AllowedApprovalChannels       []string
+	OTLPEndpoint                  string
+	OTELSampleRatio               float64
+	RetryMaxAttempts              int
+	RetryBaseDelayMS              int
+	CircuitBreakerFailures        int
+	CircuitBreakerCoolDownSeconds int
+	WhatsAppMediaMaxBytes         int64
+	EmailWebhookMaxSkewSeconds    int
+	EmailMaxAttachmentBytes       int64
+	EmailMaxAttachments           int
+	ObjectStorageBaseURL          string
+	WorkerPollInterval            time.Duration
+	ReconcilerInterval            time.Duration
+	OutboxClaimTimeout            time.Duration
+	QueueStartingTimeout          time.Duration
+	RunStaleTimeout               time.Duration
+	DeliverySendingTimeout        time.Duration
+	DeliveryMaxAttempts           int
+	RetentionEnabled              bool
+	RetentionInterval             time.Duration
+	RetentionBatchSize            int
+	RetentionPayloadDays          int
+	RetentionArtifactDays         int
+	RetentionAuditDays            int
+	RetentionGraceDays            int
+	TelegramBotToken              string
+	TelegramWebhookSecret         string
+	TelegramAllowedUserIDs        []string
+	DefaultTenantID               string
+	DefaultAgentProfileID         string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		ServiceName:            env("SERVICE_NAME", "nexus-gateway"),
-		HTTPAddr:               env("HTTP_ADDR", ":8080"),
-		AdminAddr:              env("ADMIN_ADDR", ":8081"),
-		DatabaseURL:            env("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/nexus?sslmode=disable"),
-		ACPImplementation:      env("ACP_IMPLEMENTATION", "strict"),
-		ACPBaseURL:             env("ACP_BASE_URL", "http://localhost:8090"),
-		ACPToken:               os.Getenv("ACP_TOKEN"),
-		ACPCommand:             env("ACP_COMMAND", "opencode"),
-		ACPArgs:                csvEnv("ACP_ARGS"),
-		ACPEnv:                 prefixedEnv("ACP_ENV_"),
-		ACPWorkdir:             env("ACP_WORKDIR", mustGetwd()),
-		DefaultACPAgentName:    env("DEFAULT_ACP_AGENT_NAME", "default-agent"),
-		SlackSigningSecret:     env("SLACK_SIGNING_SECRET", "dev-secret"),
-		SlackBotToken:          os.Getenv("SLACK_BOT_TOKEN"),
-		WhatsAppVerifyToken:    env("WHATSAPP_VERIFY_TOKEN", "dev-whatsapp-verify"),
-		WhatsAppAccessToken:    os.Getenv("WHATSAPP_ACCESS_TOKEN"),
-		WhatsAppAppSecret:      os.Getenv("WHATSAPP_APP_SECRET"),
-		WhatsAppPhoneNumberID:  os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
-		WhatsAppAPIBaseURL:     env("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v20.0"),
-		EmailWebhookSecret:     env("EMAIL_WEBHOOK_SECRET", "dev-email-secret"),
-		EmailSMTPAddr:          os.Getenv("EMAIL_SMTP_ADDR"),
-		EmailSMTPUsername:      os.Getenv("EMAIL_SMTP_USERNAME"),
-		EmailSMTPPassword:      os.Getenv("EMAIL_SMTP_PASSWORD"),
-		EmailFromAddress:       env("EMAIL_FROM_ADDRESS", "nexus@example.com"),
-		WebChatCookieName:      env("WEBCHAT_COOKIE_NAME", "nexus_webchat_session"),
-		TelegramBotToken:       os.Getenv("TELEGRAM_BOT_TOKEN"),
-		TelegramWebhookSecret:  env("TELEGRAM_WEBHOOK_SECRET", "dev-telegram-secret"),
-		TelegramAllowedUserIDs: csvEnv("TELEGRAM_ALLOWED_USER_IDS"),
-		ObjectStorageBaseURL:   env("OBJECT_STORAGE_BASE_URL", "file:///tmp/nexus-objects"),
-		DefaultTenantID:        env("DEFAULT_TENANT_ID", "tenant_default"),
-		DefaultAgentProfileID:  env("DEFAULT_AGENT_PROFILE_ID", "agent_profile_default"),
+		ServiceName:                   env("SERVICE_NAME", "nexus-gateway"),
+		HTTPAddr:                      env("HTTP_ADDR", ":8080"),
+		AdminAddr:                     env("ADMIN_ADDR", ":8081"),
+		DatabaseURL:                   env("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/nexus?sslmode=disable"),
+		ACPImplementation:             env("ACP_IMPLEMENTATION", "strict"),
+		ACPBaseURL:                    env("ACP_BASE_URL", "http://localhost:8090"),
+		ACPToken:                      os.Getenv("ACP_TOKEN"),
+		ACPCommand:                    env("ACP_COMMAND", "opencode"),
+		ACPArgs:                       csvEnv("ACP_ARGS"),
+		ACPEnv:                        prefixedEnv("ACP_ENV_"),
+		ACPWorkdir:                    env("ACP_WORKDIR", mustGetwd()),
+		DefaultACPAgentName:           env("DEFAULT_ACP_AGENT_NAME", "default-agent"),
+		SlackSigningSecret:            env("SLACK_SIGNING_SECRET", "dev-secret"),
+		SlackBotToken:                 os.Getenv("SLACK_BOT_TOKEN"),
+		WhatsAppVerifyToken:           env("WHATSAPP_VERIFY_TOKEN", "dev-whatsapp-verify"),
+		WhatsAppAccessToken:           os.Getenv("WHATSAPP_ACCESS_TOKEN"),
+		WhatsAppAppSecret:             os.Getenv("WHATSAPP_APP_SECRET"),
+		WhatsAppPhoneNumberID:         os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
+		WhatsAppAPIBaseURL:            env("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v20.0"),
+		EmailWebhookSecret:            env("EMAIL_WEBHOOK_SECRET", "dev-email-secret"),
+		EmailSMTPAddr:                 os.Getenv("EMAIL_SMTP_ADDR"),
+		EmailSMTPUsername:             os.Getenv("EMAIL_SMTP_USERNAME"),
+		EmailSMTPPassword:             os.Getenv("EMAIL_SMTP_PASSWORD"),
+		EmailFromAddress:              env("EMAIL_FROM_ADDRESS", "nexus@example.com"),
+		WebChatCookieName:             env("WEBCHAT_COOKIE_NAME", "nexus_webchat_session"),
+		IdentityLinkMinutes:           mustEnvIntDefault("IDENTITY_LINK_MINUTES", 10),
+		StepUpOTPMinutes:              mustEnvIntDefault("STEP_UP_OTP_MINUTES", 10),
+		StepUpWindowMinutes:           mustEnvIntDefault("STEP_UP_WINDOW_MINUTES", 15),
+		RequireLinkedIdentity:         envBool("REQUIRE_LINKED_IDENTITY", false),
+		RequireRecentStepUp:           envBool("REQUIRE_RECENT_STEP_UP", false),
+		AllowedApprovalChannels:       csvEnv("ALLOWED_APPROVAL_CHANNELS"),
+		OTLPEndpoint:                  os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		RetryMaxAttempts:              mustEnvIntDefault("RETRY_MAX_ATTEMPTS", 3),
+		RetryBaseDelayMS:              mustEnvIntDefault("RETRY_BASE_DELAY_MS", 200),
+		CircuitBreakerFailures:        mustEnvIntDefault("CIRCUIT_BREAKER_FAILURES", 5),
+		CircuitBreakerCoolDownSeconds: mustEnvIntDefault("CIRCUIT_BREAKER_COOLDOWN_SECONDS", 30),
+		WhatsAppMediaMaxBytes:         mustEnvInt64Default("WHATSAPP_MEDIA_MAX_BYTES", 10<<20),
+		EmailWebhookMaxSkewSeconds:    mustEnvIntDefault("EMAIL_WEBHOOK_MAX_SKEW_SECONDS", 300),
+		EmailMaxAttachmentBytes:       mustEnvInt64Default("EMAIL_MAX_ATTACHMENT_BYTES", 10<<20),
+		EmailMaxAttachments:           mustEnvIntDefault("EMAIL_MAX_ATTACHMENTS", 10),
+		TelegramBotToken:              os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramWebhookSecret:         env("TELEGRAM_WEBHOOK_SECRET", "dev-telegram-secret"),
+		TelegramAllowedUserIDs:        csvEnv("TELEGRAM_ALLOWED_USER_IDS"),
+		ObjectStorageBaseURL:          env("OBJECT_STORAGE_BASE_URL", "file:///tmp/nexus-objects"),
+		DefaultTenantID:               env("DEFAULT_TENANT_ID", "tenant_default"),
+		DefaultAgentProfileID:         env("DEFAULT_AGENT_PROFILE_ID", "agent_profile_default"),
 	}
 
 	seconds, err := envInt("WORKER_POLL_SECONDS", 2)
@@ -165,6 +196,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("parse WEBCHAT_OTP_MINUTES: %w", err)
 	}
+	cfg.OTELSampleRatio, err = envFloat("OTEL_SAMPLE_RATIO", 1.0)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse OTEL_SAMPLE_RATIO: %w", err)
+	}
 	cfg.ValidateACPOnStartup = envBool("VALIDATE_ACP_ON_STARTUP", false)
 	cacheTTLSeconds, err := envInt("ACP_MANIFEST_CACHE_TTL_SECONDS", 60)
 	if err != nil {
@@ -206,6 +241,31 @@ func envInt(key string, fallback int) (int, error) {
 			return 0, err
 		}
 		return n, nil
+	}
+	return fallback, nil
+}
+
+func mustEnvIntDefault(key string, fallback int) int {
+	value, err := envInt(key, fallback)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func mustEnvInt64Default(key string, fallback int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func envFloat(key string, fallback float64) (float64, error) {
+	if value := os.Getenv(key); value != "" {
+		return strconv.ParseFloat(value, 64)
 	}
 	return fallback, nil
 }

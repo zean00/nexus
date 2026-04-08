@@ -87,6 +87,97 @@ type webchatRepoStub struct {
 	session domain.Session
 }
 
+type identityStub struct {
+	users      map[string]domain.User
+	identities map[string]domain.LinkedIdentity
+	challenges map[string]domain.StepUpChallenge
+}
+
+func (s *identityStub) EnsureUserByEmail(_ context.Context, tenantID, email string) (domain.User, error) {
+	if s.users == nil {
+		s.users = map[string]domain.User{}
+	}
+	key := tenantID + "|" + email
+	if user, ok := s.users[key]; ok {
+		return user, nil
+	}
+	user := domain.User{ID: "user_" + email, TenantID: tenantID, PrimaryEmail: email, PrimaryEmailVerified: true, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	s.users[key] = user
+	return user, nil
+}
+func (s *identityStub) GetUser(_ context.Context, tenantID, userID string) (domain.User, error) {
+	for _, user := range s.users {
+		if user.TenantID == tenantID && user.ID == userID {
+			return user, nil
+		}
+	}
+	return domain.User{}, domain.ErrIdentityUserNotFound
+}
+func (s *identityStub) GetUserByEmail(_ context.Context, tenantID, email string) (domain.User, error) {
+	return s.EnsureUserByEmail(context.Background(), tenantID, email)
+}
+func (s *identityStub) MarkUserStepUp(_ context.Context, tenantID, userID string, at time.Time) error {
+	for key, user := range s.users {
+		if user.TenantID == tenantID && user.ID == userID {
+			user.LastStepUpAt = at
+			s.users[key] = user
+			return nil
+		}
+	}
+	return domain.ErrIdentityUserNotFound
+}
+func (s *identityStub) HasRecentStepUp(_ context.Context, tenantID, userID string, since time.Time) (bool, error) {
+	user, err := s.GetUser(context.Background(), tenantID, userID)
+	if err != nil {
+		return false, err
+	}
+	return !user.LastStepUpAt.IsZero() && !user.LastStepUpAt.Before(since), nil
+}
+func (s *identityStub) CreateStepUpChallenge(_ context.Context, challenge domain.StepUpChallenge, _ time.Duration) error {
+	if s.challenges == nil {
+		s.challenges = map[string]domain.StepUpChallenge{}
+	}
+	s.challenges[challenge.UserID+"|"+challenge.Purpose+"|"+challenge.ChannelType] = challenge
+	return nil
+}
+func (s *identityStub) ConsumeStepUpChallenge(_ context.Context, tenantID, userID, purpose, channelType, codeHash string, now time.Time) (domain.StepUpChallenge, error) {
+	for key, challenge := range s.challenges {
+		if challenge.TenantID == tenantID && challenge.Purpose == purpose && challenge.ChannelType == channelType && challenge.CodeHash == codeHash && challenge.UserID == userID {
+			challenge.ConsumedAt = now
+			s.challenges[key] = challenge
+			return challenge, nil
+		}
+	}
+	return domain.StepUpChallenge{}, domain.ErrStepUpChallengeNotFound
+}
+func (s *identityStub) UpsertLinkedIdentity(_ context.Context, identity domain.LinkedIdentity) error {
+	if s.identities == nil {
+		s.identities = map[string]domain.LinkedIdentity{}
+	}
+	s.identities[identity.TenantID+"|"+identity.ChannelType+"|"+identity.ChannelUserID] = identity
+	return nil
+}
+func (s *identityStub) GetLinkedIdentity(_ context.Context, tenantID, channelType, channelUserID string) (domain.LinkedIdentity, error) {
+	item, ok := s.identities[tenantID+"|"+channelType+"|"+channelUserID]
+	if !ok {
+		return domain.LinkedIdentity{}, domain.ErrLinkedIdentityNotFound
+	}
+	return item, nil
+}
+func (s *identityStub) ListLinkedIdentitiesForUser(_ context.Context, tenantID, userID string) ([]domain.LinkedIdentity, error) {
+	var out []domain.LinkedIdentity
+	for _, item := range s.identities {
+		if item.TenantID == tenantID && item.UserID == userID {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+func (s *identityStub) DeleteLinkedIdentity(_ context.Context, tenantID, channelType, channelUserID string) error {
+	delete(s.identities, tenantID+"|"+channelType+"|"+channelUserID)
+	return nil
+}
+
 func (r *webchatRepoStub) ResolveSession(context.Context, domain.CanonicalInboundEvent, string) (domain.Session, bool, error) {
 	if r.session.ID == "" {
 		r.session = domain.Session{ID: "session_webchat_1", TenantID: "tenant_default", OwnerUserID: "user@example.com", ChannelType: "webchat", ChannelScopeKey: "websess_1:session_webchat_1", State: "open"}
@@ -96,10 +187,12 @@ func (r *webchatRepoStub) ResolveSession(context.Context, domain.CanonicalInboun
 
 func TestWebChatAuthRequestStoresChallenge(t *testing.T) {
 	auth := &webAuthStub{}
+	identity := &identityStub{}
 	app := &App{
-		Config:  config.Config{DefaultTenantID: "tenant_default", WebChatOTPMinutes: 10, WebChatCookieName: "nexus_webchat_session"},
-		WebAuth: auth,
-		Email:   email.New("secret", "", "", "", "nexus@example.com"),
+		Config:   config.Config{DefaultTenantID: "tenant_default", WebChatOTPMinutes: 10, WebChatCookieName: "nexus_webchat_session"},
+		WebAuth:  auth,
+		Identity: identity,
+		Email:    email.New("secret", "", "", "", "nexus@example.com"),
 	}
 	req := httptest.NewRequest(http.MethodPost, "/webchat/auth/request", strings.NewReader(`{"email":"user@example.com"}`))
 	rec := httptest.NewRecorder()
@@ -127,8 +220,9 @@ func TestWebChatAuthVerifySetsSecureCookieForForwardedHTTPS(t *testing.T) {
 		},
 	}
 	app := &App{
-		Config:  config.Config{DefaultTenantID: "tenant_default", WebChatSessionHours: 24, WebChatCookieName: "nexus_webchat_session"},
-		WebAuth: auth,
+		Config:   config.Config{DefaultTenantID: "tenant_default", WebChatSessionHours: 24, WebChatCookieName: "nexus_webchat_session"},
+		WebAuth:  auth,
+		Identity: &identityStub{},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/webchat/auth/verify", strings.NewReader(`{"email":"user@example.com","code":"123456"}`))
 	req.Header.Set("X-Forwarded-Proto", "https")
@@ -158,8 +252,9 @@ func TestWebChatAuthVerifySetsCookie(t *testing.T) {
 		},
 	}
 	app := &App{
-		Config:  config.Config{DefaultTenantID: "tenant_default", WebChatSessionHours: 24, WebChatCookieName: "nexus_webchat_session"},
-		WebAuth: auth,
+		Config:   config.Config{DefaultTenantID: "tenant_default", WebChatSessionHours: 24, WebChatCookieName: "nexus_webchat_session"},
+		WebAuth:  auth,
+		Identity: &identityStub{},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/webchat/auth/verify", strings.NewReader(`{"email":"user@example.com","code":"123456"}`))
 	rec := httptest.NewRecorder()
@@ -194,9 +289,10 @@ func TestWebChatBootstrapReturnsTimelineAndCSRF(t *testing.T) {
 		},
 	}
 	app := &App{
-		Config:  config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_profile_default", WebChatCookieName: "nexus_webchat_session"},
-		Repo:    repo,
-		WebAuth: auth,
+		Config:   config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_profile_default", WebChatCookieName: "nexus_webchat_session"},
+		Repo:     repo,
+		WebAuth:  auth,
+		Identity: &identityStub{},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/webchat/bootstrap", nil)
 	req.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: "websess_1"})
@@ -244,6 +340,7 @@ func TestWebChatMessageRequiresValidCSRF(t *testing.T) {
 		},
 		Artifacts: services.ArtifactService{},
 		WebAuth:   auth,
+		Identity:  &identityStub{},
 		WebChat:   webchat.New(),
 	}
 	req := httptest.NewRequest(http.MethodPost, "/webchat/messages", strings.NewReader("--x\r\nContent-Disposition: form-data; name=\"text\"\r\n\r\nhello\r\n--x--\r\n"))

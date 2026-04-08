@@ -19,6 +19,7 @@ import (
 	"nexus/internal/domain"
 	"nexus/internal/httpx"
 	"nexus/internal/ports"
+	"nexus/internal/resilience"
 	"nexus/internal/services"
 	"nexus/internal/tracex"
 )
@@ -36,6 +37,7 @@ type App struct {
 	Reconciler services.Reconciler
 	ACP        ports.ACPBridge
 	WebAuth    ports.WebAuthRepository
+	Identity   ports.IdentityRepository
 	Slack      slack.Adapter
 	WhatsApp   whatsapp.Adapter
 	Email      email.Adapter
@@ -285,11 +287,28 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	slackAdapter := slack.New(cfg.SlackSigningSecret, cfg.SlackBotToken)
 	whatsappAdapter := whatsapp.New(cfg.WhatsAppVerifyToken, cfg.WhatsAppAccessToken, cfg.WhatsAppAppSecret, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppAPIBaseURL)
 	emailAdapter := email.New(cfg.EmailWebhookSecret, cfg.EmailSMTPAddr, cfg.EmailSMTPUsername, cfg.EmailSMTPPassword, cfg.EmailFromAddress)
+	policy := resilience.NewPolicy(resilience.Config{
+		MaxAttempts:      cfg.RetryMaxAttempts,
+		BaseDelay:        time.Duration(cfg.RetryBaseDelayMS) * time.Millisecond,
+		FailureThreshold: cfg.CircuitBreakerFailures,
+		CoolDown:         time.Duration(cfg.CircuitBreakerCoolDownSeconds) * time.Second,
+	})
+	slackAdapter.HTTP = policy.HTTPClient("slack.api", 10*time.Second)
+	whatsappAdapter.HTTP = policy.HTTPClient("whatsapp.api", 10*time.Second)
+	emailAdapter.RetryDo = policy.Do
+	whatsappAdapter.MaxMediaBytes = cfg.WhatsAppMediaMaxBytes
+	emailAdapter.MaxWebhookSkew = time.Duration(cfg.EmailWebhookMaxSkewSeconds) * time.Second
+	emailAdapter.MaxAttachmentBytes = cfg.EmailMaxAttachmentBytes
+	emailAdapter.MaxAttachments = cfg.EmailMaxAttachments
 	webchatAdapter := webchat.New()
 	telegramAdapter := telegram.New(cfg.TelegramBotToken, cfg.TelegramWebhookSecret)
+	telegramAdapter.HTTP = policy.HTTPClient("telegram.api", 10*time.Second)
 	router := services.StaticRouter{
-		DefaultAgentProfileID: cfg.DefaultAgentProfileID,
-		DefaultACPAgentName:   cfg.DefaultACPAgentName,
+		DefaultAgentProfileID:   cfg.DefaultAgentProfileID,
+		DefaultACPAgentName:     cfg.DefaultACPAgentName,
+		RequireLinkedIdentity:   cfg.RequireLinkedIdentity,
+		RequireRecentStepUp:     cfg.RequireRecentStepUp,
+		AllowedApprovalChannels: append([]string(nil), cfg.AllowedApprovalChannels...),
 	}
 	renderers := map[string]ports.Renderer{
 		"slack":    services.SlackRenderer{},
@@ -317,6 +336,18 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		StartupTimeout:   cfg.ACPStartupTimeout,
 		RPCTimeout:       cfg.ACPRPCTimeout,
 	})
+	switch bridge := acpClient.(type) {
+	case acp.Client:
+		bridge.HTTP = policy.HTTPClient("acp.opencode_http", 60*time.Second)
+		acpClient = bridge
+	case *acp.Client:
+		bridge.HTTP = policy.HTTPClient("acp.opencode_http", 60*time.Second)
+	case acp.StrictClient:
+		bridge.HTTP = policy.HTTPClient("acp.strict_http", 60*time.Second)
+		acpClient = bridge
+	case *acp.StrictClient:
+		bridge.HTTP = policy.HTTPClient("acp.strict_http", 60*time.Second)
+	}
 	objectStore := storage.New(cfg.ObjectStorageBaseURL)
 	artifactSvc := services.ArtifactService{Store: objectStore}
 	catalog := &services.AgentCatalog{
@@ -339,8 +370,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		Repo:   repo,
 		DB:     repo,
 		Inbound: services.InboundService{
-			Repo:   repo,
-			Router: router,
+			Repo:     repo,
+			Router:   router,
+			Identity: repo,
 		},
 		Await: services.AwaitService{
 			Repo: repo,
@@ -382,6 +414,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		},
 		ACP:      acpClient,
 		WebAuth:  repo,
+		Identity: repo,
 		Slack:    slackAdapter,
 		WhatsApp: whatsappAdapter,
 		Email:    emailAdapter,
@@ -434,6 +467,11 @@ func (a *App) GatewayHandler() http.Handler {
 	mux.HandleFunc("/webchat/awaits/respond", a.handleWebChatAwaitRespond)
 	mux.HandleFunc("/webchat/chats/new", a.handleWebChatNewChat)
 	mux.HandleFunc("/webchat/chats/close", a.handleWebChatCloseChat)
+	mux.HandleFunc("/webchat/identity/links", a.handleWebChatIdentityLinks)
+	mux.HandleFunc("/webchat/identity/link-code", a.handleWebChatIdentityLinkCode)
+	mux.HandleFunc("/webchat/identity/unlink", a.handleWebChatIdentityUnlink)
+	mux.HandleFunc("/webchat/step-up/request", a.handleWebChatStepUpRequest)
+	mux.HandleFunc("/webchat/step-up/verify", a.handleWebChatStepUpVerify)
 	mux.HandleFunc("/webchat/auth/request", a.handleWebChatAuthRequest)
 	mux.HandleFunc("/webchat/auth/verify", a.handleWebChatAuthVerify)
 	mux.HandleFunc("/webchat/auth/callback", a.handleWebChatAuthCallback)

@@ -210,11 +210,19 @@ func (a *App) handleWebChatBootstrap(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	user, identities, recentStepUp, err := a.currentWebChatIdentityState(r.Context(), authSession)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	httpx.OK(w, map[string]any{
-		"email":      authSession.Email,
-		"session_id": session.ID,
-		"csrf_token": csrfToken,
-		"items":      items,
+		"email":             authSession.Email,
+		"session_id":        session.ID,
+		"csrf_token":        csrfToken,
+		"items":             items,
+		"user_id":           user.ID,
+		"linked_identities": identities,
+		"recent_step_up":    recentStepUp,
 	}, nil)
 }
 
@@ -335,6 +343,20 @@ func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	payload, _ := json.Marshal(map[string]string{"reply": body.Reply})
+	if err := a.authorizeAwaitResponse(r.Context(), domain.CanonicalInboundEvent{
+		TenantID: a.Config.DefaultTenantID,
+		Channel:  "webchat",
+		Sender: domain.Sender{
+			ChannelUserID: authSession.Email,
+		},
+		Metadata: domain.Metadata{
+			AwaitID:       body.AwaitID,
+			ResumePayload: payload,
+		},
+	}); err != nil {
+		httpx.Error(w, http.StatusForbidden, err.Error())
+		return
+	}
 	err = a.Await.HandleResponse(r.Context(), domain.CanonicalInboundEvent{
 		EventID:         "webchat_await_" + randomToken(8),
 		TenantID:        a.Config.DefaultTenantID,
@@ -370,6 +392,207 @@ func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	httpx.OK(w, map[string]any{"status": "accepted"}, nil)
+}
+
+func (a *App) handleWebChatIdentityLinks(w http.ResponseWriter, r *http.Request) {
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	user, identities, recentStepUp, err := a.currentWebChatIdentityState(r.Context(), authSession)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"user_id":            user.ID,
+		"linked_identities":  identities,
+		"recent_step_up":     recentStepUp,
+		"step_up_window_min": a.Config.StepUpWindowMinutes,
+	}, nil)
+}
+
+func (a *App) handleWebChatIdentityLinkCode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err := a.validateWebChatCSRF(r, authSession.ID); err != nil {
+		httpx.Error(w, http.StatusForbidden, err.Error())
+		return
+	}
+	var body struct {
+		Channel string `json:"channel"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	channel := strings.TrimSpace(strings.ToLower(body.Channel))
+	switch channel {
+	case "slack", "telegram", "whatsapp", "email":
+	default:
+		httpx.Error(w, http.StatusBadRequest, "unsupported channel")
+		return
+	}
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	code := randomDigits(8)
+	challenge := domain.StepUpChallenge{
+		ID:          "link_" + randomToken(8),
+		TenantID:    a.Config.DefaultTenantID,
+		UserID:      user.ID,
+		Purpose:     "link",
+		ChannelType: channel,
+		CodeHash:    sha256Hex(code),
+		ExpiresAt:   time.Now().UTC().Add(time.Duration(a.Config.IdentityLinkMinutes) * time.Minute),
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := a.Identity.CreateStepUpChallenge(r.Context(), challenge, time.Minute); err != nil {
+		if errors.Is(err, domain.ErrWebAuthRateLimited) {
+			httpx.Error(w, http.StatusTooManyRequests, err.Error())
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"channel":    channel,
+		"code":       code,
+		"link_code":  user.ID + "." + code,
+		"expires_at": challenge.ExpiresAt,
+	}, nil)
+}
+
+func (a *App) handleWebChatIdentityUnlink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err := a.validateWebChatCSRF(r, authSession.ID); err != nil {
+		httpx.Error(w, http.StatusForbidden, err.Error())
+		return
+	}
+	var body struct {
+		Channel       string `json:"channel"`
+		ChannelUserID string `json:"channel_user_id"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	identity, err := a.Identity.GetLinkedIdentity(r.Context(), a.Config.DefaultTenantID, strings.ToLower(strings.TrimSpace(body.Channel)), strings.TrimSpace(body.ChannelUserID))
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if identity.UserID != user.ID {
+		httpx.Error(w, http.StatusForbidden, "identity not owned by current user")
+		return
+	}
+	if err := a.Identity.DeleteLinkedIdentity(r.Context(), a.Config.DefaultTenantID, identity.ChannelType, identity.ChannelUserID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{"status": "unlinked"}, nil)
+}
+
+func (a *App) handleWebChatStepUpRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err := a.validateWebChatCSRF(r, authSession.ID); err != nil {
+		httpx.Error(w, http.StatusForbidden, err.Error())
+		return
+	}
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	code := randomDigits(6)
+	challenge := domain.StepUpChallenge{
+		ID:        "stepup_" + randomToken(8),
+		TenantID:  a.Config.DefaultTenantID,
+		UserID:    user.ID,
+		Purpose:   "step_up",
+		CodeHash:  sha256Hex(code),
+		ExpiresAt: time.Now().UTC().Add(time.Duration(a.Config.StepUpOTPMinutes) * time.Minute),
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := a.Identity.CreateStepUpChallenge(r.Context(), challenge, time.Minute); err != nil {
+		if errors.Is(err, domain.ErrWebAuthRateLimited) {
+			httpx.Error(w, http.StatusTooManyRequests, err.Error())
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	text := fmt.Sprintf("Your Nexus step-up code is %s.", code)
+	if _, err := a.Email.SendMail(r.Context(), authSession.Email, "Your Nexus step-up code", text, ""); err != nil {
+		httpx.Error(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	httpx.Accepted(w, map[string]any{"status": "sent"}, nil)
+}
+
+func (a *App) handleWebChatStepUpVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err := a.validateWebChatCSRF(r, authSession.ID); err != nil {
+		httpx.Error(w, http.StatusForbidden, err.Error())
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := a.Identity.ConsumeStepUpChallenge(r.Context(), a.Config.DefaultTenantID, user.ID, "step_up", "", sha256Hex(strings.TrimSpace(body.Code)), time.Now().UTC()); err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err := a.Identity.MarkUserStepUp(r.Context(), a.Config.DefaultTenantID, user.ID, time.Now().UTC()); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{"recent_step_up": true}, nil)
 }
 
 func (a *App) handleWebChatNewChat(w http.ResponseWriter, r *http.Request) {
@@ -426,6 +649,44 @@ func (a *App) createWebChatAuthSession(ctx context.Context, email string) (domai
 		CreatedAt:  time.Now().UTC(),
 	}
 	return session, a.WebAuth.CreateWebAuthSession(ctx, session)
+}
+
+func (a *App) currentWebChatIdentityState(ctx context.Context, authSession domain.WebAuthSession) (domain.User, []domain.LinkedIdentity, bool, error) {
+	user, err := a.Identity.EnsureUserByEmail(ctx, a.Config.DefaultTenantID, authSession.Email)
+	if err != nil {
+		return domain.User{}, nil, false, err
+	}
+	if err := a.Identity.UpsertLinkedIdentity(ctx, domain.LinkedIdentity{
+		TenantID:       a.Config.DefaultTenantID,
+		UserID:         user.ID,
+		ChannelType:    "webchat",
+		ChannelUserID:  authSession.Email,
+		Status:         "linked",
+		LinkedAt:       time.Now().UTC(),
+		LastVerifiedAt: time.Now().UTC(),
+	}); err != nil {
+		return domain.User{}, nil, false, err
+	}
+	if err := a.Identity.UpsertLinkedIdentity(ctx, domain.LinkedIdentity{
+		TenantID:       a.Config.DefaultTenantID,
+		UserID:         user.ID,
+		ChannelType:    "email",
+		ChannelUserID:  authSession.Email,
+		Status:         "linked",
+		LinkedAt:       time.Now().UTC(),
+		LastVerifiedAt: time.Now().UTC(),
+	}); err != nil {
+		return domain.User{}, nil, false, err
+	}
+	identities, err := a.Identity.ListLinkedIdentitiesForUser(ctx, a.Config.DefaultTenantID, user.ID)
+	if err != nil {
+		return domain.User{}, nil, false, err
+	}
+	recent, err := a.Identity.HasRecentStepUp(ctx, a.Config.DefaultTenantID, user.ID, time.Now().UTC().Add(-time.Duration(a.Config.StepUpWindowMinutes)*time.Minute))
+	if err != nil {
+		return domain.User{}, nil, false, err
+	}
+	return user, identities, recent, nil
 }
 
 func (a *App) currentWebChatSession(r *http.Request) (domain.WebAuthSession, error) {

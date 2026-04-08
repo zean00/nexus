@@ -26,6 +26,7 @@ type Adapter struct {
 	PhoneNumberID string
 	APIBaseURL    string
 	HTTP          *http.Client
+	MaxMediaBytes int64
 }
 
 func New(verifyToken, accessToken, appSecret, phoneNumberID, apiBaseURL string) Adapter {
@@ -36,6 +37,7 @@ func New(verifyToken, accessToken, appSecret, phoneNumberID, apiBaseURL string) 
 		PhoneNumberID: phoneNumberID,
 		APIBaseURL:    strings.TrimRight(apiBaseURL, "/"),
 		HTTP:          &http.Client{Timeout: 10 * time.Second},
+		MaxMediaBytes: 10 << 20,
 	}
 }
 
@@ -144,6 +146,9 @@ func (a Adapter) ParseInboundBatch(_ context.Context, _ *http.Request, body []by
 	events := make([]domain.CanonicalInboundEvent, 0)
 	for _, entry := range envelope.Entry {
 		for _, change := range entry.Changes {
+			if a.PhoneNumberID != "" && change.Value.Metadata.PhoneNumberID != "" && change.Value.Metadata.PhoneNumberID != a.PhoneNumberID {
+				return nil, errors.New("unexpected whatsapp phone number id")
+			}
 			for _, msg := range change.Value.Messages {
 				displayName := ""
 				if len(change.Value.Contacts) > 0 {
@@ -525,7 +530,17 @@ func (a Adapter) downloadMedia(ctx context.Context, mediaID string) ([]byte, err
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("whatsapp media download failed: status=%d body=%s", resp.StatusCode, string(raw))
 	}
-	return io.ReadAll(resp.Body)
+	if a.MaxMediaBytes > 0 && resp.ContentLength > a.MaxMediaBytes {
+		return nil, fmt.Errorf("whatsapp media too large: %d", resp.ContentLength)
+	}
+	content, err := io.ReadAll(io.LimitReader(resp.Body, maxInt64(a.MaxMediaBytes, 1)+1))
+	if err != nil {
+		return nil, err
+	}
+	if a.MaxMediaBytes > 0 && int64(len(content)) > a.MaxMediaBytes {
+		return nil, errors.New("whatsapp media too large")
+	}
+	return content, nil
 }
 
 func (a Adapter) WriteVerification(w http.ResponseWriter, r *http.Request) bool {
@@ -557,4 +572,11 @@ func readStorageURI(uri string) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported storage uri: %s", uri)
 	}
 	return os.ReadFile(strings.TrimPrefix(uri, "file://"))
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,8 +18,9 @@ import (
 var ErrDuplicateEvent = errors.New("duplicate inbound event")
 
 type InboundService struct {
-	Repo   ports.Repository
-	Router ports.Router
+	Repo     ports.Repository
+	Router   ports.Router
+	Identity ports.IdentityRepository
 }
 
 type InboundResult struct {
@@ -46,6 +49,12 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 		session, _, err := repo.ResolveSession(ctx, evt, "")
 		if err != nil {
 			return err
+		}
+		if handled, commandResult, err := s.handleIdentityCommand(ctx, evt); err != nil {
+			return err
+		} else if handled {
+			result = commandResult
+			return nil
 		}
 		if handled, commandResult, err := s.handleSessionCommand(ctx, repo, evt, session); err != nil {
 			return err
@@ -99,6 +108,59 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 	}
 	tracex.Logger(ctx).Info("inbound.accepted", "event_id", evt.EventID, "session_id", result.SessionID, "queue_id", result.QueueID, "status", result.Status)
 	return result, nil
+}
+
+func (s InboundService) handleIdentityCommand(ctx context.Context, evt domain.CanonicalInboundEvent) (bool, InboundResult, error) {
+	if s.Identity == nil {
+		return false, InboundResult{}, nil
+	}
+	command, token := parseIdentityCommand(evt.Message.Text)
+	if command != "link" || token == "" || evt.Channel == "webchat" {
+		return false, InboundResult{}, nil
+	}
+	userID, code := parseLinkToken(token)
+	if userID == "" || code == "" {
+		return true, InboundResult{Status: "identity_link_rejected"}, domain.ErrStepUpChallengeNotFound
+	}
+	hash := sha256Hex(code)
+	challenge, err := s.Identity.ConsumeStepUpChallenge(ctx, evt.TenantID, userID, "link", evt.Channel, hash, time.Now().UTC())
+	if err != nil {
+		return true, InboundResult{Status: "identity_link_rejected"}, err
+	}
+	if err := s.Identity.UpsertLinkedIdentity(ctx, domain.LinkedIdentity{
+		TenantID:       evt.TenantID,
+		UserID:         challenge.UserID,
+		ChannelType:    evt.Channel,
+		ChannelUserID:  evt.Sender.ChannelUserID,
+		Status:         "linked",
+		LinkedAt:       time.Now().UTC(),
+		LastVerifiedAt: time.Now().UTC(),
+	}); err != nil {
+		return true, InboundResult{Status: "identity_link_rejected"}, err
+	}
+	return true, InboundResult{Status: "identity_linked"}, nil
+}
+
+func parseIdentityCommand(text string) (string, string) {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) < 2 {
+		return "", ""
+	}
+	command := strings.TrimPrefix(strings.ToLower(fields[0]), "/")
+	return command, fields[1]
+}
+
+func parseLinkToken(token string) (string, string) {
+	parts := strings.SplitN(strings.TrimSpace(token), ".", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+}
+
+func sha256Hex(input string) string {
+	sum := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s InboundService) handleSessionCommand(ctx context.Context, repo ports.Repository, evt domain.CanonicalInboundEvent, session domain.Session) (bool, InboundResult, error) {

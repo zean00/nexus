@@ -267,6 +267,180 @@ func (r *PostgresRepository) DeleteWebAuthSession(ctx context.Context, sessionID
 	return err
 }
 
+func (r *PostgresRepository) EnsureUserByEmail(ctx context.Context, tenantID, email string) (domain.User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	id := "user_" + hashText(tenantID+"|"+email)
+	_, err := r.exec(ctx, `
+		insert into users (id, tenant_id, primary_email, primary_email_verified, created_at, updated_at)
+		values ($1,$2,$3,true,now(),now())
+		on conflict (tenant_id, primary_email)
+		do update set primary_email_verified=true, updated_at=now()
+	`, id, tenantID, email)
+	if err != nil {
+		return domain.User{}, err
+	}
+	return r.GetUserByEmail(ctx, tenantID, email)
+}
+
+func (r *PostgresRepository) GetUser(ctx context.Context, tenantID, userID string) (domain.User, error) {
+	row := r.queryRow(ctx, `
+		select id, tenant_id, primary_email, primary_email_verified, coalesce(last_step_up_at,'epoch'::timestamptz), created_at, updated_at
+		from users
+		where tenant_id=$1 and id=$2
+	`, tenantID, userID)
+	return scanUser(row)
+}
+
+func (r *PostgresRepository) GetUserByEmail(ctx context.Context, tenantID, email string) (domain.User, error) {
+	row := r.queryRow(ctx, `
+		select id, tenant_id, primary_email, primary_email_verified, coalesce(last_step_up_at,'epoch'::timestamptz), created_at, updated_at
+		from users
+		where tenant_id=$1 and primary_email=$2
+	`, tenantID, strings.ToLower(strings.TrimSpace(email)))
+	return scanUser(row)
+}
+
+func (r *PostgresRepository) MarkUserStepUp(ctx context.Context, tenantID, userID string, at time.Time) error {
+	_, err := r.exec(ctx, `update users set last_step_up_at=$3, updated_at=$3 where tenant_id=$1 and id=$2`, tenantID, userID, at)
+	return err
+}
+
+func (r *PostgresRepository) HasRecentStepUp(ctx context.Context, tenantID, userID string, since time.Time) (bool, error) {
+	var ok bool
+	err := r.queryRow(ctx, `select exists(select 1 from users where tenant_id=$1 and id=$2 and last_step_up_at >= $3)`, tenantID, userID, since).Scan(&ok)
+	return ok, err
+}
+
+func (r *PostgresRepository) CreateStepUpChallenge(ctx context.Context, challenge domain.StepUpChallenge, minInterval time.Duration) error {
+	return r.InTx(ctx, func(ctx context.Context, repo ports.Repository) error {
+		txRepo, ok := repo.(*PostgresRepository)
+		if !ok {
+			return fmt.Errorf("unexpected repository type %T", repo)
+		}
+		var latest time.Time
+		err := txRepo.queryRow(ctx, `
+			select coalesce(max(created_at), 'epoch'::timestamptz)
+			from step_up_challenges
+			where tenant_id=$1 and user_id=$2 and purpose=$3 and channel_type=$4 and consumed_at is null
+		`, challenge.TenantID, challenge.UserID, challenge.Purpose, challenge.ChannelType).Scan(&latest)
+		if err != nil {
+			return err
+		}
+		if !latest.IsZero() && time.Since(latest) < minInterval {
+			return domain.ErrWebAuthRateLimited
+		}
+		if _, err := txRepo.exec(ctx, `
+			update step_up_challenges
+			set consumed_at=$5
+			where tenant_id=$1 and user_id=$2 and purpose=$3 and channel_type=$4 and consumed_at is null
+		`, challenge.TenantID, challenge.UserID, challenge.Purpose, challenge.ChannelType, challenge.CreatedAt); err != nil {
+			return err
+		}
+		_, err = txRepo.exec(ctx, `
+			insert into step_up_challenges (id, tenant_id, user_id, purpose, channel_type, code_hash, expires_at, consumed_at, created_at)
+			values ($1,$2,$3,$4,$5,$6,$7,null,$8)
+		`, challenge.ID, challenge.TenantID, challenge.UserID, challenge.Purpose, challenge.ChannelType, challenge.CodeHash, challenge.ExpiresAt, challenge.CreatedAt)
+		return err
+	})
+}
+
+func (r *PostgresRepository) ConsumeStepUpChallenge(ctx context.Context, tenantID, userID, purpose, channelType, codeHash string, now time.Time) (domain.StepUpChallenge, error) {
+	row := r.queryRow(ctx, `
+		select id, tenant_id, user_id, purpose, channel_type, code_hash, expires_at, coalesce(consumed_at,'epoch'::timestamptz), created_at
+		from step_up_challenges
+		where tenant_id=$1 and user_id=$2 and purpose=$3 and channel_type=$4 and code_hash=$5
+		order by created_at desc
+		limit 1
+	`, tenantID, userID, purpose, channelType, codeHash)
+	var challenge domain.StepUpChallenge
+	if err := row.Scan(&challenge.ID, &challenge.TenantID, &challenge.UserID, &challenge.Purpose, &challenge.ChannelType, &challenge.CodeHash, &challenge.ExpiresAt, &challenge.ConsumedAt, &challenge.CreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.StepUpChallenge{}, domain.ErrStepUpChallengeNotFound
+		}
+		return domain.StepUpChallenge{}, err
+	}
+	if !challenge.ConsumedAt.IsZero() && challenge.ConsumedAt.After(time.Unix(1, 0)) {
+		return domain.StepUpChallenge{}, domain.ErrStepUpChallengeNotFound
+	}
+	if now.After(challenge.ExpiresAt) {
+		return domain.StepUpChallenge{}, domain.ErrStepUpChallengeExpired
+	}
+	tag, err := r.exec(ctx, `update step_up_challenges set consumed_at=$2 where id=$1 and consumed_at is null`, challenge.ID, now)
+	if err != nil {
+		return domain.StepUpChallenge{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.StepUpChallenge{}, domain.ErrStepUpChallengeNotFound
+	}
+	challenge.ConsumedAt = now
+	return challenge, nil
+}
+
+func (r *PostgresRepository) UpsertLinkedIdentity(ctx context.Context, identity domain.LinkedIdentity) error {
+	if identity.ID == "" {
+		identity.ID = "link_" + hashText(identity.TenantID+"|"+identity.ChannelType+"|"+identity.ChannelUserID)
+	}
+	if identity.Status == "" {
+		identity.Status = "linked"
+	}
+	if identity.LinkedAt.IsZero() {
+		identity.LinkedAt = time.Now().UTC()
+	}
+	if identity.LastVerifiedAt.IsZero() {
+		identity.LastVerifiedAt = identity.LinkedAt
+	}
+	_, err := r.exec(ctx, `
+		insert into linked_identities (id, tenant_id, user_id, channel_type, channel_user_id, status, linked_at, last_verified_at)
+		values ($1,$2,$3,$4,$5,$6,$7,$8)
+		on conflict (tenant_id, channel_type, channel_user_id)
+		do update set user_id=excluded.user_id, status=excluded.status, linked_at=excluded.linked_at, last_verified_at=excluded.last_verified_at
+	`, identity.ID, identity.TenantID, identity.UserID, identity.ChannelType, identity.ChannelUserID, identity.Status, identity.LinkedAt, identity.LastVerifiedAt)
+	return err
+}
+
+func (r *PostgresRepository) GetLinkedIdentity(ctx context.Context, tenantID, channelType, channelUserID string) (domain.LinkedIdentity, error) {
+	row := r.queryRow(ctx, `
+		select id, tenant_id, user_id, channel_type, channel_user_id, status, linked_at, coalesce(last_verified_at,'epoch'::timestamptz)
+		from linked_identities
+		where tenant_id=$1 and channel_type=$2 and channel_user_id=$3
+	`, tenantID, channelType, channelUserID)
+	var identity domain.LinkedIdentity
+	if err := row.Scan(&identity.ID, &identity.TenantID, &identity.UserID, &identity.ChannelType, &identity.ChannelUserID, &identity.Status, &identity.LinkedAt, &identity.LastVerifiedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.LinkedIdentity{}, domain.ErrLinkedIdentityNotFound
+		}
+		return domain.LinkedIdentity{}, err
+	}
+	return identity, nil
+}
+
+func (r *PostgresRepository) ListLinkedIdentitiesForUser(ctx context.Context, tenantID, userID string) ([]domain.LinkedIdentity, error) {
+	rows, err := r.query(ctx, `
+		select id, tenant_id, user_id, channel_type, channel_user_id, status, linked_at, coalesce(last_verified_at,'epoch'::timestamptz)
+		from linked_identities
+		where tenant_id=$1 and user_id=$2
+		order by channel_type, channel_user_id
+	`, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []domain.LinkedIdentity
+	for rows.Next() {
+		var item domain.LinkedIdentity
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.UserID, &item.ChannelType, &item.ChannelUserID, &item.Status, &item.LinkedAt, &item.LastVerifiedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) DeleteLinkedIdentity(ctx context.Context, tenantID, channelType, channelUserID string) error {
+	_, err := r.exec(ctx, `delete from linked_identities where tenant_id=$1 and channel_type=$2 and channel_user_id=$3`, tenantID, channelType, channelUserID)
+	return err
+}
+
 func (r *PostgresRepository) HasActiveRun(ctx context.Context, sessionID string) (bool, error) {
 	row := r.queryRow(ctx, `select exists(select 1 from runs where session_id=$1 and status in ('starting','running','awaiting'))`, sessionID)
 	var exists bool
@@ -2637,6 +2811,22 @@ func nullableTimePtr(ts *time.Time) any {
 		return nil
 	}
 	return *ts
+}
+
+func scanUser(row pgx.Row) (domain.User, error) {
+	var user domain.User
+	if err := row.Scan(&user.ID, &user.TenantID, &user.PrimaryEmail, &user.PrimaryEmailVerified, &user.LastStepUpAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.User{}, domain.ErrIdentityUserNotFound
+		}
+		return domain.User{}, err
+	}
+	return user, nil
+}
+
+func hashText(input string) string {
+	sum := sha1.Sum([]byte(input))
+	return hex.EncodeToString(sum[:8])
 }
 
 func nonEmptyStatus(status string) string {
