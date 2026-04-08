@@ -66,6 +66,18 @@ func TestLoadTrimsAdminBearerToken(t *testing.T) {
 	}
 }
 
+func TestLoadWebChatDevAuthFlag(t *testing.T) {
+	t.Setenv("WEBCHAT_DEV_AUTH", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.WebChatDevAuth {
+		t.Fatal("expected webchat dev auth to be enabled")
+	}
+}
+
 func TestLoadProductionRejectsDevWebhookSecrets(t *testing.T) {
 	t.Setenv("NEXUS_ENV", "production")
 	t.Setenv("ADMIN_BEARER_TOKEN", "admin-secret")

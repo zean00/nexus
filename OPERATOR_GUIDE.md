@@ -30,6 +30,8 @@ HTTP server timeout defaults are:
 - `HTTP_WRITE_TIMEOUT_SECONDS=120` for the admin server; the gateway server leaves `WriteTimeout` unset for long-lived webchat event streams
 - `HTTP_IDLE_TIMEOUT_SECONDS=120`
 
+`WEBCHAT_DEV_AUTH=true` enables `POST /webchat/dev/session` for local CLI testing without the email OTP flow. This endpoint returns `404` unless `NEXUS_ENV=development` and the request host is loopback, such as `localhost` or `127.0.0.1`.
+
 ## Probes And Runtime
 
 Gateway and admin surfaces both expose:

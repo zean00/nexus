@@ -487,6 +487,7 @@ func (a *App) GatewayHandler() http.Handler {
 	mux.HandleFunc("/webchat/auth/verify", a.handleWebChatAuthVerify)
 	mux.HandleFunc("/webchat/auth/callback", a.handleWebChatAuthCallback)
 	mux.HandleFunc("/webchat/auth/logout", a.handleWebChatAuthLogout)
+	mux.HandleFunc("/webchat/dev/session", a.handleWebChatDevSession)
 	return tracex.Middleware("gateway", mux)
 }
 

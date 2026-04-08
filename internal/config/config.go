@@ -44,6 +44,7 @@ type Config struct {
 	EmailSMTPPassword             string
 	EmailFromAddress              string
 	WebChatCookieName             string
+	WebChatDevAuth                bool
 	WebChatSessionHours           int
 	WebChatOTPMinutes             int
 	IdentityLinkMinutes           int
@@ -113,6 +114,7 @@ func Load() (Config, error) {
 		EmailSMTPPassword:             os.Getenv("EMAIL_SMTP_PASSWORD"),
 		EmailFromAddress:              env("EMAIL_FROM_ADDRESS", "nexus@example.com"),
 		WebChatCookieName:             env("WEBCHAT_COOKIE_NAME", "nexus_webchat_session"),
+		WebChatDevAuth:                envBool("WEBCHAT_DEV_AUTH", false),
 		IdentityLinkMinutes:           mustEnvIntDefault("IDENTITY_LINK_MINUTES", 10),
 		StepUpOTPMinutes:              mustEnvIntDefault("STEP_UP_OTP_MINUTES", 10),
 		StepUpWindowMinutes:           mustEnvIntDefault("STEP_UP_WINDOW_MINUTES", 15),

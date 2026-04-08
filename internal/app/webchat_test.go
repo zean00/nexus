@@ -260,6 +260,116 @@ func TestWebChatAuthRequestStoresChallenge(t *testing.T) {
 	}
 }
 
+func TestWebChatDevSessionDisabledByDefault(t *testing.T) {
+	app := &App{
+		Config:  config.Config{DefaultTenantID: "tenant_default", WebChatCookieName: "nexus_webchat_session", WebChatSessionHours: 24},
+		WebAuth: &webAuthStub{},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/webchat/dev/session", strings.NewReader(`{"email":"user@example.com"}`))
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatDevSession(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWebChatDevSessionDisabledInProduction(t *testing.T) {
+	app := &App{
+		Config:  config.Config{Environment: "production", WebChatDevAuth: true, DefaultTenantID: "tenant_default", WebChatCookieName: "nexus_webchat_session", WebChatSessionHours: 24},
+		WebAuth: &webAuthStub{},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/webchat/dev/session", strings.NewReader(`{"email":"user@example.com"}`))
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatDevSession(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWebChatDevSessionDisabledOutsideDevelopment(t *testing.T) {
+	app := &App{
+		Config:  config.Config{Environment: "staging", WebChatDevAuth: true, DefaultTenantID: "tenant_default", WebChatCookieName: "nexus_webchat_session", WebChatSessionHours: 24},
+		WebAuth: &webAuthStub{},
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/webchat/dev/session", strings.NewReader(`{"email":"user@example.com"}`))
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatDevSession(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWebChatDevSessionDisabledForNonLocalHost(t *testing.T) {
+	app := &App{
+		Config:  config.Config{Environment: "development", WebChatDevAuth: true, DefaultTenantID: "tenant_default", WebChatCookieName: "nexus_webchat_session", WebChatSessionHours: 24},
+		WebAuth: &webAuthStub{},
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://nexus.internal/webchat/dev/session", strings.NewReader(`{"email":"user@example.com"}`))
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatDevSession(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWebChatDevSessionCreatesSessionCookieAndCSRF(t *testing.T) {
+	auth := &webAuthStub{}
+	app := &App{
+		Config: config.Config{
+			Environment:           "development",
+			WebChatDevAuth:        true,
+			DefaultTenantID:       "tenant_default",
+			DefaultAgentProfileID: "agent_profile_default",
+			WebChatCookieName:     "nexus_webchat_session",
+			WebChatSessionHours:   24,
+		},
+		WebAuth:  auth,
+		Identity: &identityStub{},
+		Repo:     &webchatRepoStub{},
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/webchat/dev/session", strings.NewReader(`{"email":"User@Example.COM"}`))
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatDevSession(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "nexus_webchat_session" || cookies[0].Value == "" {
+		t.Fatalf("expected auth cookie, got %+v", cookies)
+	}
+	var payload struct {
+		Data struct {
+			Email     string `json:"email"`
+			SessionID string `json:"session_id"`
+			CSRFToken string `json:"csrf_token"`
+			UserID    string `json:"user_id"`
+		} `json:"data"`
+		Meta struct {
+			Mode string `json:"mode"`
+		} `json:"meta"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.Email != "user@example.com" || payload.Data.SessionID == "" || payload.Data.CSRFToken == "" || payload.Data.UserID == "" || payload.Meta.Mode != "dev" {
+		t.Fatalf("unexpected dev session payload: %+v", payload)
+	}
+	session := auth.sessions[cookies[0].Value]
+	if session.CSRFTokenHash == "" {
+		t.Fatalf("expected csrf hash to be stored: %+v", session)
+	}
+}
+
 func TestWebChatAuthVerifySetsSecureCookieForForwardedHTTPS(t *testing.T) {
 	auth := &webAuthStub{
 		challenges: map[string]domain.WebAuthChallenge{

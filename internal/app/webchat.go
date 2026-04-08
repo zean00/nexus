@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/mail"
 	"strconv"
@@ -121,6 +122,84 @@ func (a *App) handleWebChatAuthRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Accepted(w, map[string]any{"status": "sent"}, map[string]any{"email": email})
+}
+
+func (a *App) handleWebChatDevSession(w http.ResponseWriter, r *http.Request) {
+	if !a.webChatDevAuthEnabled(r) {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if a.WebAuth == nil || a.Identity == nil {
+		httpx.Error(w, http.StatusInternalServerError, "web auth unavailable")
+		return
+	}
+	var body struct {
+		Email string `json:"email"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	email, err := normalizeEmail(body.Email)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	authSession, err := a.createWebChatAuthSession(r.Context(), email)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	setWebChatCookie(w, r, a.Config.WebChatCookieName, authSession.ID, authSession.ExpiresAt)
+	csrfToken, err := a.issueWebChatCSRF(r.Context(), authSession.ID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	session, items, err := a.loadWebChatState(r.Context(), authSession, 100)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	user, identities, recentStepUp, err := a.currentWebChatIdentityState(r.Context(), authSession)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"email":             authSession.Email,
+		"session_id":        session.ID,
+		"csrf_token":        csrfToken,
+		"items":             items,
+		"user_id":           user.ID,
+		"linked_identities": identities,
+		"recent_step_up":    recentStepUp,
+	}, map[string]any{"mode": "dev"})
+}
+
+func (a *App) webChatDevAuthEnabled(r *http.Request) bool {
+	return a.Config.WebChatDevAuth &&
+		strings.EqualFold(strings.TrimSpace(a.Config.Environment), "development") &&
+		isLocalWebChatDevRequest(r)
+}
+
+func isLocalWebChatDevRequest(r *http.Request) bool {
+	host := strings.TrimSpace(externalRequestHost(r))
+	if host == "" {
+		return false
+	}
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	host = strings.Trim(strings.ToLower(host), "[]")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (a *App) handleWebChatAuthVerify(w http.ResponseWriter, r *http.Request) {
