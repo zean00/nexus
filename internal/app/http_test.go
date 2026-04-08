@@ -824,6 +824,62 @@ func TestAdminHealthEnvelope(t *testing.T) {
 	}
 }
 
+func TestAdminBearerAuthProtectsMetricsAndAdminAPIs(t *testing.T) {
+	app := &App{
+		Config:  config.Config{AdminBearerToken: "secret", WorkerPollInterval: time.Second, ReconcilerInterval: time.Second},
+		Repo:    &appRepoStub{},
+		Runtime: &RuntimeState{},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	app.AdminHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected missing token to be rejected, got %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/runtime", nil)
+	rec = httptest.NewRecorder()
+	app.AdminHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected admin API without token to be rejected, got %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer wrong")
+	rec = httptest.NewRecorder()
+	app.AdminHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected wrong token to be rejected, got %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec = httptest.NewRecorder()
+	app.AdminHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected valid token to be accepted, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminBearerAuthLeavesProbesAndTrustAdminAssetsOpen(t *testing.T) {
+	app := &App{
+		Config:  config.Config{AdminBearerToken: "secret", WorkerPollInterval: time.Second, ReconcilerInterval: time.Second},
+		Repo:    &appRepoStub{},
+		Runtime: &RuntimeState{},
+		Catalog: &services.AgentCatalog{Bridge: testACPBridge{}, TTL: time.Minute},
+	}
+
+	for _, path := range []string{"/healthz", "/readyz", "/admin/trust", "/admin/trust/app.js", "/admin/trust/app.css"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		app.AdminHandler().ServeHTTP(rec, req)
+		if rec.Code == http.StatusUnauthorized {
+			t.Fatalf("expected %s to be unauthenticated", path)
+		}
+	}
+}
+
 func TestGatewayHealthDegradedWhenCatalogFetchFailed(t *testing.T) {
 	app := &App{
 		Catalog: &services.AgentCatalog{

@@ -7283,7 +7283,11 @@ var import_react = __toESM(require_react(), 1);
 var import_client = __toESM(require_client(), 1);
 var import_jsx_runtime = __toESM(require_jsx_runtime(), 1);
 var baseUrl = window.__NEXUS_TRUST_ADMIN_CONFIG__?.baseUrl ?? "/admin/trust";
+var tokenStorageKey = "nexus_trust_admin_token";
 function App() {
+  const [token, setToken] = import_react.default.useState(() => sessionStorage.getItem(tokenStorageKey) ?? "");
+  const [tokenDraft, setTokenDraft] = import_react.default.useState(token);
+  const [authError, setAuthError] = import_react.default.useState("");
   const [summary, setSummary] = import_react.default.useState(null);
   const [policies, setPolicies] = import_react.default.useState([]);
   const [users, setUsers] = import_react.default.useState([]);
@@ -7296,23 +7300,40 @@ function App() {
     allowed_approval_channels: ""
   });
   const load = import_react.default.useCallback(async () => {
+    if (!token) {
+      return;
+    }
     const [s, p, u, e] = await Promise.all([
-      getJSON(`${baseUrl}/summary`),
-      getJSON(`${baseUrl}/policies`),
-      getJSON(`${baseUrl}/users`),
-      getJSON(`${baseUrl}/events`)
+      getJSON(`${baseUrl}/summary`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/policies`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/users`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/events`, token, handleUnauthorized)
     ]);
     setSummary(s.data);
     setPolicies(p.data.items ?? []);
     setUsers(u.data.items ?? []);
     setEvents(e.data.items ?? []);
-  }, []);
+    setAuthError("");
+  }, [token]);
   import_react.default.useEffect(() => {
     void load();
   }, [load]);
+  function saveToken(event) {
+    event.preventDefault();
+    const nextToken = tokenDraft.trim();
+    sessionStorage.setItem(tokenStorageKey, nextToken);
+    setToken(nextToken);
+    setAuthError("");
+  }
+  function handleUnauthorized() {
+    sessionStorage.removeItem(tokenStorageKey);
+    setToken("");
+    setTokenDraft("");
+    setAuthError("Token rejected. Enter a valid admin token.");
+  }
   async function submitPolicy(event) {
     event.preventDefault();
-    await fetch(`${baseUrl}/policies/upsert`, {
+    await apiFetch(`${baseUrl}/policies/upsert`, token, handleUnauthorized, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -7333,7 +7354,7 @@ function App() {
     await load();
   }
   async function revoke(channelType, channelUserID) {
-    await fetch(`${baseUrl}/links/revoke`, {
+    await apiFetch(`${baseUrl}/links/revoke`, token, handleUnauthorized, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ channel_type: channelType, channel_user_id: channelUserID })
@@ -7345,6 +7366,23 @@ function App() {
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "kicker", children: "Trust Admin" }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { children: "Identity, approval, and step-up policy" })
     ] }),
+    !token ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "panel auth-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Admin token" }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", { onSubmit: saveToken, className: "form", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+          "input",
+          {
+            type: "password",
+            placeholder: "Bearer token",
+            value: tokenDraft,
+            onChange: (e) => setTokenDraft(e.target.value),
+            autoFocus: true
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "submit", children: "Use token" })
+      ] }),
+      authError ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "error", children: authError }) : null
+    ] }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "panel", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Summary" }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { children: JSON.stringify(summary, null, 2) })
@@ -7396,11 +7434,22 @@ function App() {
     ] })
   ] });
 }
-async function getJSON(url) {
-  const response = await fetch(url, { credentials: "same-origin" });
+async function getJSON(url, token, onUnauthorized) {
+  const response = await apiFetch(url, token, onUnauthorized, { method: "GET" });
+  return response.json();
+}
+async function apiFetch(url, token, onUnauthorized, init) {
+  const headers = new Headers(init.headers);
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const response = await fetch(url, { ...init, credentials: "same-origin", headers });
+  if (response.status === 401) {
+    onUnauthorized();
+  }
   if (!response.ok) {
     throw new Error(await response.text());
   }
-  return response.json();
+  return response;
 }
 (0, import_client.createRoot)(document.getElementById("app")).render(/* @__PURE__ */ (0, import_jsx_runtime.jsx)(App, {}));

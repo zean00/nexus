@@ -9,8 +9,12 @@ declare global {
 }
 
 const baseUrl = window.__NEXUS_TRUST_ADMIN_CONFIG__?.baseUrl ?? "/admin/trust";
+const tokenStorageKey = "nexus_trust_admin_token";
 
 function App() {
+  const [token, setToken] = React.useState(() => sessionStorage.getItem(tokenStorageKey) ?? "");
+  const [tokenDraft, setTokenDraft] = React.useState(token);
+  const [authError, setAuthError] = React.useState("");
   const [summary, setSummary] = React.useState<any>(null);
   const [policies, setPolicies] = React.useState<any[]>([]);
   const [users, setUsers] = React.useState<any[]>([]);
@@ -24,25 +28,44 @@ function App() {
   });
 
   const load = React.useCallback(async () => {
+    if (!token) {
+      return;
+    }
     const [s, p, u, e] = await Promise.all([
-      getJSON(`${baseUrl}/summary`),
-      getJSON(`${baseUrl}/policies`),
-      getJSON(`${baseUrl}/users`),
-      getJSON(`${baseUrl}/events`)
+      getJSON(`${baseUrl}/summary`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/policies`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/users`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/events`, token, handleUnauthorized)
     ]);
     setSummary(s.data);
     setPolicies(p.data.items ?? []);
     setUsers(u.data.items ?? []);
     setEvents(e.data.items ?? []);
-  }, []);
+    setAuthError("");
+  }, [token]);
 
   React.useEffect(() => {
     void load();
   }, [load]);
 
+  function saveToken(event: React.FormEvent) {
+    event.preventDefault();
+    const nextToken = tokenDraft.trim();
+    sessionStorage.setItem(tokenStorageKey, nextToken);
+    setToken(nextToken);
+    setAuthError("");
+  }
+
+  function handleUnauthorized() {
+    sessionStorage.removeItem(tokenStorageKey);
+    setToken("");
+    setTokenDraft("");
+    setAuthError("Token rejected. Enter a valid admin token.");
+  }
+
   async function submitPolicy(event: React.FormEvent) {
     event.preventDefault();
-    await fetch(`${baseUrl}/policies/upsert`, {
+    await apiFetch(`${baseUrl}/policies/upsert`, token, handleUnauthorized, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -64,7 +87,7 @@ function App() {
   }
 
   async function revoke(channelType: string, channelUserID: string) {
-    await fetch(`${baseUrl}/links/revoke`, {
+    await apiFetch(`${baseUrl}/links/revoke`, token, handleUnauthorized, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ channel_type: channelType, channel_user_id: channelUserID })
@@ -78,6 +101,22 @@ function App() {
         <p className="kicker">Trust Admin</p>
         <h1>Identity, approval, and step-up policy</h1>
       </section>
+      {!token ? (
+        <section className="panel auth-panel">
+          <h2>Admin token</h2>
+          <form onSubmit={saveToken} className="form">
+            <input
+              type="password"
+              placeholder="Bearer token"
+              value={tokenDraft}
+              onChange={(e) => setTokenDraft(e.target.value)}
+              autoFocus
+            />
+            <button type="submit">Use token</button>
+          </form>
+          {authError ? <p className="error">{authError}</p> : null}
+        </section>
+      ) : null}
       <section className="panel">
         <h2>Summary</h2>
         <pre>{JSON.stringify(summary, null, 2)}</pre>
@@ -122,12 +161,24 @@ function App() {
   );
 }
 
-async function getJSON(url: string) {
-  const response = await fetch(url, { credentials: "same-origin" });
+async function getJSON(url: string, token: string, onUnauthorized: () => void) {
+  const response = await apiFetch(url, token, onUnauthorized, { method: "GET" });
+  return response.json();
+}
+
+async function apiFetch(url: string, token: string, onUnauthorized: () => void, init: RequestInit) {
+  const headers = new Headers(init.headers);
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const response = await fetch(url, { ...init, credentials: "same-origin", headers });
+  if (response.status === 401) {
+    onUnauthorized();
+  }
   if (!response.ok) {
     throw new Error(await response.text());
   }
-  return response.json();
+  return response;
 }
 
 createRoot(document.getElementById("app")!).render(<App />);

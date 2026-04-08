@@ -10,8 +10,14 @@ import (
 
 type Config struct {
 	ServiceName                   string
+	Environment                   string
 	HTTPAddr                      string
 	AdminAddr                     string
+	AdminBearerToken              string
+	HTTPReadHeaderTimeout         time.Duration
+	HTTPReadTimeout               time.Duration
+	HTTPWriteTimeout              time.Duration
+	HTTPIdleTimeout               time.Duration
 	DatabaseURL                   string
 	ACPImplementation             string
 	ACPBaseURL                    string
@@ -81,8 +87,10 @@ type Config struct {
 func Load() (Config, error) {
 	cfg := Config{
 		ServiceName:                   env("SERVICE_NAME", "nexus-gateway"),
+		Environment:                   env("NEXUS_ENV", "development"),
 		HTTPAddr:                      env("HTTP_ADDR", ":8080"),
 		AdminAddr:                     env("ADMIN_ADDR", ":8081"),
+		AdminBearerToken:              strings.TrimSpace(os.Getenv("ADMIN_BEARER_TOKEN")),
 		DatabaseURL:                   env("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/nexus?sslmode=disable"),
 		ACPImplementation:             env("ACP_IMPLEMENTATION", "strict"),
 		ACPBaseURL:                    env("ACP_BASE_URL", "http://localhost:8090"),
@@ -133,6 +141,26 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("parse WORKER_POLL_SECONDS: %w", err)
 	}
 	cfg.WorkerPollInterval = time.Duration(seconds) * time.Second
+	httpReadHeaderSeconds, err := envInt("HTTP_READ_HEADER_TIMEOUT_SECONDS", 5)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse HTTP_READ_HEADER_TIMEOUT_SECONDS: %w", err)
+	}
+	cfg.HTTPReadHeaderTimeout = time.Duration(httpReadHeaderSeconds) * time.Second
+	httpReadSeconds, err := envInt("HTTP_READ_TIMEOUT_SECONDS", 30)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse HTTP_READ_TIMEOUT_SECONDS: %w", err)
+	}
+	cfg.HTTPReadTimeout = time.Duration(httpReadSeconds) * time.Second
+	httpWriteSeconds, err := envInt("HTTP_WRITE_TIMEOUT_SECONDS", 120)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse HTTP_WRITE_TIMEOUT_SECONDS: %w", err)
+	}
+	cfg.HTTPWriteTimeout = time.Duration(httpWriteSeconds) * time.Second
+	httpIdleSeconds, err := envInt("HTTP_IDLE_TIMEOUT_SECONDS", 120)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse HTTP_IDLE_TIMEOUT_SECONDS: %w", err)
+	}
+	cfg.HTTPIdleTimeout = time.Duration(httpIdleSeconds) * time.Second
 	reconcilerSeconds, err := envInt("RECONCILER_INTERVAL_SECONDS", 30)
 	if err != nil {
 		return Config{}, fmt.Errorf("parse RECONCILER_INTERVAL_SECONDS: %w", err)
@@ -216,7 +244,37 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("parse ACP_RPC_TIMEOUT_SECONDS: %w", err)
 	}
 	cfg.ACPRPCTimeout = time.Duration(rpcSeconds) * time.Second
+	if err := validateProductionConfig(cfg); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+func validateProductionConfig(cfg Config) error {
+	if !strings.EqualFold(strings.TrimSpace(cfg.Environment), "production") {
+		return nil
+	}
+	if strings.TrimSpace(cfg.AdminBearerToken) == "" {
+		return fmt.Errorf("ADMIN_BEARER_TOKEN is required when NEXUS_ENV=production")
+	}
+	defaultSecrets := map[string]string{
+		"SLACK_SIGNING_SECRET":    "dev-secret",
+		"WHATSAPP_VERIFY_TOKEN":   "dev-whatsapp-verify",
+		"EMAIL_WEBHOOK_SECRET":    "dev-email-secret",
+		"TELEGRAM_WEBHOOK_SECRET": "dev-telegram-secret",
+	}
+	values := map[string]string{
+		"SLACK_SIGNING_SECRET":    cfg.SlackSigningSecret,
+		"WHATSAPP_VERIFY_TOKEN":   cfg.WhatsAppVerifyToken,
+		"EMAIL_WEBHOOK_SECRET":    cfg.EmailWebhookSecret,
+		"TELEGRAM_WEBHOOK_SECRET": cfg.TelegramWebhookSecret,
+	}
+	for key, defaultValue := range defaultSecrets {
+		if values[key] == defaultValue {
+			return fmt.Errorf("%s must not use the development default when NEXUS_ENV=production", key)
+		}
+	}
+	return nil
 }
 
 func mustGetwd() string {

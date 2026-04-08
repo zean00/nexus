@@ -38,6 +38,15 @@ body {
   box-shadow: 0 8px 24px rgba(60, 42, 15, 0.08);
 }
 
+.auth-panel {
+  max-width: 520px;
+}
+
+.error {
+  color: #9b1c1c;
+  margin-bottom: 0;
+}
+
 .form {
   display: grid;
   gap: 12px;
@@ -71,4 +80,3 @@ pre {
   white-space: pre-wrap;
   word-break: break-word;
 }
-

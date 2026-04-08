@@ -37,12 +37,19 @@ func main() {
 	defer application.Close()
 
 	server := &http.Server{
-		Addr:    cfg.HTTPAddr,
-		Handler: application.GatewayHandler(),
+		Addr:              cfg.HTTPAddr,
+		Handler:           application.GatewayHandler(),
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
 	}
 	adminServer := &http.Server{
-		Addr:    cfg.AdminAddr,
-		Handler: application.AdminHandler(),
+		Addr:              cfg.AdminAddr,
+		Handler:           application.AdminHandler(),
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
 	}
 
 	go func() {

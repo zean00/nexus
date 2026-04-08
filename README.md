@@ -15,17 +15,17 @@ Go ACP/OpenCode gateway with:
 
 ## Entry Points
 
-- [cmd/gateway/main.go](/home/sahal/workspace/nexus/cmd/gateway/main.go)
-- [cmd/worker/main.go](/home/sahal/workspace/nexus/cmd/worker/main.go)
-- [cmd/migrator/main.go](/home/sahal/workspace/nexus/cmd/migrator/main.go)
+- [cmd/gateway/main.go](./cmd/gateway/main.go)
+- [cmd/worker/main.go](./cmd/worker/main.go)
+- [cmd/migrator/main.go](./cmd/migrator/main.go)
 
 ## Main Packages
 
-- [internal/app](/home/sahal/workspace/nexus/internal/app)
-- [internal/services](/home/sahal/workspace/nexus/internal/services)
-- [internal/adapters](/home/sahal/workspace/nexus/internal/adapters)
-- [internal/ports](/home/sahal/workspace/nexus/internal/ports)
-- [internal/domain](/home/sahal/workspace/nexus/internal/domain)
+- [internal/app](./internal/app)
+- [internal/services](./internal/services)
+- [internal/adapters](./internal/adapters)
+- [internal/ports](./internal/ports)
+- [internal/domain](./internal/domain)
 
 ## Basic Commands
 

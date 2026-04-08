@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -553,7 +555,37 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/deliveries", a.handleListDeliveries)
 	mux.HandleFunc("/admin/runs/cancel", a.handleCancelRun)
 	mux.HandleFunc("/admin/deliveries/retry", a.handleRetryDelivery)
-	return tracex.Middleware("admin", mux)
+	return tracex.Middleware("admin", a.adminAuthMiddleware(mux))
+}
+
+func (a *App) adminAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a.adminAuthExempt(r.URL.Path) || strings.TrimSpace(a.Config.AdminBearerToken) == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		const prefix = "Bearer "
+		header := r.Header.Get("Authorization")
+		if !strings.HasPrefix(header, prefix) {
+			httpx.Error(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+		if subtle.ConstantTimeCompare([]byte(token), []byte(a.Config.AdminBearerToken)) != 1 {
+			httpx.Error(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *App) adminAuthExempt(path string) bool {
+	switch path {
+	case "/healthz", "/readyz", "/admin/trust", "/admin/trust/app.js", "/admin/trust/app.css":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *App) WorkerLoop(ctx context.Context) error {

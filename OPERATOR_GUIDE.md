@@ -9,7 +9,26 @@ This guide covers the current operational HTTP surface for the gateway:
 - ACP inspection and compatibility views
 - Telegram trust and failure-management views
 
-The handlers are wired in [internal/app/app.go](/home/sahal/workspace/nexus/internal/app/app.go).
+The handlers are wired in [internal/app/app.go](./internal/app/app.go).
+
+## Production Hardening
+
+Set `NEXUS_ENV=production` for production deployments. In production, startup requires:
+
+- `ADMIN_BEARER_TOKEN`
+- `SLACK_SIGNING_SECRET` not equal to `dev-secret`
+- `WHATSAPP_VERIFY_TOKEN` not equal to `dev-whatsapp-verify`
+- `EMAIL_WEBHOOK_SECRET` not equal to `dev-email-secret`
+- `TELEGRAM_WEBHOOK_SECRET` not equal to `dev-telegram-secret`
+
+Admin data and mutation endpoints require `Authorization: Bearer <ADMIN_BEARER_TOKEN>`. `GET /healthz` and `GET /readyz` remain open for probes. The Trust Admin page and static assets remain open, then prompt for the bearer token in the browser and send it with API requests.
+
+HTTP server timeout defaults are:
+
+- `HTTP_READ_HEADER_TIMEOUT_SECONDS=5`
+- `HTTP_READ_TIMEOUT_SECONDS=30`
+- `HTTP_WRITE_TIMEOUT_SECONDS=120` for the admin server; the gateway server leaves `WriteTimeout` unset for long-lived webchat event streams
+- `HTTP_IDLE_TIMEOUT_SECONDS=120`
 
 ## Probes And Runtime
 
