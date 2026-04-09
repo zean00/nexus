@@ -141,13 +141,13 @@ func (c Client) EnsureSession(ctx context.Context, session domain.Session) (stri
 	return created.ID, nil
 }
 
-func (c Client) StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
+func (c Client) StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
 	acpSessionID := req.Session.ACPSessionID
 	if acpSessionID == "" {
 		var err error
 		acpSessionID, err = c.EnsureSession(ctx, req.Session)
 		if err != nil {
-			return domain.Run{}, nil, err
+			return domain.Run{}, domain.RunEventStream{}, err
 		}
 	}
 	body := map[string]any{
@@ -156,23 +156,23 @@ func (c Client) StartRun(ctx context.Context, req domain.StartRunRequest) (domai
 	}
 	var response openCodePromptResponse
 	if err := c.postJSON(ctx, "/session/"+url.PathEscape(acpSessionID)+"/message", nil, body, &response); err != nil {
-		return domain.Run{}, nil, err
+		return domain.Run{}, domain.RunEventStream{}, err
 	}
-	run, events, snapshot, err := c.mapPromptResponse(req.Session.ID, response)
+	run, event, snapshot, err := c.mapPromptResponse(req.Session.ID, response)
 	if err != nil {
-		return domain.Run{}, nil, err
+		return domain.Run{}, domain.RunEventStream{}, err
 	}
 	if req.IdempotencyKey != "" {
 		c.state.storeSnapshot(req.IdempotencyKey, snapshot)
 	}
-	return run, events, nil
+	return run, staticRunEventStream(event), nil
 }
 
-func (c Client) ResumeRun(ctx context.Context, await domain.Await, payload []byte) ([]domain.RunEvent, error) {
+func (c Client) ResumeRun(ctx context.Context, await domain.Await, payload []byte) (domain.RunEventStream, error) {
 	acpRunID := strings.TrimPrefix(await.RunID, "run_")
 	sessionID, _, err := splitACPRunID(acpRunID)
 	if err != nil {
-		return nil, err
+		return domain.RunEventStream{}, err
 	}
 	body := map[string]any{
 		"parts": []map[string]any{{
@@ -182,10 +182,13 @@ func (c Client) ResumeRun(ctx context.Context, await domain.Await, payload []byt
 	}
 	var response openCodePromptResponse
 	if err := c.postJSON(ctx, "/session/"+url.PathEscape(sessionID)+"/message", nil, body, &response); err != nil {
-		return nil, err
+		return domain.RunEventStream{}, err
 	}
-	_, events, _, err := c.mapPromptResponse(await.SessionID, response)
-	return events, err
+	_, event, _, err := c.mapPromptResponse(await.SessionID, response)
+	if err != nil {
+		return domain.RunEventStream{}, err
+	}
+	return staticRunEventStream(event), nil
 }
 
 func (c Client) GetRun(ctx context.Context, acpRunID string) (domain.RunStatusSnapshot, error) {
@@ -295,13 +298,13 @@ func (c Client) sessionTitle(session domain.Session) string {
 	return "gateway:" + session.ID
 }
 
-func (c Client) mapPromptResponse(sessionID string, response openCodePromptResponse) (domain.Run, []domain.RunEvent, domain.RunStatusSnapshot, error) {
+func (c Client) mapPromptResponse(sessionID string, response openCodePromptResponse) (domain.Run, domain.RunEvent, domain.RunStatusSnapshot, error) {
 	snapshot, err := c.mapSnapshot(response)
 	if err != nil {
-		return domain.Run{}, nil, domain.RunStatusSnapshot{}, err
+		return domain.Run{}, domain.RunEvent{}, domain.RunStatusSnapshot{}, err
 	}
 	if snapshot.ACPRunID == "" {
-		return domain.Run{}, nil, domain.RunStatusSnapshot{}, fmt.Errorf("start run: missing message id")
+		return domain.Run{}, domain.RunEvent{}, domain.RunStatusSnapshot{}, fmt.Errorf("start run: missing message id")
 	}
 	run := domain.Run{
 		ID:              "run_" + snapshot.ACPRunID,
@@ -313,16 +316,17 @@ func (c Client) mapPromptResponse(sessionID string, response openCodePromptRespo
 		LastEventAt:     time.Now().UTC(),
 	}
 	event := domain.RunEvent{
-		RunID:     run.ID,
-		Status:    snapshot.Status,
-		Text:      snapshot.Output,
-		Artifacts: snapshot.Artifacts,
+		RunID:      run.ID,
+		MessageKey: snapshot.ACPRunID,
+		Status:     snapshot.Status,
+		Text:       snapshot.Output,
+		Artifacts:  snapshot.Artifacts,
 	}
 	if snapshot.Await != nil {
 		event.AwaitSchema = snapshot.Await.Schema
 		event.AwaitPrompt = snapshot.Await.Prompt
 	}
-	return run, []domain.RunEvent{event}, snapshot, nil
+	return run, event, snapshot, nil
 }
 
 func (c Client) mapSnapshot(response openCodePromptResponse) (domain.RunStatusSnapshot, error) {

@@ -122,7 +122,7 @@ func TestStartRun(t *testing.T) {
 	client := New(server.URL, "secret-token")
 	client.HTTP = server.Client()
 
-	run, events, err := client.StartRun(context.Background(), domain.StartRunRequest{
+	run, stream, err := client.StartRun(context.Background(), domain.StartRunRequest{
 		Session: domain.Session{ID: "session_1", ACPSessionID: "ses_1"},
 		RouteDecision: domain.RouteDecision{
 			ACPAgentName: "build",
@@ -139,6 +139,7 @@ func TestStartRun(t *testing.T) {
 	if run.ID != "run_ses_1:msg_1" || run.ACPRunID != "ses_1:msg_1" || run.Status != "completed" {
 		t.Fatalf("unexpected run: %+v", run)
 	}
+	events := collectRunEvents(t, stream)
 	if len(events) != 1 || events[0].Status != "completed" || !strings.Contains(events[0].Text, "finished") {
 		t.Fatalf("unexpected run events: %+v", events)
 	}
@@ -189,10 +190,11 @@ func TestResumeRun(t *testing.T) {
 	client := New(server.URL, "")
 	client.HTTP = server.Client()
 
-	events, err := client.ResumeRun(context.Background(), domain.Await{ID: "await_1", RunID: "run_ses_1:msg_1", SessionID: "session_1"}, []byte(`{"choice":"yes"}`))
+	stream, err := client.ResumeRun(context.Background(), domain.Await{ID: "await_1", RunID: "run_ses_1:msg_1", SessionID: "session_1"}, []byte(`{"choice":"yes"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := collectRunEvents(t, stream)
 	if len(events) != 1 || events[0].Text != "resumed" || events[0].Status != "completed" {
 		t.Fatalf("unexpected resume events: %+v", events)
 	}

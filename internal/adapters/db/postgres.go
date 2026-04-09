@@ -601,12 +601,19 @@ func (r *PostgresRepository) StoreInboundMessage(ctx context.Context, evt domain
 	return id, err
 }
 
-func (r *PostgresRepository) StoreOutboundMessage(ctx context.Context, session domain.Session, runID string, text string, rawPayload []byte) (string, error) {
-	id := fmt.Sprintf("msg_out_%s_%d", runID, time.Now().UTC().UnixNano())
+func (r *PostgresRepository) StoreOutboundMessage(ctx context.Context, session domain.Session, runID string, messageKey string, text string, rawPayload []byte) (string, error) {
+	key := strings.TrimSpace(messageKey)
+	if key == "" {
+		key = runID
+	}
+	id := fmt.Sprintf("msg_out_%s", hashText(session.ID+"|"+runID+"|"+key))
 	_, err := r.exec(ctx, `
 		insert into messages (
 			id, tenant_id, session_id, direction, channel_type, channel_message_id, role, text_preview, raw_payload_json, created_at
 		) values ($1,$2,$3,'outbound',$4,$5,'assistant',$6,$7,now())
+		on conflict (id) do update
+		set text_preview=excluded.text_preview,
+		    raw_payload_json=excluded.raw_payload_json
 	`, id, session.TenantID, session.ID, session.ChannelType, id, text, rawPayload)
 	return id, err
 }

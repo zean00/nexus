@@ -170,13 +170,13 @@ func (c ParmesanClient) EnsureSession(ctx context.Context, session domain.Sessio
 	return created.ID, nil
 }
 
-func (c ParmesanClient) StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
+func (c ParmesanClient) StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
 	sessionID := req.Session.ACPSessionID
 	if sessionID == "" {
 		var err error
 		sessionID, err = c.EnsureSession(ctx, req.Session)
 		if err != nil {
-			return domain.Run{}, nil, err
+			return domain.Run{}, domain.RunEventStream{}, err
 		}
 	}
 	messageID := strings.TrimSpace(req.Message.MessageID)
@@ -197,10 +197,10 @@ func (c ParmesanClient) StartRun(ctx context.Context, req domain.StartRunRequest
 	}
 	var created parmesanEvent
 	if err := c.postJSON(ctx, "/v1/acp/sessions/"+url.PathEscape(sessionID)+"/messages", nil, body, &created); err != nil {
-		return domain.Run{}, nil, err
+		return domain.Run{}, domain.RunEventStream{}, err
 	}
 	if strings.TrimSpace(created.ExecutionID) == "" {
-		return domain.Run{}, nil, fmt.Errorf("start run: missing execution id")
+		return domain.Run{}, domain.RunEventStream{}, fmt.Errorf("start run: missing execution id")
 	}
 	run := domain.Run{
 		ID:              "run_" + created.ExecutionID,
@@ -213,50 +213,52 @@ func (c ParmesanClient) StartRun(ctx context.Context, req domain.StartRunRequest
 	}
 	snapshot, err := c.waitForSnapshot(ctx, sessionID, created.ExecutionID, created.Offset+1)
 	if err != nil {
-		return domain.Run{}, nil, err
+		return domain.Run{}, domain.RunEventStream{}, err
 	}
 	run.Status = snapshot.Status
-	events := []domain.RunEvent{{
-		RunID:     run.ID,
-		Status:    snapshot.Status,
-		Text:      snapshot.Output,
-		Artifacts: snapshot.Artifacts,
-	}}
-	if snapshot.Await != nil {
-		events[0].AwaitSchema = snapshot.Await.Schema
-		events[0].AwaitPrompt = snapshot.Await.Prompt
+	event := domain.RunEvent{
+		RunID:      run.ID,
+		MessageKey: run.ACPRunID,
+		Status:     snapshot.Status,
+		Text:       snapshot.Output,
+		Artifacts:  snapshot.Artifacts,
 	}
-	return run, events, nil
+	if snapshot.Await != nil {
+		event.AwaitSchema = snapshot.Await.Schema
+		event.AwaitPrompt = snapshot.Await.Prompt
+	}
+	return run, staticRunEventStream(event), nil
 }
 
-func (c ParmesanClient) ResumeRun(ctx context.Context, await domain.Await, payload []byte) ([]domain.RunEvent, error) {
+func (c ParmesanClient) ResumeRun(ctx context.Context, await domain.Await, payload []byte) (domain.RunEventStream, error) {
 	approvalID, err := approvalIDFromPrompt(await.PromptRenderJSON)
 	if err != nil {
-		return nil, err
+		return domain.RunEventStream{}, err
 	}
 	decision := approvalDecisionFromPayload(payload)
 	if decision == "" {
-		return nil, fmt.Errorf("resume run: unsupported approval payload")
+		return domain.RunEventStream{}, fmt.Errorf("resume run: unsupported approval payload")
 	}
 	if err := c.postJSON(ctx, "/v1/acp/sessions/"+url.PathEscape(await.SessionID)+"/approvals/"+url.PathEscape(approvalID), nil, map[string]any{"decision": decision}, nil); err != nil {
-		return nil, err
+		return domain.RunEventStream{}, err
 	}
 	execID := strings.TrimPrefix(await.RunID, "run_")
 	snapshot, err := c.waitForSnapshot(ctx, await.SessionID, execID, 0)
 	if err != nil {
-		return nil, err
+		return domain.RunEventStream{}, err
 	}
-	events := []domain.RunEvent{{
-		RunID:     await.RunID,
-		Status:    snapshot.Status,
-		Text:      snapshot.Output,
-		Artifacts: snapshot.Artifacts,
-	}}
+	event := domain.RunEvent{
+		RunID:      await.RunID,
+		MessageKey: "resume:" + execID,
+		Status:     snapshot.Status,
+		Text:       snapshot.Output,
+		Artifacts:  snapshot.Artifacts,
+	}
 	if snapshot.Await != nil {
-		events[0].AwaitSchema = snapshot.Await.Schema
-		events[0].AwaitPrompt = snapshot.Await.Prompt
+		event.AwaitSchema = snapshot.Await.Schema
+		event.AwaitPrompt = snapshot.Await.Prompt
 	}
-	return events, nil
+	return staticRunEventStream(event), nil
 }
 
 func (c ParmesanClient) GetRun(ctx context.Context, acpRunID string) (domain.RunStatusSnapshot, error) {

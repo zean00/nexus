@@ -16,10 +16,13 @@ type workerRepo struct {
 	queueItem           domain.QueueItem
 	session             domain.Session
 	message             domain.Message
+	await               domain.Await
 	route               domain.RouteDecision
 	delivery            domain.OutboundDelivery
 	storedOutboundID    string
 	storedOutboundText  string
+	storedOutboundTexts []string
+	storedMessageKeys   []string
 	storedArtifacts     []domain.Artifact
 	storedArtifactsDir  string
 	storedAwaits        []domain.Await
@@ -45,9 +48,11 @@ func (r *workerRepo) HasActiveRun(context.Context, string) (bool, error) { retur
 func (r *workerRepo) StoreInboundMessage(context.Context, domain.CanonicalInboundEvent, string) (string, error) {
 	return "", nil
 }
-func (r *workerRepo) StoreOutboundMessage(_ context.Context, _ domain.Session, _ string, text string, _ []byte) (string, error) {
+func (r *workerRepo) StoreOutboundMessage(_ context.Context, _ domain.Session, _ string, messageKey string, text string, _ []byte) (string, error) {
 	r.storedOutboundID = "msg_out_1"
 	r.storedOutboundText = text
+	r.storedOutboundTexts = append(r.storedOutboundTexts, text)
+	r.storedMessageKeys = append(r.storedMessageKeys, messageKey)
 	return r.storedOutboundID, nil
 }
 func (r *workerRepo) StoreArtifacts(_ context.Context, _ string, direction string, artifacts []domain.Artifact) error {
@@ -79,7 +84,7 @@ func (r *workerRepo) ResolveAwait(context.Context, string, string, string, strin
 	return domain.Await{}, nil
 }
 func (r *workerRepo) GetAwait(context.Context, string) (domain.Await, error) {
-	return domain.Await{}, nil
+	return r.await, nil
 }
 func (r *workerRepo) EnqueueAwaitResume(context.Context, domain.ResumeRequest, string) error {
 	return nil
@@ -283,22 +288,22 @@ func (workerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error)
 func (workerACP) EnsureSession(context.Context, domain.Session) (string, error) {
 	return "acp_session_1", nil
 }
-func (workerACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
+func (workerACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
 	return domain.Run{
 			ID:          "run_1",
 			SessionID:   "session_1",
 			Status:      "completed",
 			StartedAt:   time.Now(),
 			LastEventAt: time.Now(),
-		}, []domain.RunEvent{{
+		}, domain.StaticRunEventStream(domain.RunEvent{
 			RunID:     "run_1",
 			Status:    "completed",
 			Text:      "done",
 			Artifacts: []domain.Artifact{{ID: "artifact_1", Name: "report.txt", StorageURI: "file:///tmp/report.txt"}},
-		}}, nil
+		}), nil
 }
-func (workerACP) ResumeRun(context.Context, domain.Await, []byte) ([]domain.RunEvent, error) {
-	return nil, nil
+func (workerACP) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(), nil
 }
 func (workerACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
 	return domain.RunStatusSnapshot{}, nil
@@ -319,23 +324,23 @@ func (awaitingWorkerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest
 func (awaitingWorkerACP) EnsureSession(context.Context, domain.Session) (string, error) {
 	return "acp_session_1", nil
 }
-func (awaitingWorkerACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
+func (awaitingWorkerACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
 	return domain.Run{
 			ID:          "run_await_1",
 			SessionID:   "session_1",
 			Status:      "running",
 			StartedAt:   time.Now(),
 			LastEventAt: time.Now(),
-		}, []domain.RunEvent{{
+		}, domain.StaticRunEventStream(domain.RunEvent{
 			RunID:       "run_await_1",
 			Status:      "awaiting",
 			Text:        "need approval",
 			AwaitSchema: []byte(`{"type":"object"}`),
 			AwaitPrompt: []byte(`{"text":"approve?"}`),
-		}}, nil
+		}), nil
 }
-func (awaitingWorkerACP) ResumeRun(context.Context, domain.Await, []byte) ([]domain.RunEvent, error) {
-	return nil, nil
+func (awaitingWorkerACP) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(), nil
 }
 func (awaitingWorkerACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
 	return domain.RunStatusSnapshot{}, nil
@@ -358,11 +363,11 @@ func (b workerCatalogBridge) DiscoverAgents(context.Context) ([]domain.AgentMani
 func (workerCatalogBridge) EnsureSession(context.Context, domain.Session) (string, error) {
 	return "", nil
 }
-func (workerCatalogBridge) StartRun(context.Context, domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
-	return domain.Run{}, nil, nil
+func (workerCatalogBridge) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
+	return domain.Run{}, domain.StaticRunEventStream(), nil
 }
-func (workerCatalogBridge) ResumeRun(context.Context, domain.Await, []byte) ([]domain.RunEvent, error) {
-	return nil, nil
+func (workerCatalogBridge) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(), nil
 }
 func (workerCatalogBridge) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
 	return domain.RunStatusSnapshot{}, nil
@@ -374,6 +379,70 @@ func (workerCatalogBridge) FindLatestRunForSession(context.Context, domain.Sessi
 	return domain.RunStatusSnapshot{}, false, nil
 }
 func (workerCatalogBridge) CancelRun(context.Context, domain.Run) error { return nil }
+
+type streamingWorkerACP struct{}
+
+func (streamingWorkerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
+	return nil, nil
+}
+func (streamingWorkerACP) EnsureSession(context.Context, domain.Session) (string, error) {
+	return "acp_session_1", nil
+}
+func (streamingWorkerACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
+	return domain.Run{
+			ID:          "run_stream_1",
+			SessionID:   "session_1",
+			Status:      "running",
+			StartedAt:   time.Now(),
+			LastEventAt: time.Now(),
+		}, domain.StaticRunEventStream(
+			domain.RunEvent{RunID: "run_stream_1", Status: "running", Text: "hel", IsPartial: true},
+			domain.RunEvent{RunID: "run_stream_1", Status: "running", Text: "hello", IsPartial: true},
+			domain.RunEvent{RunID: "run_stream_1", Status: "completed", Text: "hello"},
+		), nil
+}
+func (streamingWorkerACP) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(), nil
+}
+func (streamingWorkerACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
+	return domain.RunStatusSnapshot{}, nil
+}
+func (streamingWorkerACP) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (streamingWorkerACP) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (streamingWorkerACP) CancelRun(context.Context, domain.Run) error { return nil }
+
+type resumeWorkerACP struct{}
+
+func (resumeWorkerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
+	return nil, nil
+}
+func (resumeWorkerACP) EnsureSession(context.Context, domain.Session) (string, error) {
+	return "acp_session_1", nil
+}
+func (resumeWorkerACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
+	return domain.Run{}, domain.StaticRunEventStream(), nil
+}
+func (resumeWorkerACP) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(domain.RunEvent{
+		RunID:  "run_await_1",
+		Status: "completed",
+		Text:   "approved",
+	}), nil
+}
+func (resumeWorkerACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
+	return domain.RunStatusSnapshot{}, nil
+}
+func (resumeWorkerACP) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (resumeWorkerACP) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (resumeWorkerACP) CancelRun(context.Context, domain.Run) error { return nil }
 
 type noopRenderer struct{}
 
@@ -488,6 +557,71 @@ func TestWorkerBlocksStructuredAwaitForOpenCodeBridge(t *testing.T) {
 	}
 	if !repo.runStatusUpdated || !repo.queueStatusUpdated {
 		t.Fatalf("expected run and queue status updates, got run=%v queue=%v", repo.runStatusUpdated, repo.queueStatusUpdated)
+	}
+}
+
+func TestWorkerStreamsSingleOutboundMessage(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
+		queueItem:    domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
+		session:      domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
+		message:      domain.Message{MessageID: "msg_1", Text: "stream please"},
+		route:        domain.RouteDecision{ACPAgentName: "default-agent"},
+	}
+	worker := WorkerService{
+		Repo:     repo,
+		ACP:      streamingWorkerACP{},
+		Renderer: WebChatRenderer{},
+		Channel:  noopChannel{},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.storedOutboundTexts) != 3 {
+		t.Fatalf("expected three outbound writes, got %+v", repo.storedOutboundTexts)
+	}
+	if repo.storedOutboundID == "" {
+		t.Fatal("expected stable outbound message id")
+	}
+	if repo.storedOutboundText != "hello" {
+		t.Fatalf("expected final outbound text to be persisted, got %q", repo.storedOutboundText)
+	}
+}
+
+func TestWorkerResumeUsesDistinctOutboundMessageKeyAndNotifies(t *testing.T) {
+	payload, err := json.Marshal(domain.ResumeRequest{
+		AwaitID: "await_run_await_1",
+		Payload: []byte(`{"choice":"approve"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{
+			ID:          "outbox_resume_1",
+			EventType:   "await.resume",
+			AggregateID: "await_run_await_1",
+			PayloadJSON: payload,
+		}},
+		session: domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
+		await:   domain.Await{ID: "await_run_await_1", RunID: "run_await_1", SessionID: "session_1"},
+	}
+	notified := []string{}
+	worker := WorkerService{
+		Repo:                repo,
+		ACP:                 resumeWorkerACP{},
+		Renderer:            WebChatRenderer{},
+		Channel:             noopChannel{},
+		NotifySessionUpdate: func(sessionID string) { notified = append(notified, sessionID) },
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.storedMessageKeys) != 1 || repo.storedMessageKeys[0] != "await_run_await_1:resume" {
+		t.Fatalf("unexpected resume message keys: %+v", repo.storedMessageKeys)
+	}
+	if len(notified) != 1 || notified[0] != "session_1" {
+		t.Fatalf("expected one resume notification for session_1, got %+v", notified)
 	}
 }
 

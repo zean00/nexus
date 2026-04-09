@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"nexus/internal/domain"
@@ -12,13 +13,14 @@ import (
 )
 
 type WorkerService struct {
-	Repo      ports.Repository
-	ACP       ports.ACPBridge
-	Catalog   *AgentCatalog
-	Renderer  ports.Renderer
-	Channel   ports.ChannelAdapter
-	Renderers map[string]ports.Renderer
-	Channels  map[string]ports.ChannelAdapter
+	Repo                ports.Repository
+	ACP                 ports.ACPBridge
+	Catalog             *AgentCatalog
+	Renderer            ports.Renderer
+	Channel             ports.ChannelAdapter
+	Renderers           map[string]ports.Renderer
+	Channels            map[string]ports.ChannelAdapter
+	NotifySessionUpdate func(sessionID string)
 }
 
 func (s WorkerService) ProcessOnce(ctx context.Context, limit int) (err error) {
@@ -143,22 +145,36 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	if err != nil {
 		return err
 	}
-	tracex.Logger(ctx).Info("worker.run_started", "queue_item_id", queued.ID, "run_id", run.ID, "acp_run_id", run.ACPRunID, "event_count", len(stream))
+	tracex.Logger(ctx).Info("worker.run_started", "queue_item_id", queued.ID, "run_id", run.ID, "acp_run_id", run.ACPRunID)
 	if err := s.Repo.CreateRun(ctx, run); err != nil {
 		return err
 	}
+	terminalStatus, err := s.consumeRunEvents(ctx, session, queued.ID, run.ID, route, currentCompat, stream)
+	if err != nil {
+		return err
+	}
+	if terminalStatus != "" {
+		tracex.Logger(ctx).Info("worker.run_terminal", "run_id", run.ID, "status", terminalStatus, "session_id", session.ID)
+		if _, err := s.Repo.EnqueueNextQueueItem(ctx, session.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Session, queueItemID, runID string, route domain.RouteDecision, currentCompat *domain.AgentCompatibility, stream domain.RunEventStream) (string, error) {
 	terminalStatus := ""
-	for _, runEvent := range stream {
+	for runEvent := range stream.Events {
 		originalStatus := runEvent.Status
 		runEvent = enforceCompatibility(runEvent, currentCompat, session.ChannelType)
 		if originalStatus == "awaiting" && runEvent.Status == "failed" && currentCompat != nil && currentCompat.ValidationMode == "opencode_bridge" {
 			_ = s.Repo.Audit(ctx, domain.AuditEvent{
-				ID:            fmt.Sprintf("audit_worker_opencode_await_block_%s_%d", run.ID, time.Now().UTC().UnixNano()),
+				ID:            fmt.Sprintf("audit_worker_opencode_await_block_%s_%d", runID, time.Now().UTC().UnixNano()),
 				TenantID:      session.TenantID,
 				SessionID:     session.ID,
-				RunID:         run.ID,
+				RunID:         runID,
 				AggregateType: "run",
-				AggregateID:   run.ID,
+				AggregateID:   runID,
 				EventType:     "worker.await_blocked_opencode_bridge",
 				PayloadJSON: mustJSON(map[string]any{
 					"agent_name":      route.ACPAgentName,
@@ -171,15 +187,15 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 			})
 		}
 		if err := s.persistRunEvent(ctx, session, runEvent); err != nil {
-			return err
+			return "", err
 		}
 		renderer := s.rendererFor(session.ChannelType)
 		if renderer == nil {
-			return fmt.Errorf("no renderer for channel %s", session.ChannelType)
+			return "", fmt.Errorf("no renderer for channel %s", session.ChannelType)
 		}
 		deliveries, err := renderer.RenderRunEvent(ctx, session, runEvent)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if runEvent.Status == "awaiting" {
 			await := domain.Await{
@@ -194,32 +210,32 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 				ExpiresAt:        time.Now().UTC().Add(24 * time.Hour),
 			}
 			if err := s.Repo.StoreAwait(ctx, await); err != nil {
-				return err
+				return "", err
 			}
 		}
 		for _, delivery := range deliveries {
 			if err := s.Repo.EnqueueDelivery(ctx, delivery); err != nil {
-				return err
+				return "", err
 			}
 		}
-		if err := s.Repo.UpdateRunStatus(ctx, run.ID, runEvent.Status); err != nil {
-			return err
+		if err := s.Repo.UpdateRunStatus(ctx, runID, runEvent.Status); err != nil {
+			return "", err
 		}
-		if err := s.Repo.UpdateQueueItemStatus(ctx, queued.ID, runEvent.Status); err != nil {
-			return err
+		if err := s.Repo.UpdateQueueItemStatus(ctx, queueItemID, runEvent.Status); err != nil {
+			return "", err
 		}
 		switch runEvent.Status {
 		case "completed", "failed", "canceled":
 			terminalStatus = runEvent.Status
 		}
-	}
-	if terminalStatus != "" {
-		tracex.Logger(ctx).Info("worker.run_terminal", "run_id", run.ID, "status", terminalStatus, "session_id", session.ID)
-		if _, err := s.Repo.EnqueueNextQueueItem(ctx, session.ID); err != nil {
-			return err
+		if s.NotifySessionUpdate != nil {
+			s.NotifySessionUpdate(session.ID)
 		}
 	}
-	return nil
+	if err, ok := <-stream.Err; ok && err != nil {
+		return "", err
+	}
+	return terminalStatus, nil
 }
 
 func marshalTrustPolicy(route domain.RouteDecision) []byte {
@@ -302,9 +318,12 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 	if err != nil {
 		return err
 	}
-	tracex.Logger(ctx).Info("worker.await_resume.loaded", "await_id", await.ID, "run_id", await.RunID, "event_count", len(runEvents))
+	tracex.Logger(ctx).Info("worker.await_resume.loaded", "await_id", await.ID, "run_id", await.RunID)
 	terminalStatus := ""
-	for _, runEvent := range runEvents {
+	for runEvent := range runEvents.Events {
+		if strings.TrimSpace(runEvent.MessageKey) == "" {
+			runEvent.MessageKey = await.ID + ":resume"
+		}
 		if err := s.persistRunEvent(ctx, session, runEvent); err != nil {
 			return err
 		}
@@ -331,6 +350,12 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 		case "completed", "failed", "canceled":
 			terminalStatus = runEvent.Status
 		}
+		if s.NotifySessionUpdate != nil {
+			s.NotifySessionUpdate(session.ID)
+		}
+	}
+	if err, ok := <-runEvents.Err; ok && err != nil {
+		return err
 	}
 	if terminalStatus != "" {
 		tracex.Logger(ctx).Info("worker.await_resume.terminal", "await_id", await.ID, "run_id", await.RunID, "status", terminalStatus)
@@ -343,15 +368,21 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 
 func (s WorkerService) persistRunEvent(ctx context.Context, session domain.Session, evt domain.RunEvent) error {
 	rawPayload, err := json.Marshal(map[string]any{
-		"run_id":    evt.RunID,
-		"status":    evt.Status,
-		"text":      evt.Text,
-		"artifacts": evt.Artifacts,
+		"run_id":      evt.RunID,
+		"message_key": evt.MessageKey,
+		"status":      evt.Status,
+		"text":        evt.Text,
+		"is_partial":  evt.IsPartial,
+		"artifacts":   evt.Artifacts,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal outbound message payload: %w", err)
 	}
-	messageID, err := s.Repo.StoreOutboundMessage(ctx, session, evt.RunID, evt.Text, rawPayload)
+	messageKey := strings.TrimSpace(evt.MessageKey)
+	if messageKey == "" {
+		messageKey = evt.RunID
+	}
+	messageID, err := s.Repo.StoreOutboundMessage(ctx, session, evt.RunID, messageKey, evt.Text, rawPayload)
 	if err != nil {
 		return err
 	}

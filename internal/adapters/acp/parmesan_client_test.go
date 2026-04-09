@@ -86,7 +86,7 @@ func TestParmesanStartRunCompletesFromACPEvents(t *testing.T) {
 	client.HTTP = server.Client()
 	client.PollEvery = 1
 
-	run, events, err := client.StartRun(context.Background(), domain.StartRunRequest{
+	run, stream, err := client.StartRun(context.Background(), domain.StartRunRequest{
 		Session:        domain.Session{ID: "session_1", ChannelType: "slack", AgentProfileID: "agent_support"},
 		RouteDecision:  domain.RouteDecision{ACPAgentName: "agent_support"},
 		Message:        domain.Message{Text: "hello there"},
@@ -101,6 +101,7 @@ func TestParmesanStartRunCompletesFromACPEvents(t *testing.T) {
 	if run.ACPRunID != "exec_1" || run.Status != "completed" {
 		t.Fatalf("unexpected run: %+v", run)
 	}
+	events := collectRunEvents(t, stream)
 	if len(events) != 1 || events[0].Status != "completed" || events[0].Text != "First reply\n\nSecond reply" {
 		t.Fatalf("unexpected events: %+v", events)
 	}
@@ -170,7 +171,7 @@ func TestParmesanResumeRunRespondsApprovalAndWaitsForCompletion(t *testing.T) {
 	client.HTTP = server.Client()
 	client.PollEvery = 1
 
-	events, err := client.ResumeRun(context.Background(), domain.Await{
+	stream, err := client.ResumeRun(context.Background(), domain.Await{
 		RunID:            "run_exec_1",
 		SessionID:        "session_1",
 		PromptRenderJSON: []byte(`{"approval_id":"appr_1","choices":[{"id":"approve","label":"Approve"},{"id":"reject","label":"Reject"}]}`),
@@ -181,6 +182,7 @@ func TestParmesanResumeRunRespondsApprovalAndWaitsForCompletion(t *testing.T) {
 	if postedDecision != "approve" {
 		t.Fatalf("decision = %q, want approve", postedDecision)
 	}
+	events := collectRunEvents(t, stream)
 	if len(events) != 1 || events[0].Status != "completed" || events[0].Text != "Approved, continuing now." {
 		t.Fatalf("unexpected resume events: %+v", events)
 	}

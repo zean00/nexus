@@ -26,11 +26,11 @@ func (b *catalogBridge) DiscoverAgents(context.Context) ([]domain.AgentManifest,
 func (b *catalogBridge) EnsureSession(context.Context, domain.Session) (string, error) {
 	return "", nil
 }
-func (b *catalogBridge) StartRun(context.Context, domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
-	return domain.Run{}, nil, nil
+func (b *catalogBridge) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
+	return domain.Run{}, domain.StaticRunEventStream(), nil
 }
-func (b *catalogBridge) ResumeRun(context.Context, domain.Await, []byte) ([]domain.RunEvent, error) {
-	return nil, nil
+func (b *catalogBridge) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(), nil
 }
 func (b *catalogBridge) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
 	return domain.RunStatusSnapshot{}, nil

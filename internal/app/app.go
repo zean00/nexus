@@ -47,6 +47,7 @@ type App struct {
 	Telegram   telegram.Adapter
 	Channels   map[string]ports.ChannelAdapter
 	Runtime    *RuntimeState
+	WebChatHub *WebChatSessionHub
 }
 
 type RuntimeState struct {
@@ -363,6 +364,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		TTL:    cfg.ACPManifestCacheTTL,
 	}
 	runtime := &RuntimeState{}
+	webchatHub := NewWebChatSessionHub()
 	if cfg.ValidateACPOnStartup {
 		compat, err := catalog.Validate(ctx, cfg.DefaultACPAgentName, true)
 		if err != nil {
@@ -400,13 +402,14 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		},
 		Catalog: catalog,
 		Worker: services.WorkerService{
-			Repo:      repo,
-			ACP:       acpClient,
-			Catalog:   catalog,
-			Renderer:  renderers["slack"],
-			Channel:   slackAdapter,
-			Renderers: renderers,
-			Channels:  channels,
+			Repo:                repo,
+			ACP:                 acpClient,
+			Catalog:             catalog,
+			Renderer:            renderers["slack"],
+			Channel:             slackAdapter,
+			Renderers:           renderers,
+			Channels:            channels,
+			NotifySessionUpdate: webchatHub.Notify,
 		},
 		Reconciler: services.Reconciler{
 			Repo: repo,
@@ -420,16 +423,17 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 			},
 			Observer: runtime,
 		},
-		ACP:      acpClient,
-		WebAuth:  repo,
-		Identity: repo,
-		Slack:    slackAdapter,
-		WhatsApp: whatsappAdapter,
-		Email:    emailAdapter,
-		WebChat:  webchatAdapter,
-		Telegram: telegramAdapter,
-		Channels: channels,
-		Runtime:  runtime,
+		ACP:        acpClient,
+		WebAuth:    repo,
+		Identity:   repo,
+		Slack:      slackAdapter,
+		WhatsApp:   whatsappAdapter,
+		Email:      emailAdapter,
+		WebChat:    webchatAdapter,
+		Telegram:   telegramAdapter,
+		Channels:   channels,
+		Runtime:    runtime,
+		WebChatHub: webchatHub,
 	}, nil
 }
 

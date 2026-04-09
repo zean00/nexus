@@ -29,7 +29,7 @@ func (r *awaitRepo) HasActiveRun(context.Context, string) (bool, error) { return
 func (r *awaitRepo) StoreInboundMessage(context.Context, domain.CanonicalInboundEvent, string) (string, error) {
 	return "", nil
 }
-func (r *awaitRepo) StoreOutboundMessage(context.Context, domain.Session, string, string, []byte) (string, error) {
+func (r *awaitRepo) StoreOutboundMessage(context.Context, domain.Session, string, string, string, []byte) (string, error) {
 	return "msg_out_1", nil
 }
 func (r *awaitRepo) StoreArtifacts(context.Context, string, string, []domain.Artifact) error {

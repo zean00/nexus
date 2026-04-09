@@ -257,6 +257,22 @@ type DeliveryResult struct {
 	ProviderRequestID string
 }
 
+type RunEventStream struct {
+	Events <-chan RunEvent
+	Err    <-chan error
+}
+
+func StaticRunEventStream(events ...RunEvent) RunEventStream {
+	eventCh := make(chan RunEvent, len(events))
+	errCh := make(chan error, 1)
+	for _, evt := range events {
+		eventCh <- evt
+	}
+	close(eventCh)
+	close(errCh)
+	return RunEventStream{Events: eventCh, Err: errCh}
+}
+
 type StartRunRequest struct {
 	TenantID       string
 	Session        Session
@@ -267,8 +283,10 @@ type StartRunRequest struct {
 
 type RunEvent struct {
 	RunID       string
+	MessageKey  string
 	Status      string
 	Text        string
+	IsPartial   bool
 	AwaitSchema []byte
 	AwaitPrompt []byte
 	Artifacts   []Artifact

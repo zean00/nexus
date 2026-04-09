@@ -56,7 +56,7 @@ func TestStrictStartRun(t *testing.T) {
 	client := NewStrictClient(server.URL, "secret")
 	client.HTTP = server.Client()
 
-	run, events, err := client.StartRun(context.Background(), domain.StartRunRequest{
+	run, stream, err := client.StartRun(context.Background(), domain.StartRunRequest{
 		Session:        domain.Session{ID: "session_1", ACPSessionID: "ses_1"},
 		RouteDecision:  domain.RouteDecision{ACPAgentName: "strict-agent"},
 		Message:        domain.Message{Text: "run please"},
@@ -71,6 +71,7 @@ func TestStrictStartRun(t *testing.T) {
 	if run.ACPRunID != "run_1" || run.Status != "completed" {
 		t.Fatalf("unexpected strict run: %+v", run)
 	}
+	events := collectRunEvents(t, stream)
 	if len(events) != 1 || events[0].Text != "done" || events[0].Status != "completed" {
 		t.Fatalf("unexpected strict events: %+v", events)
 	}
@@ -89,10 +90,11 @@ func TestStrictResumeRun(t *testing.T) {
 	client := NewStrictClient(server.URL, "")
 	client.HTTP = server.Client()
 
-	events, err := client.ResumeRun(context.Background(), domain.Await{RunID: "run_run_1", SessionID: "session_1"}, []byte(`{"choice":"yes"}`))
+	stream, err := client.ResumeRun(context.Background(), domain.Await{RunID: "run_run_1", SessionID: "session_1"}, []byte(`{"choice":"yes"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := collectRunEvents(t, stream)
 	if len(events) != 1 || events[0].Text != "resumed" {
 		t.Fatalf("unexpected strict resume events: %+v", events)
 	}

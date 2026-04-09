@@ -17,6 +17,9 @@ type EmailRenderer struct{}
 type WebChatRenderer struct{}
 
 func (r SlackRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
+	if evt.IsPartial {
+		return nil, nil
+	}
 	channelID, threadTS := splitSurfaceKey(session.ChannelScopeKey)
 	switch evt.Status {
 	case "awaiting":
@@ -172,6 +175,9 @@ func splitSurfaceKey(key string) (string, string) {
 }
 
 func (r TelegramRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
+	if evt.IsPartial {
+		return nil, nil
+	}
 	chatID, messageID := splitSurfaceKey(session.ChannelScopeKey)
 	switch evt.Status {
 	case "awaiting":
@@ -247,6 +253,9 @@ func (r TelegramRenderer) RenderRunEvent(_ context.Context, session domain.Sessi
 }
 
 func (r WhatsAppRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
+	if evt.IsPartial {
+		return nil, nil
+	}
 	recipient := session.ChannelScopeKey
 	switch evt.Status {
 	case "awaiting":
@@ -297,6 +306,9 @@ func (r WhatsAppRenderer) RenderRunEvent(_ context.Context, session domain.Sessi
 }
 
 func (r EmailRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
+	if evt.IsPartial {
+		return nil, nil
+	}
 	recipient, threadID := splitEmailSurfaceKey(session.ChannelScopeKey)
 	subject := "Nexus update"
 	switch evt.Status {
@@ -375,6 +387,9 @@ func (r EmailRenderer) RenderRunEvent(_ context.Context, session domain.Session,
 }
 
 func (r WebChatRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
+	if evt.IsPartial {
+		return nil, nil
+	}
 	switch evt.Status {
 	case "awaiting":
 		return []domain.OutboundDelivery{{

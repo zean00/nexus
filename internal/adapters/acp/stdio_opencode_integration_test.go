@@ -19,7 +19,7 @@ func TestStdioClientOpenCodeFileReadIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run, events, err := client.StartRun(ctx, domain.StartRunRequest{
+	run, stream, err := client.StartRun(ctx, domain.StartRunRequest{
 		Session:       domain.Session{ID: "session_stdio_opencode_read", ACPSessionID: sessionID},
 		RouteDecision: domain.RouteDecision{ACPAgentName: mode},
 		Message: domain.Message{
@@ -30,6 +30,7 @@ func TestStdioClientOpenCodeFileReadIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertOpenCodeRunCompleted(t, run)
+	events := collectRunEvents(t, stream)
 	if got := joinedEventText(events); !strings.Contains(got, token) {
 		t.Fatalf("expected output to contain callback token %q, got %q", token, got)
 	}
@@ -46,7 +47,7 @@ func TestStdioClientOpenCodeFileWriteIntegration(t *testing.T) {
 	token := "OPENCODE_WRITE_TOKEN_3c9d4e1f"
 	targetPath := filepath.Join(workdir, "callback_written.txt")
 
-	run, events, err := client.StartRun(ctx, domain.StartRunRequest{
+	run, stream, err := client.StartRun(ctx, domain.StartRunRequest{
 		Session:       domain.Session{ID: "session_stdio_opencode_write", ACPSessionID: sessionID},
 		RouteDecision: domain.RouteDecision{ACPAgentName: mode},
 		Message: domain.Message{
@@ -57,6 +58,7 @@ func TestStdioClientOpenCodeFileWriteIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertOpenCodeRunCompleted(t, run)
+	events := collectRunEvents(t, stream)
 	if got := joinedEventText(events); !strings.Contains(got, token) {
 		t.Fatalf("expected output to contain write token %q, got %q", token, got)
 	}
@@ -76,7 +78,7 @@ func TestStdioClientOpenCodeTerminalIntegration(t *testing.T) {
 	ctx, client, sessionID, _, mode := newOpenCodeIntegrationSession(t)
 	token := "OPENCODE_TERMINAL_TOKEN_51ad9b7c"
 
-	run, events, err := client.StartRun(ctx, domain.StartRunRequest{
+	run, stream, err := client.StartRun(ctx, domain.StartRunRequest{
 		Session:       domain.Session{ID: "session_stdio_opencode_terminal", ACPSessionID: sessionID},
 		RouteDecision: domain.RouteDecision{ACPAgentName: mode},
 		Message: domain.Message{
@@ -87,6 +89,7 @@ func TestStdioClientOpenCodeTerminalIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertOpenCodeRunCompleted(t, run)
+	events := collectRunEvents(t, stream)
 	if got := joinedEventText(events); !strings.Contains(got, token) {
 		t.Fatalf("expected output to contain terminal token %q, got %q", token, got)
 	}
@@ -100,7 +103,7 @@ func TestStdioClientOpenCodeFindRunByIdempotencyKeyAfterRestart(t *testing.T) {
 	firstToken := "OPENCODE_REPLAY_FIRST_2a0c6f1d"
 	secondToken := "OPENCODE_REPLAY_SECOND_7b4e9c3a"
 
-	firstRun, events, err := client.StartRun(ctx, domain.StartRunRequest{
+	firstRun, stream, err := client.StartRun(ctx, domain.StartRunRequest{
 		Session:        domain.Session{ID: "session_stdio_opencode_replay", ACPSessionID: sessionID},
 		RouteDecision:  domain.RouteDecision{ACPAgentName: mode},
 		IdempotencyKey: "queue_1",
@@ -112,11 +115,12 @@ func TestStdioClientOpenCodeFindRunByIdempotencyKeyAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertOpenCodeRunCompleted(t, firstRun)
+	events := collectRunEvents(t, stream)
 	if got := joinedEventText(events); !strings.Contains(got, firstToken) {
 		t.Fatalf("expected first run output to contain %q, got %q", firstToken, got)
 	}
 
-	_, events, err = client.StartRun(ctx, domain.StartRunRequest{
+	_, stream, err = client.StartRun(ctx, domain.StartRunRequest{
 		Session:        domain.Session{ID: "session_stdio_opencode_replay", ACPSessionID: sessionID},
 		RouteDecision:  domain.RouteDecision{ACPAgentName: mode},
 		IdempotencyKey: "queue_2",
@@ -127,6 +131,7 @@ func TestStdioClientOpenCodeFindRunByIdempotencyKeyAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	events = collectRunEvents(t, stream)
 	if got := joinedEventText(events); !strings.Contains(got, secondToken) {
 		t.Fatalf("expected second run output to contain %q, got %q", secondToken, got)
 	}

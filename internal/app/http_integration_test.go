@@ -47,7 +47,7 @@ func (appIntegrationACP) EnsureSession(context.Context, domain.Session) (string,
 	return "acp_session_app_integration", nil
 }
 
-func (a appIntegrationACP) StartRun(_ context.Context, req domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
+func (a appIntegrationACP) StartRun(_ context.Context, req domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
 	now := time.Now().UTC()
 	runID := a.startRun
 	if runID == "" {
@@ -72,11 +72,11 @@ func (a appIntegrationACP) StartRun(_ context.Context, req domain.StartRunReques
 		Status:      status,
 		StartedAt:   now,
 		LastEventAt: now,
-	}, events, nil
+	}, domain.StaticRunEventStream(events...), nil
 }
 
-func (a appIntegrationACP) ResumeRun(context.Context, domain.Await, []byte) ([]domain.RunEvent, error) {
-	return a.resumeEvents, nil
+func (a appIntegrationACP) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(a.resumeEvents...), nil
 }
 
 func (appIntegrationACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {

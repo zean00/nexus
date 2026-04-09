@@ -13,6 +13,7 @@ import (
 	"nexus/internal/adapters/webchat"
 	"nexus/internal/config"
 	"nexus/internal/domain"
+	"nexus/internal/ports"
 	"nexus/internal/services"
 )
 
@@ -85,6 +86,10 @@ func (s *webAuthStub) DeleteWebAuthSession(_ context.Context, sessionID string) 
 type webchatRepoStub struct {
 	appRepoStub
 	session domain.Session
+}
+
+func (r *webchatRepoStub) InTx(ctx context.Context, fn func(context.Context, ports.Repository) error) error {
+	return fn(ctx, r)
 }
 
 type identityStub struct {
@@ -650,6 +655,71 @@ func TestWebChatMessageRequiresValidCSRF(t *testing.T) {
 	}
 	if repo.receiptCount != 1 {
 		t.Fatalf("expected inbound receipt, got %d", repo.receiptCount)
+	}
+}
+
+func TestWebChatSessionHubNotifiesSubscribers(t *testing.T) {
+	hub := NewWebChatSessionHub()
+	sub := hub.Subscribe("session_1")
+	defer hub.Unsubscribe("session_1", sub)
+
+	hub.Notify("session_1")
+
+	select {
+	case <-sub:
+	case <-time.After(time.Second):
+		t.Fatal("expected hub notification")
+	}
+}
+
+func TestWebChatMessageNotifiesSessionSubscribers(t *testing.T) {
+	auth := &webAuthStub{
+		sessions: map[string]domain.WebAuthSession{
+			"websess_1": {
+				ID:            "websess_1",
+				TenantID:      "tenant_default",
+				Email:         "user@example.com",
+				CSRFTokenHash: sha256Hex("csrf-token"),
+				ExpiresAt:     time.Now().UTC().Add(time.Hour),
+			},
+		},
+	}
+	repo := &webchatRepoStub{}
+	hub := NewWebChatSessionHub()
+	session, _, err := repo.ResolveSession(context.Background(), domain.CanonicalInboundEvent{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionCh := hub.Subscribe(session.ID)
+	defer hub.Unsubscribe(session.ID, sessionCh)
+	app := &App{
+		Config: config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_profile_default", WebChatCookieName: "nexus_webchat_session"},
+		Repo:   repo,
+		Inbound: services.InboundService{
+			Repo:   repo,
+			Router: testRouter{},
+		},
+		Artifacts:  services.ArtifactService{},
+		WebAuth:    auth,
+		Identity:   &identityStub{},
+		WebChat:    webchat.New(),
+		WebChatHub: hub,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/webchat/messages", strings.NewReader("--x\r\nContent-Disposition: form-data; name=\"text\"\r\n\r\nhello\r\n--x--\r\n"))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=x")
+	req.Header.Set("X-CSRF-Token", "csrf-token")
+	req.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: "websess_1"})
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatMessage(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-sessionCh:
+	case <-time.After(time.Second):
+		t.Fatal("expected session notification after message submit")
 	}
 }
 

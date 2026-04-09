@@ -112,7 +112,7 @@ func (r *fakeRepo) HasActiveRun(context.Context, string) (bool, error) { return 
 func (r *fakeRepo) StoreInboundMessage(_ context.Context, evt domain.CanonicalInboundEvent, _ string) (string, error) {
 	return evt.Message.MessageID, nil
 }
-func (r *fakeRepo) StoreOutboundMessage(context.Context, domain.Session, string, string, []byte) (string, error) {
+func (r *fakeRepo) StoreOutboundMessage(context.Context, domain.Session, string, string, string, []byte) (string, error) {
 	return "msg_out_1", nil
 }
 func (r *fakeRepo) StoreArtifacts(context.Context, string, string, []domain.Artifact) error {

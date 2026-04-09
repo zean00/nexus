@@ -55,11 +55,11 @@ func (b testACPBridge) DiscoverAgents(context.Context) ([]domain.AgentManifest, 
 func (b testACPBridge) EnsureSession(context.Context, domain.Session) (string, error) {
 	return "", nil
 }
-func (b testACPBridge) StartRun(context.Context, domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
-	return domain.Run{}, nil, nil
+func (b testACPBridge) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
+	return domain.Run{}, domain.StaticRunEventStream(), nil
 }
-func (b testACPBridge) ResumeRun(context.Context, domain.Await, []byte) ([]domain.RunEvent, error) {
-	return nil, nil
+func (b testACPBridge) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(), nil
 }
 func (b testACPBridge) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
 	return domain.RunStatusSnapshot{}, nil
@@ -130,7 +130,7 @@ func (r *appRepoStub) HasActiveRun(context.Context, string) (bool, error) { retu
 func (r *appRepoStub) StoreInboundMessage(context.Context, domain.CanonicalInboundEvent, string) (string, error) {
 	return "", nil
 }
-func (r *appRepoStub) StoreOutboundMessage(context.Context, domain.Session, string, string, []byte) (string, error) {
+func (r *appRepoStub) StoreOutboundMessage(context.Context, domain.Session, string, string, string, []byte) (string, error) {
 	return "", nil
 }
 func (r *appRepoStub) StoreArtifacts(context.Context, string, string, []domain.Artifact) error {

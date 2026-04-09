@@ -339,28 +339,46 @@ func (a *App) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	var last string
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	session, items, err := a.loadWebChatState(r.Context(), authSession, 100)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var notifyCh chan struct{}
+	if a.WebChatHub != nil && session.ID != "" {
+		notifyCh = a.WebChatHub.Subscribe(session.ID)
+		defer a.WebChatHub.Unsubscribe(session.ID, notifyCh)
+	}
+	payload, _ := json.Marshal(map[string]any{"items": items})
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+	flusher.Flush()
+	last := string(payload)
+	fallbackTicker := time.NewTicker(2 * time.Second)
+	defer fallbackTicker.Stop()
+	keepaliveTicker := time.NewTicker(30 * time.Second)
+	defer keepaliveTicker.Stop()
 	for {
-		_, items, err := a.loadWebChatState(r.Context(), authSession, 100)
-		if err != nil {
-			return
-		}
-		payload, _ := json.Marshal(map[string]any{"items": items})
-		if string(payload) != last {
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
-			flusher.Flush()
-			last = string(payload)
-		} else {
-			_, _ = io.WriteString(w, ": keepalive\n\n")
-			flusher.Flush()
-		}
 		select {
 		case <-r.Context().Done():
 			return
-		case <-ticker.C:
+		case <-notifyCh:
+		case <-fallbackTicker.C:
+		case <-keepaliveTicker.C:
+			_, _ = io.WriteString(w, ": keepalive\n\n")
+			flusher.Flush()
+			continue
 		}
+		_, items, err = a.loadWebChatState(r.Context(), authSession, 100)
+		if err != nil {
+			return
+		}
+		payload, _ = json.Marshal(map[string]any{"items": items})
+		if string(payload) == last {
+			continue
+		}
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+		flusher.Flush()
+		last = string(payload)
 	}
 }
 
@@ -398,6 +416,9 @@ func (a *App) handleWebChatMessage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if a.WebChatHub != nil {
+		a.WebChatHub.Notify(result.SessionID)
 	}
 	httpx.Accepted(w, result, nil)
 }
@@ -475,6 +496,10 @@ func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	session, _, err := a.loadWebChatState(r.Context(), authSession, 1)
+	if err == nil && a.WebChatHub != nil {
+		a.WebChatHub.Notify(session.ID)
 	}
 	httpx.OK(w, map[string]any{"status": "accepted"}, nil)
 }

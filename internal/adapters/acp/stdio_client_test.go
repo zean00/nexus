@@ -53,7 +53,7 @@ func TestStdioClientRoundTrip(t *testing.T) {
 		t.Fatal("expected session id from stdio EnsureSession")
 	}
 
-	run, events, err := client.StartRun(ctx, domain.StartRunRequest{
+	run, stream, err := client.StartRun(ctx, domain.StartRunRequest{
 		Session:       domain.Session{ID: "session_1", ACPSessionID: sessionID},
 		RouteDecision: domain.RouteDecision{ACPAgentName: "build"},
 		Message:       domain.Message{Text: "hello stdio"},
@@ -61,10 +61,11 @@ func TestStdioClientRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.ACPRunID == "" || run.Status != "completed" {
+	if run.ACPRunID == "" || (run.Status != "running" && run.Status != "completed") {
 		t.Fatalf("unexpected stdio run: %+v", run)
 	}
-	if len(events) != 1 || !strings.Contains(events[0].Text, "hello stdio") {
+	events := collectRunEvents(t, stream)
+	if len(events) == 0 || !strings.Contains(events[len(events)-1].Text, "hello stdio") {
 		t.Fatalf("unexpected stdio events: %+v", events)
 	}
 

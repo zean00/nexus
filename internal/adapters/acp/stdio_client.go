@@ -312,85 +312,229 @@ func (c *StdioClient) EnsureSession(ctx context.Context, session domain.Session)
 	return response.SessionID, nil
 }
 
-func (c *StdioClient) StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
+func (c *StdioClient) StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
 	sessionID := req.Session.ACPSessionID
 	if sessionID == "" {
 		var err error
 		sessionID, err = c.EnsureSession(ctx, req.Session)
 		if err != nil {
-			return domain.Run{}, nil, err
+			return domain.Run{}, domain.RunEventStream{}, err
 		}
 	}
 	proc, err := c.ensureProcess(ctx)
 	if err != nil {
-		return domain.Run{}, nil, err
+		return domain.Run{}, domain.RunEventStream{}, err
 	}
 	updates := proc.subscribe(sessionID)
-	defer proc.unsubscribe(sessionID, updates)
-	var response stdioPromptResponse
-	if err := proc.call(ctx, c.cfg.RPCTimeout, "session/prompt", map[string]any{
+	eventCh := make(chan domain.RunEvent, 128)
+	errCh := make(chan error, 1)
+	runCh := make(chan domain.Run, 1)
+	startErrCh := make(chan error, 1)
+	go c.streamPrompt(ctx, proc, sessionID, updates, map[string]any{
 		"sessionId": sessionID,
 		"prompt":    buildStdioPromptParts(req.Message),
-	}, &response); err != nil {
-		return domain.Run{}, nil, err
+	}, req.Session.ID, req.IdempotencyKey, "", eventCh, errCh, runCh, startErrCh)
+
+	select {
+	case run := <-runCh:
+		return run, domain.RunEventStream{Events: eventCh, Err: errCh}, nil
+	case err := <-startErrCh:
+		return domain.Run{}, domain.RunEventStream{}, err
+	case <-ctx.Done():
+		return domain.Run{}, domain.RunEventStream{}, ctx.Err()
 	}
-	replay := collectReplay(updates)
-	runID, status, output := replay.latest(response.StopReason)
-	if runID == "" {
-		return domain.Run{}, nil, fmt.Errorf("session/prompt: missing assistant message id")
-	}
-	run := domain.Run{
-		ID:              "run_" + composeACPRunID(sessionID, runID),
-		SessionID:       req.Session.ID,
-		ACPConnectionID: "stdio",
-		ACPRunID:        composeACPRunID(sessionID, runID),
-		Status:          status,
-		StartedAt:       time.Now().UTC(),
-		LastEventAt:     time.Now().UTC(),
-	}
-	if req.IdempotencyKey != "" {
-		if err := c.storeIdempotencyRunID(req.IdempotencyKey, run.ACPRunID); err != nil {
-			return domain.Run{}, nil, err
-		}
-	}
-	return run, []domain.RunEvent{{
-		RunID:  run.ID,
-		Status: status,
-		Text:   output,
-	}}, nil
 }
 
-func (c *StdioClient) ResumeRun(ctx context.Context, await domain.Await, payload []byte) ([]domain.RunEvent, error) {
+func (c *StdioClient) ResumeRun(ctx context.Context, await domain.Await, payload []byte) (domain.RunEventStream, error) {
 	sessionID, _, err := splitACPRunID(strings.TrimPrefix(await.RunID, "run_"))
 	if err != nil {
-		return nil, err
+		return domain.RunEventStream{}, err
 	}
 	proc, err := c.ensureProcess(ctx)
 	if err != nil {
-		return nil, err
+		return domain.RunEventStream{}, err
 	}
 	updates := proc.subscribe(sessionID)
-	defer proc.unsubscribe(sessionID, updates)
-	var response stdioPromptResponse
-	if err := proc.call(ctx, c.cfg.RPCTimeout, "session/prompt", map[string]any{
+	eventCh := make(chan domain.RunEvent, 128)
+	errCh := make(chan error, 1)
+	go c.streamResume(ctx, proc, sessionID, updates, map[string]any{
 		"sessionId": sessionID,
 		"prompt": []map[string]any{{
 			"type": "text",
 			"text": resumePayloadText(payload),
 		}},
-	}, &response); err != nil {
-		return nil, err
+	}, await.RunID, eventCh, errCh)
+	return domain.RunEventStream{Events: eventCh, Err: errCh}, nil
+}
+
+func (c *StdioClient) streamPrompt(
+	ctx context.Context,
+	proc *stdioProcess,
+	sessionID string,
+	updates chan stdioSessionUpdate,
+	params map[string]any,
+	gatewaySessionID string,
+	idempotencyKey string,
+	existingRunID string,
+	eventCh chan<- domain.RunEvent,
+	errCh chan<- error,
+	runCh chan<- domain.Run,
+	startErrCh chan<- error,
+) {
+	defer close(eventCh)
+	defer close(errCh)
+	unsubscribed := false
+	unsubscribe := func() {
+		if unsubscribed {
+			return
+		}
+		proc.unsubscribe(sessionID, updates)
+		unsubscribed = true
 	}
-	replay := collectReplay(updates)
-	runID, status, output := replay.latest(response.StopReason)
-	if runID == "" {
-		return nil, fmt.Errorf("session/prompt resume: missing assistant message id")
+	defer unsubscribe()
+
+	type promptResult struct {
+		response stdioPromptResponse
+		err      error
 	}
-	return []domain.RunEvent{{
-		RunID:  "run_" + composeACPRunID(sessionID, runID),
-		Status: status,
-		Text:   output,
-	}}, nil
+	callDone := make(chan promptResult, 1)
+	go func() {
+		var response stdioPromptResponse
+		err := proc.call(ctx, c.cfg.RPCTimeout, "session/prompt", params, &response)
+		callDone <- promptResult{response: response, err: err}
+	}()
+
+	replay := stdioReplay{outputs: map[string]*strings.Builder{}}
+	var (
+		run          domain.Run
+		lastText     string
+		runPublished bool
+	)
+	publishRun := func(messageID string) error {
+		if runPublished {
+			return nil
+		}
+		composed := composeACPRunID(sessionID, messageID)
+		runID := existingRunID
+		if runID == "" {
+			runID = "run_" + composed
+		}
+		run = domain.Run{
+			ID:              runID,
+			SessionID:       gatewaySessionID,
+			ACPConnectionID: "stdio",
+			ACPRunID:        composed,
+			Status:          "running",
+			StartedAt:       time.Now().UTC(),
+			LastEventAt:     time.Now().UTC(),
+		}
+		if idempotencyKey != "" {
+			if err := c.storeIdempotencyRunID(idempotencyKey, composed); err != nil {
+				return err
+			}
+		}
+		runPublished = true
+		if runCh != nil {
+			runCh <- run
+		}
+		return nil
+	}
+	handleUpdate := func(update stdioSessionUpdate) error {
+		if update.SessionUpdate != "agent_message_chunk" || update.Content == nil {
+			return nil
+		}
+		replay.lastSeen = update.MessageID
+		if replay.outputs[update.MessageID] == nil {
+			replay.outputs[update.MessageID] = &strings.Builder{}
+		}
+		replay.outputs[update.MessageID].WriteString(update.Content.Text)
+		if err := publishRun(update.MessageID); err != nil {
+			return err
+		}
+		text := strings.TrimSpace(replay.outputs[update.MessageID].String())
+		if text != "" && text != lastText {
+			lastText = text
+			eventCh <- domain.RunEvent{
+				RunID:      run.ID,
+				MessageKey: run.ACPRunID,
+				Status:     "running",
+				Text:       text,
+				IsPartial:  true,
+			}
+		}
+		return nil
+	}
+
+	for {
+		select {
+		case update, ok := <-updates:
+			if !ok {
+				reportStdioStartError(startErrCh, errCh, runPublished, fmt.Errorf("stdio prompt stream closed early"))
+				return
+			}
+			if err := handleUpdate(update); err != nil {
+				reportStdioStartError(startErrCh, errCh, runPublished, err)
+				return
+			}
+		case result := <-callDone:
+			unsubscribe()
+			for update := range updates {
+				if err := handleUpdate(update); err != nil {
+					reportStdioStartError(startErrCh, errCh, runPublished, err)
+					return
+				}
+			}
+			if result.err != nil {
+				reportStdioStartError(startErrCh, errCh, runPublished, result.err)
+				return
+			}
+			runID, status, output := replay.latest(result.response.StopReason)
+			if !runPublished {
+				if runID == "" {
+					reportStdioStartError(startErrCh, errCh, false, fmt.Errorf("session/prompt: missing assistant message id"))
+					return
+				}
+				if err := publishRun(runID); err != nil {
+					reportStdioStartError(startErrCh, errCh, false, err)
+					return
+				}
+			}
+			if output != lastText || status != "running" {
+				eventCh <- domain.RunEvent{
+					RunID:      run.ID,
+					MessageKey: run.ACPRunID,
+					Status:     status,
+					Text:       output,
+					IsPartial:  false,
+				}
+			}
+			return
+		}
+	}
+}
+
+func (c *StdioClient) streamResume(
+	ctx context.Context,
+	proc *stdioProcess,
+	sessionID string,
+	updates chan stdioSessionUpdate,
+	params map[string]any,
+	runID string,
+	eventCh chan<- domain.RunEvent,
+	errCh chan<- error,
+) {
+	c.streamPrompt(ctx, proc, sessionID, updates, params, "", "", runID, eventCh, errCh, nil, nil)
+}
+
+func reportStdioStartError(startErrCh chan<- error, errCh chan<- error, runPublished bool, err error) {
+	if err == nil {
+		return
+	}
+	if !runPublished && startErrCh != nil {
+		startErrCh <- err
+		return
+	}
+	errCh <- err
 }
 
 func (c *StdioClient) GetRun(ctx context.Context, acpRunID string) (domain.RunStatusSnapshot, error) {

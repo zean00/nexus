@@ -109,13 +109,13 @@ func (c StrictClient) EnsureSession(ctx context.Context, session domain.Session)
 	return created.ID, nil
 }
 
-func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
+func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
 	sessionID := req.Session.ACPSessionID
 	if sessionID == "" {
 		var err error
 		sessionID, err = c.EnsureSession(ctx, req.Session)
 		if err != nil {
-			return domain.Run{}, nil, err
+			return domain.Run{}, domain.RunEventStream{}, err
 		}
 	}
 	body := map[string]any{
@@ -130,19 +130,26 @@ func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) 
 	}
 	var response strictRun
 	if err := c.postJSON(ctx, "/runs", nil, body, &response); err != nil {
-		return domain.Run{}, nil, err
+		return domain.Run{}, domain.RunEventStream{}, err
 	}
-	return c.mapRunResponse(req.Session.ID, response)
+	run, event, err := c.mapRunResponse(req.Session.ID, response)
+	if err != nil {
+		return domain.Run{}, domain.RunEventStream{}, err
+	}
+	return run, staticRunEventStream(event), nil
 }
 
-func (c StrictClient) ResumeRun(ctx context.Context, await domain.Await, payload []byte) ([]domain.RunEvent, error) {
+func (c StrictClient) ResumeRun(ctx context.Context, await domain.Await, payload []byte) (domain.RunEventStream, error) {
 	acpRunID := strings.TrimPrefix(await.RunID, "run_")
 	var response strictRun
 	if err := c.postJSON(ctx, "/runs/"+url.PathEscape(acpRunID)+"/resume", nil, map[string]any{"payload": json.RawMessage(payload)}, &response); err != nil {
-		return nil, err
+		return domain.RunEventStream{}, err
 	}
-	_, events, err := c.mapRunResponse(await.SessionID, response)
-	return events, err
+	_, event, err := c.mapRunResponse(await.SessionID, response)
+	if err != nil {
+		return domain.RunEventStream{}, err
+	}
+	return staticRunEventStream(event), nil
 }
 
 func (c StrictClient) GetRun(ctx context.Context, acpRunID string) (domain.RunStatusSnapshot, error) {
@@ -179,9 +186,9 @@ func (c StrictClient) CancelRun(ctx context.Context, run domain.Run) error {
 	return c.postJSON(ctx, "/runs/"+url.PathEscape(run.ACPRunID)+"/cancel", nil, nil, nil)
 }
 
-func (c StrictClient) mapRunResponse(sessionID string, response strictRun) (domain.Run, []domain.RunEvent, error) {
+func (c StrictClient) mapRunResponse(sessionID string, response strictRun) (domain.Run, domain.RunEvent, error) {
 	if response.ID == "" || response.SessionID == "" || response.Status == "" {
-		return domain.Run{}, nil, fmt.Errorf("run response missing required fields")
+		return domain.Run{}, domain.RunEvent{}, fmt.Errorf("run response missing required fields")
 	}
 	run := domain.Run{
 		ID:        "run_" + response.ID,
@@ -190,17 +197,18 @@ func (c StrictClient) mapRunResponse(sessionID string, response strictRun) (doma
 		Status:    response.Status,
 		StartedAt: time.Now().UTC(),
 	}
-	events := []domain.RunEvent{{
-		RunID:     run.ID,
-		Status:    response.Status,
-		Text:      response.Output,
-		Artifacts: mapStrictArtifacts(response.Artifacts),
-	}}
-	if response.Await != nil {
-		events[0].AwaitSchema = response.Await.Schema
-		events[0].AwaitPrompt = response.Await.Prompt
+	event := domain.RunEvent{
+		RunID:      run.ID,
+		MessageKey: response.ID,
+		Status:     response.Status,
+		Text:       response.Output,
+		Artifacts:  mapStrictArtifacts(response.Artifacts),
 	}
-	return run, events, nil
+	if response.Await != nil {
+		event.AwaitSchema = response.Await.Schema
+		event.AwaitPrompt = response.Await.Prompt
+	}
+	return run, event, nil
 }
 
 func (c StrictClient) mapSnapshot(response strictRun) (domain.RunStatusSnapshot, error) {

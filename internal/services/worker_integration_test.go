@@ -39,12 +39,12 @@ func (a workerIntegrationACP) EnsureSession(context.Context, domain.Session) (st
 	return "acp_session_worker", nil
 }
 
-func (a workerIntegrationACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, []domain.RunEvent, error) {
-	return a.startRun, a.startEvents, nil
+func (a workerIntegrationACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
+	return a.startRun, domain.StaticRunEventStream(a.startEvents...), nil
 }
 
-func (a workerIntegrationACP) ResumeRun(context.Context, domain.Await, []byte) ([]domain.RunEvent, error) {
-	return a.resumeEvents, nil
+func (a workerIntegrationACP) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(a.resumeEvents...), nil
 }
 
 func (a workerIntegrationACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
