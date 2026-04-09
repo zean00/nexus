@@ -32,6 +32,8 @@ func NewBridge(cfg BridgeConfig) ports.ACPBridge {
 			StartupTimeout:   cfg.StartupTimeout,
 			RPCTimeout:       cfg.RPCTimeout,
 		})
+	case "parmesan":
+		return NewParmesanClient(cfg.BaseURL, cfg.Token, cfg.RPCTimeout)
 	case "strict", "acp", "native":
 		return NewStrictClient(cfg.BaseURL, cfg.Token)
 	default:
