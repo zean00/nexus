@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -175,14 +178,19 @@ type stdioSessionUpdate struct {
 	SessionUpdate string `json:"sessionUpdate"`
 	MessageID     string `json:"messageId"`
 	Content       *struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string `json:"type"`
+		Text     string `json:"text,omitempty"`
+		Data     string `json:"data,omitempty"`
+		MIMEType string `json:"mimeType,omitempty"`
+		URI      string `json:"uri,omitempty"`
+		Name     string `json:"name,omitempty"`
 	} `json:"content,omitempty"`
 }
 
 type stdioReplay struct {
-	outputs  map[string]*strings.Builder
-	lastSeen string
+	outputs   map[string]*strings.Builder
+	artifacts map[string][]domain.Artifact
+	lastSeen  string
 }
 
 type managedTerminal struct {
@@ -406,9 +414,10 @@ func (c *StdioClient) streamPrompt(
 
 	replay := stdioReplay{outputs: map[string]*strings.Builder{}}
 	var (
-		run          domain.Run
-		lastText     string
-		runPublished bool
+		run           domain.Run
+		lastText      string
+		lastArtifacts int
+		runPublished  bool
 	)
 	publishRun := func(messageID string) error {
 		if runPublished {
@@ -444,14 +453,30 @@ func (c *StdioClient) streamPrompt(
 			return nil
 		}
 		replay.lastSeen = update.MessageID
-		if replay.outputs[update.MessageID] == nil {
-			replay.outputs[update.MessageID] = &strings.Builder{}
+		if replay.outputs == nil {
+			replay.outputs = map[string]*strings.Builder{}
 		}
-		replay.outputs[update.MessageID].WriteString(update.Content.Text)
+		if replay.artifacts == nil {
+			replay.artifacts = map[string][]domain.Artifact{}
+		}
+		artifact := stdioArtifactFromContent(update.MessageID, update.Content)
+		if artifact.ID != "" {
+			replay.storeArtifact(update.MessageID, artifact)
+		}
+		if update.Content.Type == "text" {
+			if replay.outputs[update.MessageID] == nil {
+				replay.outputs[update.MessageID] = &strings.Builder{}
+			}
+			replay.outputs[update.MessageID].WriteString(update.Content.Text)
+		}
 		if err := publishRun(update.MessageID); err != nil {
 			return err
 		}
-		text := strings.TrimSpace(replay.outputs[update.MessageID].String())
+		text := ""
+		if replay.outputs[update.MessageID] != nil {
+			text = strings.TrimSpace(replay.outputs[update.MessageID].String())
+		}
+		artifacts := replay.artifactsFor(update.MessageID)
 		if text != "" && text != lastText {
 			lastText = text
 			eventCh <- domain.RunEvent{
@@ -461,7 +486,10 @@ func (c *StdioClient) streamPrompt(
 				Text:       text,
 				IsPartial:  true,
 			}
+		} else if len(artifacts) > lastArtifacts {
+			lastArtifacts = len(artifacts)
 		}
+		lastArtifacts = len(artifacts)
 		return nil
 	}
 
@@ -488,7 +516,7 @@ func (c *StdioClient) streamPrompt(
 				reportStdioStartError(startErrCh, errCh, runPublished, result.err)
 				return
 			}
-			runID, status, output := replay.latest(result.response.StopReason)
+			runID, status, output, artifacts := replay.latest(result.response.StopReason)
 			if !runPublished {
 				if runID == "" {
 					reportStdioStartError(startErrCh, errCh, false, fmt.Errorf("session/prompt: missing assistant message id"))
@@ -499,13 +527,14 @@ func (c *StdioClient) streamPrompt(
 					return
 				}
 			}
-			if output != lastText || status != "running" {
+			if output != lastText || status != "running" || len(artifacts) != lastArtifacts {
 				eventCh <- domain.RunEvent{
 					RunID:      run.ID,
 					MessageKey: run.ACPRunID,
 					Status:     status,
 					Text:       output,
 					IsPartial:  false,
+					Artifacts:  artifacts,
 				}
 			}
 			return
@@ -549,12 +578,12 @@ func (c *StdioClient) GetRun(ctx context.Context, acpRunID string) (domain.RunSt
 	if !replay.has(messageID) {
 		return domain.RunStatusSnapshot{}, fmt.Errorf("session/load: run %s not found", acpRunID)
 	}
-	status, output := replay.snapshot(messageID, "")
+	status, output, artifacts := replay.snapshot(messageID, "")
 	return domain.RunStatusSnapshot{
 		ACPRunID:  composeACPRunID(sessionID, messageID),
 		Status:    status,
 		Output:    output,
-		Artifacts: nil,
+		Artifacts: artifacts,
 	}, nil
 }
 
@@ -590,7 +619,7 @@ func (c *StdioClient) FindLatestRunForSession(ctx context.Context, session domai
 	if err != nil {
 		return domain.RunStatusSnapshot{}, false, err
 	}
-	runID, status, output := replay.latest("")
+	runID, status, output, artifacts := replay.latest("")
 	if runID == "" {
 		return domain.RunStatusSnapshot{}, false, nil
 	}
@@ -598,7 +627,7 @@ func (c *StdioClient) FindLatestRunForSession(ctx context.Context, session domai
 		ACPRunID:  composeACPRunID(session.ACPSessionID, runID),
 		Status:    status,
 		Output:    output,
-		Artifacts: nil,
+		Artifacts: artifacts,
 	}, true, nil
 }
 
@@ -1260,7 +1289,10 @@ func (p *stdioProcess) callbackStatus() stdioCallbackCounts {
 }
 
 func collectReplay(ch <-chan stdioSessionUpdate) stdioReplay {
-	replay := stdioReplay{outputs: map[string]*strings.Builder{}}
+	replay := stdioReplay{
+		outputs:   map[string]*strings.Builder{},
+		artifacts: map[string][]domain.Artifact{},
+	}
 	for {
 		select {
 		case update, ok := <-ch:
@@ -1271,10 +1303,15 @@ func collectReplay(ch <-chan stdioSessionUpdate) stdioReplay {
 			case "agent_message_chunk":
 				replay.lastSeen = update.MessageID
 				if update.Content != nil {
-					if replay.outputs[update.MessageID] == nil {
-						replay.outputs[update.MessageID] = &strings.Builder{}
+					if artifact := stdioArtifactFromContent(update.MessageID, update.Content); artifact.ID != "" {
+						replay.storeArtifact(update.MessageID, artifact)
 					}
-					replay.outputs[update.MessageID].WriteString(update.Content.Text)
+					if update.Content.Type == "text" {
+						if replay.outputs[update.MessageID] == nil {
+							replay.outputs[update.MessageID] = &strings.Builder{}
+						}
+						replay.outputs[update.MessageID].WriteString(update.Content.Text)
+					}
 				}
 			}
 		default:
@@ -1283,23 +1320,51 @@ func collectReplay(ch <-chan stdioSessionUpdate) stdioReplay {
 	}
 }
 
-func (r stdioReplay) latest(stopReason string) (string, string, string) {
+func (r stdioReplay) latest(stopReason string) (string, string, string, []domain.Artifact) {
 	if r.lastSeen == "" {
-		return "", mapStopReason(stopReason), ""
+		return "", mapStopReason(stopReason), "", nil
 	}
-	status, output := r.snapshot(r.lastSeen, stopReason)
-	return r.lastSeen, status, output
+	status, output, artifacts := r.snapshot(r.lastSeen, stopReason)
+	return r.lastSeen, status, output, artifacts
 }
 
-func (r stdioReplay) snapshot(messageID, stopReason string) (string, string) {
-	if messageID == "" || r.outputs[messageID] == nil {
-		return mapStopReason(stopReason), ""
+func (r stdioReplay) snapshot(messageID, stopReason string) (string, string, []domain.Artifact) {
+	if messageID == "" {
+		return mapStopReason(stopReason), "", nil
 	}
-	return mapStopReason(stopReason), strings.TrimSpace(r.outputs[messageID].String())
+	output := ""
+	if r.outputs[messageID] != nil {
+		output = strings.TrimSpace(r.outputs[messageID].String())
+	}
+	return mapStopReason(stopReason), output, r.artifactsFor(messageID)
 }
 
 func (r stdioReplay) has(messageID string) bool {
-	return messageID != "" && r.outputs[messageID] != nil
+	return messageID != "" && (r.outputs[messageID] != nil || len(r.artifacts[messageID]) > 0)
+}
+
+func (r *stdioReplay) storeArtifact(messageID string, artifact domain.Artifact) {
+	if artifact.ID == "" {
+		return
+	}
+	items := r.artifacts[messageID]
+	for idx := range items {
+		if items[idx].ID == artifact.ID {
+			items[idx] = artifact
+			r.artifacts[messageID] = items
+			return
+		}
+	}
+	r.artifacts[messageID] = append(items, artifact)
+}
+
+func (r stdioReplay) artifactsFor(messageID string) []domain.Artifact {
+	if len(r.artifacts[messageID]) == 0 {
+		return nil
+	}
+	out := make([]domain.Artifact, len(r.artifacts[messageID]))
+	copy(out, r.artifacts[messageID])
+	return out
 }
 
 func mapStopReason(stopReason string) string {
@@ -1336,16 +1401,11 @@ func buildStdioPromptParts(message domain.Message) []map[string]any {
 		if artifact.StorageURI == "" && artifact.SourceURL == "" {
 			continue
 		}
-		fileURL := artifact.StorageURI
-		if fileURL == "" {
-			fileURL = artifact.SourceURL
+		contentBlock := stdioPromptContentBlock(artifact)
+		if contentBlock == nil {
+			continue
 		}
-		parts = append(parts, map[string]any{
-			"type":     "file",
-			"mime":     artifact.MIMEType,
-			"filename": artifact.Name,
-			"url":      fileURL,
-		})
+		parts = append(parts, contentBlock)
 	}
 	if len(parts) == 0 {
 		parts = append(parts, map[string]any{
@@ -1354,4 +1414,190 @@ func buildStdioPromptParts(message domain.Message) []map[string]any {
 		})
 	}
 	return parts
+}
+
+func stdioPromptContentBlock(artifact domain.Artifact) map[string]any {
+	fileURL := strings.TrimSpace(artifact.StorageURI)
+	if fileURL == "" {
+		fileURL = strings.TrimSpace(artifact.SourceURL)
+	}
+	if fileURL == "" {
+		return nil
+	}
+	mimeType := strings.TrimSpace(artifact.MIMEType)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	name := strings.TrimSpace(artifact.Name)
+	if strings.HasPrefix(fileURL, "data:") {
+		encodedMime, encodedData, ok := splitDataURL(fileURL)
+		if !ok {
+			return nil
+		}
+		if encodedMime != "" {
+			mimeType = encodedMime
+		}
+		switch {
+		case strings.HasPrefix(mimeType, "image/"):
+			return map[string]any{
+				"type":     "image",
+				"data":     encodedData,
+				"mimeType": mimeType,
+			}
+		case strings.HasPrefix(mimeType, "audio/"):
+			return map[string]any{
+				"type":     "audio",
+				"data":     encodedData,
+				"mimeType": mimeType,
+			}
+		default:
+			return map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"mimeType": mimeType,
+					"blob":     encodedData,
+					"uri":      dataResourceURI(name, mimeType),
+				},
+			}
+		}
+	}
+	block := map[string]any{
+		"type":     "resource_link",
+		"uri":      fileURL,
+		"mimeType": mimeType,
+	}
+	if name != "" {
+		block["name"] = name
+	}
+	return block
+}
+
+func splitDataURL(value string) (string, string, bool) {
+	if !strings.HasPrefix(value, "data:") {
+		return "", "", false
+	}
+	comma := strings.IndexByte(value, ',')
+	if comma < 0 {
+		return "", "", false
+	}
+	meta := strings.TrimPrefix(value[:comma], "data:")
+	payload := value[comma+1:]
+	if !strings.Contains(meta, ";base64") {
+		return "", "", false
+	}
+	mimeType := strings.TrimSuffix(meta, ";base64")
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	return mimeType, payload, true
+}
+
+func dataResourceURI(name, mimeType string) string {
+	filename := strings.TrimSpace(name)
+	if filename == "" {
+		return "data:attachment"
+	}
+	return "data:" + mimeType + ";name=" + filename
+}
+
+func stdioArtifactFromContent(messageID string, content *struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MIMEType string `json:"mimeType,omitempty"`
+	URI      string `json:"uri,omitempty"`
+	Name     string `json:"name,omitempty"`
+}) domain.Artifact {
+	if content == nil {
+		return domain.Artifact{}
+	}
+	switch content.Type {
+	case "resource_link":
+		uri := strings.TrimSpace(content.URI)
+		if uri == "" {
+			return domain.Artifact{}
+		}
+		name := strings.TrimSpace(content.Name)
+		if name == "" {
+			name = filepath.Base(strings.TrimPrefix(uri, "file://"))
+			if name == "." || name == "/" || name == "" {
+				name = "artifact"
+			}
+		}
+		return domain.Artifact{
+			ID:         "artifact_" + stdioArtifactID(messageID+"|"+uri),
+			MessageID:  messageID,
+			Name:       name,
+			MIMEType:   strings.TrimSpace(content.MIMEType),
+			StorageURI: uri,
+			SourceURL:  uri,
+		}
+	case "image", "audio":
+		data := strings.TrimSpace(content.Data)
+		if data == "" {
+			return domain.Artifact{}
+		}
+		mimeType := strings.TrimSpace(content.MIMEType)
+		if mimeType == "" {
+			if content.Type == "image" {
+				mimeType = "image/png"
+			} else {
+				mimeType = "audio/wav"
+			}
+		}
+		prefix := "data:" + mimeType + ";base64,"
+		url := prefix + data
+		decoded, err := base64.StdEncoding.DecodeString(data)
+		if err != nil {
+			decoded = nil
+		}
+		return domain.Artifact{
+			ID:         "artifact_" + stdioArtifactID(messageID+"|"+url),
+			MessageID:  messageID,
+			Name:       defaultArtifactName(content.Type, mimeType),
+			MIMEType:   mimeType,
+			SizeBytes:  int64(len(decoded)),
+			StorageURI: url,
+			SourceURL:  url,
+		}
+	default:
+		return domain.Artifact{}
+	}
+}
+
+func defaultArtifactName(kind, mimeType string) string {
+	switch {
+	case kind == "image":
+		return "image" + extensionForMIME(mimeType, ".png")
+	case kind == "audio":
+		return "audio" + extensionForMIME(mimeType, ".wav")
+	default:
+		return "artifact"
+	}
+}
+
+func extensionForMIME(mimeType, fallback string) string {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/wav", "audio/x-wav":
+		return ".wav"
+	case "audio/ogg":
+		return ".ogg"
+	default:
+		return fallback
+	}
+}
+
+func stdioArtifactID(input string) string {
+	sum := sha1.Sum([]byte(input))
+	return hex.EncodeToString(sum[:16])
 }

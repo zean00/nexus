@@ -254,6 +254,111 @@ func TestStdioClientReplayAfterProcessRestart(t *testing.T) {
 	}
 }
 
+func TestBuildStdioPromptPartsMapsArtifactsToACPContentBlocks(t *testing.T) {
+	parts := buildStdioPromptParts(domain.Message{
+		Text: "hello",
+		Artifacts: []domain.Artifact{
+			{
+				ID:         "artifact_file",
+				Name:       "report.txt",
+				MIMEType:   "text/plain",
+				StorageURI: "file:///tmp/report.txt",
+			},
+			{
+				ID:         "artifact_image",
+				Name:       "image.png",
+				MIMEType:   "image/png",
+				StorageURI: "data:image/png;base64,aGVsbG8=",
+			},
+		},
+	})
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 prompt parts, got %+v", parts)
+	}
+	if parts[1]["type"] != "resource_link" || parts[1]["uri"] != "file:///tmp/report.txt" || parts[1]["mimeType"] != "text/plain" {
+		t.Fatalf("unexpected file artifact prompt block: %+v", parts[1])
+	}
+	if parts[2]["type"] != "image" || parts[2]["mimeType"] != "image/png" || parts[2]["data"] != "aGVsbG8=" {
+		t.Fatalf("unexpected image artifact prompt block: %+v", parts[2])
+	}
+}
+
+func TestCollectReplayCapturesResourceLinkArtifacts(t *testing.T) {
+	ch := make(chan stdioSessionUpdate, 3)
+	ch <- stdioSessionUpdate{
+		SessionUpdate: "agent_message_chunk",
+		MessageID:     "msg_1",
+		Content: &struct {
+			Type     string `json:"type"`
+			Text     string `json:"text,omitempty"`
+			Data     string `json:"data,omitempty"`
+			MIMEType string `json:"mimeType,omitempty"`
+			URI      string `json:"uri,omitempty"`
+			Name     string `json:"name,omitempty"`
+		}{
+			Type: "text",
+			Text: "artifact summary",
+		},
+	}
+	ch <- stdioSessionUpdate{
+		SessionUpdate: "agent_message_chunk",
+		MessageID:     "msg_1",
+		Content: &struct {
+			Type     string `json:"type"`
+			Text     string `json:"text,omitempty"`
+			Data     string `json:"data,omitempty"`
+			MIMEType string `json:"mimeType,omitempty"`
+			URI      string `json:"uri,omitempty"`
+			Name     string `json:"name,omitempty"`
+		}{
+			Type:     "resource_link",
+			URI:      "file:///tmp/report.txt",
+			Name:     "report.txt",
+			MIMEType: "text/plain",
+		},
+	}
+	close(ch)
+
+	replay := collectReplay(ch)
+	status, output, artifacts := replay.snapshot("msg_1", "end_turn")
+	if status != "completed" || output != "artifact summary" {
+		t.Fatalf("unexpected replay snapshot status=%q output=%q", status, output)
+	}
+	if len(artifacts) != 1 || artifacts[0].StorageURI != "file:///tmp/report.txt" || artifacts[0].Name != "report.txt" {
+		t.Fatalf("unexpected replay artifacts: %+v", artifacts)
+	}
+}
+
+func TestCollectReplayCapturesInlineMediaArtifacts(t *testing.T) {
+	ch := make(chan stdioSessionUpdate, 1)
+	ch <- stdioSessionUpdate{
+		SessionUpdate: "agent_message_chunk",
+		MessageID:     "msg_2",
+		Content: &struct {
+			Type     string `json:"type"`
+			Text     string `json:"text,omitempty"`
+			Data     string `json:"data,omitempty"`
+			MIMEType string `json:"mimeType,omitempty"`
+			URI      string `json:"uri,omitempty"`
+			Name     string `json:"name,omitempty"`
+		}{
+			Type:     "image",
+			Data:     "aGVsbG8=",
+			MIMEType: "image/png",
+		},
+	}
+	close(ch)
+
+	replay := collectReplay(ch)
+	if !replay.has("msg_2") {
+		t.Fatal("expected replay to retain artifact-only message")
+	}
+	_, _, artifacts := replay.snapshot("msg_2", "end_turn")
+	if len(artifacts) != 1 || !strings.HasPrefix(artifacts[0].StorageURI, "data:image/png;base64,") {
+		t.Fatalf("unexpected inline artifact snapshot: %+v", artifacts)
+	}
+}
+
 func TestStdioClientFindRunByIdempotencyKeyAfterRestart(t *testing.T) {
 	workdir := t.TempDir()
 	client := newHelperBackedStdioClientWithWorkdir(t, workdir)
