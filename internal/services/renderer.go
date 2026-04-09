@@ -112,6 +112,16 @@ func appendArtifactSummary(text string, artifacts []domain.Artifact) string {
 	return strings.Join(lines, "\n")
 }
 
+func artifactDeliveryURL(artifact domain.Artifact) string {
+	for _, candidate := range []string{artifact.StorageURI, artifact.SourceURL} {
+		value := strings.TrimSpace(candidate)
+		if strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") {
+			return value
+		}
+	}
+	return ""
+}
+
 func renderAwaitPayload(channelID, threadTS, awaitID string, prompt []byte) ([]byte, error) {
 	var model struct {
 		Title   string                `json:"title"`
@@ -289,7 +299,7 @@ func (r WhatsAppRenderer) RenderRunEvent(_ context.Context, session domain.Sessi
 		if err != nil {
 			return nil, err
 		}
-		return []domain.OutboundDelivery{{
+		deliveries := []domain.OutboundDelivery{{
 			ID:               "delivery_" + evt.RunID + "_" + evt.Status,
 			TenantID:         session.TenantID,
 			SessionID:        session.ID,
@@ -299,7 +309,36 @@ func (r WhatsAppRenderer) RenderRunEvent(_ context.Context, session domain.Sessi
 			Status:           "queued",
 			LogicalMessageID: "logical_" + evt.RunID + "_status",
 			PayloadJSON:      payload,
-		}}, nil
+		}}
+		for idx, artifact := range evt.Artifacts {
+			link := artifactDeliveryURL(artifact)
+			if link == "" {
+				continue
+			}
+			artifactPayload, err := json.Marshal(map[string]any{
+				"kind":        "artifact_upload",
+				"to":          recipient,
+				"storage_uri": link,
+				"file_name":   artifact.Name,
+				"mime_type":   artifact.MIMEType,
+				"caption":     artifact.Name,
+			})
+			if err != nil {
+				return nil, err
+			}
+			deliveries = append(deliveries, domain.OutboundDelivery{
+				ID:               fmt.Sprintf("delivery_%s_wa_artifact_%d", evt.RunID, idx),
+				TenantID:         session.TenantID,
+				SessionID:        session.ID,
+				RunID:            evt.RunID,
+				ChannelType:      session.ChannelType,
+				DeliveryKind:     "send",
+				Status:           "queued",
+				LogicalMessageID: fmt.Sprintf("logical_%s_wa_artifact_%d", evt.RunID, idx),
+				PayloadJSON:      artifactPayload,
+			})
+		}
+		return deliveries, nil
 	default:
 		return nil, nil
 	}

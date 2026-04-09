@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"nexus/internal/domain"
 	"nexus/internal/services"
@@ -22,6 +23,10 @@ func (s noopArtifactStore) Save(_ context.Context, objectKey string, content []b
 		return "", err
 	}
 	return "file://" + target, nil
+}
+
+func (s noopArtifactStore) Read(_ context.Context, storageURI string) ([]byte, error) {
+	return os.ReadFile(strings.TrimPrefix(storageURI, "file://"))
 }
 
 func (s noopArtifactStore) SaveInbound(ctx context.Context, filename, mimeType string, content []byte) (domain.Artifact, error) {

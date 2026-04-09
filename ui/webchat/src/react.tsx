@@ -302,7 +302,14 @@ export function WebChat(props: WebChatProps) {
       </section>
       <section className="nexus-webchat-panel nexus-webchat-timeline">
         {items.length === 0 ? <div className="nexus-webchat-empty">{labels.emptyTimeline}</div> : null}
-        {items.map((item) => <TimelineItem key={item.id} item={item} onAwaitChoice={handleAwaitChoice} />)}
+        {items.map((item) => (
+          <TimelineItem
+            key={item.id}
+            item={item}
+            onAwaitChoice={handleAwaitChoice}
+            resolveArtifactURL={(artifact) => client.artifactURL(artifact.id)}
+          />
+        ))}
       </section>
       <form className="nexus-webchat-panel nexus-webchat-composer" onSubmit={handleSendMessage}>
         <textarea
@@ -326,7 +333,11 @@ export function WebChat(props: WebChatProps) {
   );
 }
 
-function TimelineItem(props: { item: WebChatItem; onAwaitChoice: (awaitId: string, choice: string) => void }) {
+function TimelineItem(props: {
+  item: WebChatItem;
+  onAwaitChoice: (awaitId: string, choice: string) => void;
+  resolveArtifactURL: (artifact: Artifact) => string;
+}) {
   const role = props.item.role ?? "assistant";
   const awaitID = props.item.await_id ?? "";
   return (
@@ -345,20 +356,111 @@ function TimelineItem(props: { item: WebChatItem; onAwaitChoice: (awaitId: strin
       ) : null}
       {props.item.artifacts && props.item.artifacts.length > 0 ? (
         <div className="nexus-webchat-artifacts">
-          {props.item.artifacts.map((artifact) => <ArtifactLine key={artifact.id} artifact={artifact} />)}
+          {props.item.artifacts.map((artifact) => (
+            <ArtifactLine
+              key={artifact.id}
+              artifact={artifact}
+              href={props.resolveArtifactURL(artifact)}
+            />
+          ))}
         </div>
       ) : null}
     </article>
   );
 }
 
-function ArtifactLine(props: { artifact: Artifact }) {
+function ArtifactLine(props: { artifact: Artifact; href: string }) {
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const mimeType = (props.artifact.mime_type ?? "").trim().toLowerCase();
+  const kind = artifactPreviewKind(mimeType);
+  const name = props.artifact.name || props.artifact.id;
+  const meta = artifactMeta(props.artifact);
+  if (!previewFailed && props.href && kind === "image") {
+    return (
+      <div className="nexus-webchat-artifact-card">
+        <img
+          alt={name}
+          className="nexus-webchat-artifact-image"
+          loading="lazy"
+          onError={() => setPreviewFailed(true)}
+          src={props.href}
+        />
+        <ArtifactFileRow artifact={props.artifact} href={props.href} meta={meta} />
+      </div>
+    );
+  }
+  if (!previewFailed && props.href && kind === "audio") {
+    return (
+      <div className="nexus-webchat-artifact-card">
+        <audio className="nexus-webchat-artifact-audio" controls onError={() => setPreviewFailed(true)} src={props.href} />
+        <ArtifactFileRow artifact={props.artifact} href={props.href} meta={meta} />
+      </div>
+    );
+  }
+  if (!previewFailed && props.href && kind === "video") {
+    return (
+      <div className="nexus-webchat-artifact-card">
+        <video className="nexus-webchat-artifact-video" controls onError={() => setPreviewFailed(true)} src={props.href} />
+        <ArtifactFileRow artifact={props.artifact} href={props.href} meta={meta} />
+      </div>
+    );
+  }
+  return <ArtifactFileRow artifact={props.artifact} href={props.href} meta={meta} />;
+}
+
+function ArtifactFileRow(props: { artifact: Artifact; href: string; meta: string }) {
+  const name = props.artifact.name || props.artifact.id;
   return (
-    <div className="nexus-webchat-artifact">
-      <span>{props.artifact.name || props.artifact.id}</span>
-      {props.artifact.mime_type ? <span>{props.artifact.mime_type}</span> : null}
+    <div className="nexus-webchat-artifact-file">
+      {props.href ? (
+        <a href={props.href} target="_blank" rel="noreferrer">
+          {name}
+        </a>
+      ) : (
+        <span>{name}</span>
+      )}
+      {props.meta ? <span>{props.meta}</span> : null}
     </div>
   );
+}
+
+function artifactPreviewKind(mimeType: string): "image" | "audio" | "video" | "file" {
+  if (mimeType.startsWith("image/")) {
+    return "image";
+  }
+  if (mimeType.startsWith("audio/")) {
+    return "audio";
+  }
+  if (mimeType.startsWith("video/")) {
+    return "video";
+  }
+  return "file";
+}
+
+function artifactMeta(artifact: Artifact): string {
+  const parts: string[] = [];
+  if (artifact.mime_type) {
+    parts.push(artifact.mime_type);
+  }
+  if (typeof artifact.size_bytes === "number" && artifact.size_bytes > 0) {
+    parts.push(formatBytes(artifact.size_bytes));
+  }
+  return parts.join(" ");
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const fixed = size >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${size.toFixed(fixed)} ${units[unitIndex]}`;
 }
 
 function buildThemeStyle(theme?: WebChatTheme): React.CSSProperties {

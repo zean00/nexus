@@ -49,3 +49,15 @@ func (s ObjectStore) Delete(_ context.Context, storageURI string) error {
 	}
 	return nil
 }
+
+func (s ObjectStore) Read(_ context.Context, storageURI string) ([]byte, error) {
+	if s.rootDir == "" {
+		return nil, fmt.Errorf("only file:// object storage is implemented")
+	}
+	target := strings.TrimSpace(storageURI)
+	if !strings.HasPrefix(target, "file://") {
+		return nil, fmt.Errorf("unsupported storage uri %q", storageURI)
+	}
+	target = strings.TrimPrefix(target, "file://")
+	return os.ReadFile(target)
+}

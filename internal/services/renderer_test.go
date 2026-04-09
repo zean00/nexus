@@ -101,3 +101,34 @@ func TestWhatsAppRendererListsFallbackChoices(t *testing.T) {
 		t.Fatalf("unexpected whatsapp fallback text: %q", text)
 	}
 }
+
+func TestWhatsAppRendererAddsArtifactUploadsForPublicURLs(t *testing.T) {
+	renderer := WhatsAppRenderer{}
+	deliveries, err := renderer.RenderRunEvent(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "whatsapp",
+		ChannelScopeKey: "15551234567",
+	}, domain.RunEvent{
+		RunID:  "run_1",
+		Status: "completed",
+		Text:   "done",
+		Artifacts: []domain.Artifact{
+			{ID: "artifact_1", Name: "report.pdf", MIMEType: "application/pdf", StorageURI: "https://cdn.example.com/report.pdf"},
+			{ID: "artifact_2", Name: "local.txt", MIMEType: "text/plain", StorageURI: "file:///tmp/local.txt"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 2 {
+		t.Fatalf("expected text plus one artifact delivery, got %+v", deliveries)
+	}
+	var artifactPayload map[string]any
+	if err := json.Unmarshal(deliveries[1].PayloadJSON, &artifactPayload); err != nil {
+		t.Fatal(err)
+	}
+	if artifactPayload["kind"] != "artifact_upload" || artifactPayload["storage_uri"] != "https://cdn.example.com/report.pdf" {
+		t.Fatalf("unexpected whatsapp artifact payload: %+v", artifactPayload)
+	}
+}

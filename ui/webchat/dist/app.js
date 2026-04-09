@@ -7396,6 +7396,9 @@ var WebChatClient = class {
     };
     return () => source.close();
   }
+  artifactURL(artifactID) {
+    return this.url(`/artifacts/${encodeURIComponent(artifactID)}`);
+  }
   csrfHeaders(override) {
     const token = override ?? this.csrfToken;
     return token ? { "X-CSRF-Token": token } : {};
@@ -7672,7 +7675,15 @@ function WebChat(props) {
     ] }) }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "nexus-webchat-panel nexus-webchat-timeline", children: [
       items.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-empty", children: labels.emptyTimeline }) : null,
-      items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TimelineItem, { item, onAwaitChoice: handleAwaitChoice }, item.id))
+      items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        TimelineItem,
+        {
+          item,
+          onAwaitChoice: handleAwaitChoice,
+          resolveArtifactURL: (artifact) => client.artifactURL(artifact.id)
+        },
+        item.id
+      ))
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", { className: "nexus-webchat-panel nexus-webchat-composer", onSubmit: handleSendMessage, children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
@@ -7702,14 +7713,93 @@ function TimelineItem(props) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", { className: `nexus-webchat-item ${role}`, children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-item-body", children: props.item.text || props.item.status || props.item.type }),
     props.item.choices && props.item.choices.length > 0 && awaitID ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-actions", children: props.item.choices.map((choice) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: () => props.onAwaitChoice(awaitID, choice.id), children: choice.label }, choice.id)) }) : null,
-    props.item.artifacts && props.item.artifacts.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-artifacts", children: props.item.artifacts.map((artifact) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArtifactLine, { artifact }, artifact.id)) }) : null
+    props.item.artifacts && props.item.artifacts.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-artifacts", children: props.item.artifacts.map((artifact) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      ArtifactLine,
+      {
+        artifact,
+        href: props.resolveArtifactURL(artifact)
+      },
+      artifact.id
+    )) }) : null
   ] });
 }
 function ArtifactLine(props) {
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-artifact", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: props.artifact.name || props.artifact.id }),
-    props.artifact.mime_type ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: props.artifact.mime_type }) : null
+  const [previewFailed, setPreviewFailed] = (0, import_react.useState)(false);
+  const mimeType = (props.artifact.mime_type ?? "").trim().toLowerCase();
+  const kind = artifactPreviewKind(mimeType);
+  const name = props.artifact.name || props.artifact.id;
+  const meta = artifactMeta(props.artifact);
+  if (!previewFailed && props.href && kind === "image") {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-artifact-card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        "img",
+        {
+          alt: name,
+          className: "nexus-webchat-artifact-image",
+          loading: "lazy",
+          onError: () => setPreviewFailed(true),
+          src: props.href
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArtifactFileRow, { artifact: props.artifact, href: props.href, meta })
+    ] });
+  }
+  if (!previewFailed && props.href && kind === "audio") {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-artifact-card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("audio", { className: "nexus-webchat-artifact-audio", controls: true, onError: () => setPreviewFailed(true), src: props.href }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArtifactFileRow, { artifact: props.artifact, href: props.href, meta })
+    ] });
+  }
+  if (!previewFailed && props.href && kind === "video") {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-artifact-card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("video", { className: "nexus-webchat-artifact-video", controls: true, onError: () => setPreviewFailed(true), src: props.href }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArtifactFileRow, { artifact: props.artifact, href: props.href, meta })
+    ] });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArtifactFileRow, { artifact: props.artifact, href: props.href, meta });
+}
+function ArtifactFileRow(props) {
+  const name = props.artifact.name || props.artifact.id;
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-artifact-file", children: [
+    props.href ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("a", { href: props.href, target: "_blank", rel: "noreferrer", children: name }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: name }),
+    props.meta ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: props.meta }) : null
   ] });
+}
+function artifactPreviewKind(mimeType) {
+  if (mimeType.startsWith("image/")) {
+    return "image";
+  }
+  if (mimeType.startsWith("audio/")) {
+    return "audio";
+  }
+  if (mimeType.startsWith("video/")) {
+    return "video";
+  }
+  return "file";
+}
+function artifactMeta(artifact) {
+  const parts = [];
+  if (artifact.mime_type) {
+    parts.push(artifact.mime_type);
+  }
+  if (typeof artifact.size_bytes === "number" && artifact.size_bytes > 0) {
+    parts.push(formatBytes(artifact.size_bytes));
+  }
+  return parts.join(" ");
+}
+function formatBytes(value) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const fixed = size >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${size.toFixed(fixed)} ${units[unitIndex]}`;
 }
 function buildThemeStyle(theme) {
   return {

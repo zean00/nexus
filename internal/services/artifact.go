@@ -13,6 +13,7 @@ import (
 
 type ArtifactStore interface {
 	Save(ctx context.Context, objectKey string, content []byte) (string, error)
+	Read(ctx context.Context, storageURI string) ([]byte, error)
 }
 
 type ArtifactService struct {

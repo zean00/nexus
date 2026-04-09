@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"nexus/internal/adapters/email"
+	"nexus/internal/adapters/storage"
 	"nexus/internal/adapters/webchat"
 	"nexus/internal/config"
 	"nexus/internal/domain"
@@ -243,6 +244,19 @@ func (r *webchatRepoStub) ResolveSession(context.Context, domain.CanonicalInboun
 	return r.session, false, nil
 }
 
+func (r *webchatRepoStub) GetArtifactForSession(_ context.Context, tenantID, sessionID, artifactID string) (domain.Artifact, error) {
+	session, _, _ := r.ResolveSession(context.Background(), domain.CanonicalInboundEvent{}, "")
+	if session.TenantID != tenantID || session.ID != sessionID {
+		return domain.Artifact{}, domain.ErrArtifactNotFound
+	}
+	for _, artifact := range r.sessionDetail.Artifacts {
+		if artifact.ID == artifactID {
+			return artifact, nil
+		}
+	}
+	return domain.Artifact{}, domain.ErrArtifactNotFound
+}
+
 func TestWebChatAuthRequestStoresChallenge(t *testing.T) {
 	auth := &webAuthStub{}
 	identity := &identityStub{}
@@ -372,6 +386,164 @@ func TestWebChatDevSessionCreatesSessionCookieAndCSRF(t *testing.T) {
 	session := auth.sessions[cookies[0].Value]
 	if session.CSRFTokenHash == "" {
 		t.Fatalf("expected csrf hash to be stored: %+v", session)
+	}
+}
+
+func TestWebChatArtifactRequiresAuth(t *testing.T) {
+	app := &App{
+		Config: config.Config{
+			DefaultTenantID:       "tenant_default",
+			DefaultAgentProfileID: "agent_profile_default",
+			WebChatCookieName:     "nexus_webchat_session",
+		},
+		WebAuth: &webAuthStub{},
+		Repo:    &webchatRepoStub{},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/webchat/artifacts/artifact_1", nil)
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatArtifact(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWebChatArtifactServesOwnedLocalArtifact(t *testing.T) {
+	root := t.TempDir()
+	storageURI, err := storage.New("file://"+root).Save(context.Background(), "artifacts/test.png", []byte("pngdata"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := &webAuthStub{
+		sessions: map[string]domain.WebAuthSession{
+			"websess_1": {
+				ID:        "websess_1",
+				TenantID:  "tenant_default",
+				Email:     "user@example.com",
+				ExpiresAt: time.Now().UTC().Add(time.Hour),
+			},
+		},
+	}
+	repo := &webchatRepoStub{
+		session: domain.Session{ID: "session_webchat_1", TenantID: "tenant_default", OwnerUserID: "user@example.com", ChannelType: "webchat", State: "open"},
+	}
+	repo.sessionDetail = domain.SessionDetail{
+		Artifacts: []domain.Artifact{{
+			ID:         "artifact_1",
+			MessageID:  "msg_1",
+			Name:       "test.png",
+			MIMEType:   "image/png",
+			StorageURI: storageURI,
+		}},
+	}
+	app := &App{
+		Config: config.Config{
+			DefaultTenantID:       "tenant_default",
+			DefaultAgentProfileID: "agent_profile_default",
+			WebChatCookieName:     "nexus_webchat_session",
+		},
+		WebAuth:   auth,
+		Repo:      repo,
+		Artifacts: services.ArtifactService{Store: storage.New("file://" + root)},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/webchat/artifacts/artifact_1", nil)
+	req.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: "websess_1"})
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatArtifact(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("expected image/png content type, got %q", got)
+	}
+	if got := rec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "inline;") {
+		t.Fatalf("expected inline disposition, got %q", got)
+	}
+	if body := rec.Body.String(); body != "pngdata" {
+		t.Fatalf("unexpected artifact body %q", body)
+	}
+}
+
+func TestWebChatArtifactRejectsMissingArtifact(t *testing.T) {
+	auth := &webAuthStub{
+		sessions: map[string]domain.WebAuthSession{
+			"websess_1": {
+				ID:        "websess_1",
+				TenantID:  "tenant_default",
+				Email:     "user@example.com",
+				ExpiresAt: time.Now().UTC().Add(time.Hour),
+			},
+		},
+	}
+	app := &App{
+		Config: config.Config{
+			DefaultTenantID:       "tenant_default",
+			DefaultAgentProfileID: "agent_profile_default",
+			WebChatCookieName:     "nexus_webchat_session",
+		},
+		WebAuth: auth,
+		Repo: &webchatRepoStub{
+			appRepoStub: appRepoStub{sessionDetail: domain.SessionDetail{}},
+			session:     domain.Session{ID: "session_webchat_1", TenantID: "tenant_default", OwnerUserID: "user@example.com", ChannelType: "webchat", State: "open"},
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/webchat/artifacts/artifact_missing", nil)
+	req.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: "websess_1"})
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatArtifact(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWebChatArtifactRedirectsRemoteURL(t *testing.T) {
+	auth := &webAuthStub{
+		sessions: map[string]domain.WebAuthSession{
+			"websess_1": {
+				ID:        "websess_1",
+				TenantID:  "tenant_default",
+				Email:     "user@example.com",
+				ExpiresAt: time.Now().UTC().Add(time.Hour),
+			},
+		},
+	}
+	repo := &webchatRepoStub{
+		session: domain.Session{ID: "session_webchat_1", TenantID: "tenant_default", OwnerUserID: "user@example.com", ChannelType: "webchat", State: "open"},
+	}
+	repo.sessionDetail = domain.SessionDetail{
+		Artifacts: []domain.Artifact{{
+			ID:        "artifact_remote",
+			MessageID: "msg_1",
+			Name:      "notes.txt",
+			MIMEType:  "text/plain",
+			SourceURL: "https://cdn.example.com/notes.txt",
+		}},
+	}
+	app := &App{
+		Config: config.Config{
+			DefaultTenantID:       "tenant_default",
+			DefaultAgentProfileID: "agent_profile_default",
+			WebChatCookieName:     "nexus_webchat_session",
+		},
+		WebAuth: auth,
+		Repo:    repo,
+	}
+	req := httptest.NewRequest(http.MethodGet, "/webchat/artifacts/artifact_remote", nil)
+	req.AddCookie(&http.Cookie{Name: "nexus_webchat_session", Value: "websess_1"})
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatArtifact(rec, req)
+
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "https://cdn.example.com/notes.txt" {
+		t.Fatalf("expected redirect to remote artifact, got %q", got)
 	}
 }
 

@@ -25,6 +25,10 @@ import (
 	webchatui "nexus/ui/webchat"
 )
 
+type webChatArtifactRepository interface {
+	GetArtifactForSession(ctx context.Context, tenantID, sessionID, artifactID string) (domain.Artifact, error)
+}
+
 var webChatPageTemplate = template.Must(template.New("webchat-page").Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -323,6 +327,49 @@ func (a *App) handleWebChatHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.OK(w, map[string]any{"items": items}, nil)
+}
+
+func (a *App) handleWebChatArtifact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authSession, err := a.currentWebChatSession(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	session, err := a.resolveWebChatSession(r.Context(), authSession)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	artifactID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/webchat/artifacts/"))
+	if artifactID == "" || strings.Contains(artifactID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	repo, ok := a.Repo.(webChatArtifactRepository)
+	if !ok {
+		httpx.Error(w, http.StatusInternalServerError, "artifact lookup unavailable")
+		return
+	}
+	artifact, err := repo.GetArtifactForSession(r.Context(), a.Config.DefaultTenantID, session.ID, artifactID)
+	if err != nil {
+		if errors.Is(err, domain.ErrArtifactNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if remoteURL := webChatRemoteArtifactURL(artifact); remoteURL != "" {
+		http.Redirect(w, r, remoteURL, http.StatusTemporaryRedirect)
+		return
+	}
+	if err := a.serveWebChatArtifact(r.Context(), w, artifact); err != nil {
+		httpx.Error(w, http.StatusBadGateway, err.Error())
+	}
 }
 
 func (a *App) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
@@ -984,6 +1031,24 @@ func (a *App) currentWebChatSession(r *http.Request) (domain.WebAuthSession, err
 	return session, nil
 }
 
+func (a *App) resolveWebChatSession(ctx context.Context, authSession domain.WebAuthSession) (domain.Session, error) {
+	session, _, err := a.Repo.ResolveSession(ctx, domain.CanonicalInboundEvent{
+		EventID:  "webchat_bootstrap_" + authSession.ID,
+		TenantID: a.Config.DefaultTenantID,
+		Channel:  "webchat",
+		Sender: domain.Sender{
+			ChannelUserID: authSession.Email,
+			DisplayName:   authSession.Email,
+		},
+		Conversation: domain.Conversation{
+			ChannelConversationID: authSession.Email,
+			ChannelThreadID:       authSession.ID,
+			ChannelSurfaceKey:     authSession.ID,
+		},
+	}, a.Config.DefaultAgentProfileID)
+	return session, err
+}
+
 func (a *App) issueWebChatCSRF(ctx context.Context, sessionID string) (string, error) {
 	if a.WebAuth == nil {
 		return "", domain.ErrWebAuthSessionNotFound
@@ -1014,20 +1079,7 @@ func (a *App) validateWebChatCSRF(r *http.Request, sessionID string) error {
 }
 
 func (a *App) loadWebChatState(ctx context.Context, authSession domain.WebAuthSession, limit int) (domain.Session, []domain.WebChatItem, error) {
-	session, _, err := a.Repo.ResolveSession(ctx, domain.CanonicalInboundEvent{
-		EventID:  "webchat_bootstrap_" + authSession.ID,
-		TenantID: a.Config.DefaultTenantID,
-		Channel:  "webchat",
-		Sender: domain.Sender{
-			ChannelUserID: authSession.Email,
-			DisplayName:   authSession.Email,
-		},
-		Conversation: domain.Conversation{
-			ChannelConversationID: authSession.Email,
-			ChannelThreadID:       authSession.ID,
-			ChannelSurfaceKey:     authSession.ID,
-		},
-	}, a.Config.DefaultAgentProfileID)
+	session, err := a.resolveWebChatSession(ctx, authSession)
 	if err != nil {
 		return domain.Session{}, nil, err
 	}
@@ -1036,6 +1088,55 @@ func (a *App) loadWebChatState(ctx context.Context, authSession domain.WebAuthSe
 		return domain.Session{}, nil, err
 	}
 	return session, buildWebChatItems(detail), nil
+}
+
+func (a *App) serveWebChatArtifact(ctx context.Context, w http.ResponseWriter, artifact domain.Artifact) error {
+	if a.Artifacts.Store == nil {
+		return fmt.Errorf("artifact store unavailable")
+	}
+	content, err := a.Artifacts.Store.Read(ctx, artifact.StorageURI)
+	if err != nil {
+		return err
+	}
+	setWebChatArtifactHeaders(w, artifact)
+	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+	_, err = w.Write(content)
+	return err
+}
+
+func setWebChatArtifactHeaders(w http.ResponseWriter, artifact domain.Artifact) {
+	contentType := strings.TrimSpace(artifact.MIMEType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	disposition := "attachment"
+	if isInlineArtifactMIME(contentType) {
+		disposition = "inline"
+	}
+	filename := strings.TrimSpace(artifact.Name)
+	if filename == "" {
+		filename = artifact.ID
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, filename))
+	w.Header().Set("Cache-Control", "private, no-store")
+}
+
+func webChatRemoteArtifactURL(artifact domain.Artifact) string {
+	for _, candidate := range []string{artifact.StorageURI, artifact.SourceURL} {
+		value := strings.TrimSpace(candidate)
+		if strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") {
+			return value
+		}
+	}
+	return ""
+}
+
+func isInlineArtifactMIME(mimeType string) bool {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	return strings.HasPrefix(mimeType, "image/") ||
+		strings.HasPrefix(mimeType, "audio/") ||
+		strings.HasPrefix(mimeType, "video/")
 }
 
 func buildWebChatItems(detail domain.SessionDetail) []domain.WebChatItem {

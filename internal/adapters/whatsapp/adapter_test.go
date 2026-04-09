@@ -188,3 +188,36 @@ func TestSendMessagePostsGraphPayload(t *testing.T) {
 		t.Fatalf("unexpected send result %+v body %+v", result, requestBody)
 	}
 }
+
+func TestSendArtifactPostsWhatsAppDocumentPayload(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w, `{"messages":[{"id":"wamid.artifact"}]}`)
+	}))
+	defer server.Close()
+
+	adapter := New("verify", "token", "", "12345", server.URL)
+	adapter.HTTP = server.Client()
+	payload, err := json.Marshal(map[string]any{
+		"kind":        "artifact_upload",
+		"to":          "15551234567",
+		"storage_uri": "https://cdn.example.com/report.pdf",
+		"file_name":   "report.pdf",
+		"mime_type":   "application/pdf",
+		"caption":     "report.pdf",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.SendMessage(context.Background(), domain.OutboundDelivery{PayloadJSON: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := requestBody["document"].(map[string]any)
+	if requestBody["type"] != "document" || document["link"] != "https://cdn.example.com/report.pdf" || result.ProviderMessageID != "wamid.artifact" {
+		t.Fatalf("unexpected artifact send result %+v body %+v", result, requestBody)
+	}
+}

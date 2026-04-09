@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"crypto/sha1"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1198,6 +1199,31 @@ func (r *PostgresRepository) GetSessionDetail(ctx context.Context, sessionID str
 		Deliveries: deliveries.Items,
 		Audit:      audit.Items,
 	}, nil
+}
+
+func (r *PostgresRepository) GetArtifactForSession(ctx context.Context, tenantID, sessionID, artifactID string) (domain.Artifact, error) {
+	row := r.queryRow(ctx, `
+		select a.id, a.message_id, a.name, a.mime_type, a.size_bytes, a.sha256, coalesce(a.storage_uri, '')
+		from artifacts a
+		join messages m on m.id = a.message_id
+		where m.tenant_id=$1 and m.session_id=$2 and a.id=$3
+	`, tenantID, sessionID, artifactID)
+	var artifact domain.Artifact
+	if err := row.Scan(
+		&artifact.ID,
+		&artifact.MessageID,
+		&artifact.Name,
+		&artifact.MIMEType,
+		&artifact.SizeBytes,
+		&artifact.SHA256,
+		&artifact.StorageURI,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.Artifact{}, domain.ErrArtifactNotFound
+		}
+		return domain.Artifact{}, err
+	}
+	return artifact, nil
 }
 
 func (r *PostgresRepository) GetDelivery(ctx context.Context, deliveryID string) (domain.OutboundDelivery, error) {

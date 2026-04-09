@@ -475,6 +475,7 @@ func (a *App) GatewayHandler() http.Handler {
 	mux.HandleFunc("/webchat/bootstrap", a.handleWebChatBootstrap)
 	mux.HandleFunc("/webchat/history", a.handleWebChatHistory)
 	mux.HandleFunc("/webchat/events", a.handleWebChatEvents)
+	mux.HandleFunc("/webchat/artifacts/", a.handleWebChatArtifact)
 	mux.HandleFunc("/webchat/messages", a.handleWebChatMessage)
 	mux.HandleFunc("/webchat/awaits/respond", a.handleWebChatAwaitRespond)
 	mux.HandleFunc("/webchat/chats/new", a.handleWebChatNewChat)

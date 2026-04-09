@@ -441,6 +441,13 @@ func (a Adapter) send(ctx context.Context, payload []byte) (domain.DeliveryResul
 	if a.AccessToken == "" || a.PhoneNumberID == "" {
 		return domain.DeliveryResult{}, nil
 	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return domain.DeliveryResult{}, err
+	}
+	if kind, _ := body["kind"].(string); kind == "artifact_upload" {
+		return a.sendArtifact(ctx, body)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.APIBaseURL+"/"+a.PhoneNumberID+"/messages", bytes.NewReader(payload))
 	if err != nil {
 		return domain.DeliveryResult{}, err
@@ -468,6 +475,56 @@ func (a Adapter) send(ctx context.Context, payload []byte) (domain.DeliveryResul
 		return domain.DeliveryResult{}, errors.New("whatsapp response missing message id")
 	}
 	return domain.DeliveryResult{ProviderMessageID: out.Messages[0].ID}, nil
+}
+
+func (a Adapter) sendArtifact(ctx context.Context, payload map[string]any) (domain.DeliveryResult, error) {
+	link, _ := payload["storage_uri"].(string)
+	to, _ := payload["to"].(string)
+	fileName, _ := payload["file_name"].(string)
+	mimeType, _ := payload["mime_type"].(string)
+	caption, _ := payload["caption"].(string)
+	if !strings.HasPrefix(link, "https://") && !strings.HasPrefix(link, "http://") {
+		return domain.DeliveryResult{}, fmt.Errorf("unsupported whatsapp artifact url: %s", link)
+	}
+	mediaType := whatsappOutboundMediaType(mimeType)
+	body := map[string]any{
+		"messaging_product": "whatsapp",
+		"to":                to,
+		"type":              mediaType,
+		mediaType:           map[string]any{"link": link},
+	}
+	media := body[mediaType].(map[string]any)
+	switch mediaType {
+	case "document":
+		if fileName != "" {
+			media["filename"] = fileName
+		}
+		if caption != "" {
+			media["caption"] = caption
+		}
+	case "image", "video":
+		if caption != "" {
+			media["caption"] = caption
+		}
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return domain.DeliveryResult{}, err
+	}
+	return a.send(ctx, raw)
+}
+
+func whatsappOutboundMediaType(mimeType string) string {
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		return "image"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "audio"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "video"
+	default:
+		return "document"
+	}
 }
 
 func (a Adapter) HydrateInboundArtifacts(ctx context.Context, evt *domain.CanonicalInboundEvent, store ports.InboundArtifactStore) error {

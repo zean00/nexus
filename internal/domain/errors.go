@@ -3,6 +3,7 @@ package domain
 import "errors"
 
 var (
+	ErrArtifactNotFound                  = errors.New("artifact not found")
 	ErrTelegramAccessRequestNotFound     = errors.New("telegram access request not found")
 	ErrTelegramAccessRequestNotPending   = errors.New("telegram access request is not pending")
 	ErrTelegramAccessRequestAlreadyFinal = errors.New("telegram access request is already final")

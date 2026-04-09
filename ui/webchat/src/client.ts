@@ -131,6 +131,10 @@ export class WebChatClient {
     return () => source.close();
   }
 
+  artifactURL(artifactID: string): string {
+    return this.url(`/artifacts/${encodeURIComponent(artifactID)}`);
+  }
+
   private csrfHeaders(override?: string): Record<string, string> {
     const token = override ?? this.csrfToken;
     return token ? { "X-CSRF-Token": token } : {};
