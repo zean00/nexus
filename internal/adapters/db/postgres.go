@@ -985,9 +985,9 @@ func (r *PostgresRepository) GetRouteDecision(ctx context.Context, queueItemID s
 }
 
 func (r *PostgresRepository) GetInboundMessage(ctx context.Context, messageID string) (domain.Message, error) {
-	row := r.queryRow(ctx, `select id, session_id, text_preview, role, direction from messages where id=$1`, messageID)
+	row := r.queryRow(ctx, `select id, session_id, text_preview, role, direction, raw_payload_json from messages where id=$1`, messageID)
 	var msg domain.Message
-	err := row.Scan(&msg.MessageID, &msg.SessionID, &msg.Text, &msg.Role, &msg.Direction)
+	err := row.Scan(&msg.MessageID, &msg.SessionID, &msg.Text, &msg.Role, &msg.Direction, &msg.RawPayload)
 	msg.MessageType = "text"
 	msg.Parts = []domain.Part{{ContentType: "text/plain", Content: msg.Text}}
 	return msg, err
@@ -1019,7 +1019,7 @@ func (r *PostgresRepository) ListMessages(ctx context.Context, query domain.Mess
 	}
 	args = append(args, limit+1)
 	rows, err := r.query(ctx, fmt.Sprintf(`
-		select id, session_id, text_preview, role, direction, created_at
+		select id, session_id, text_preview, role, direction, raw_payload_json, created_at
 		from messages
 		where %s
 		order by created_at desc, id desc
@@ -1034,7 +1034,7 @@ func (r *PostgresRepository) ListMessages(ctx context.Context, query domain.Mess
 	for rows.Next() {
 		var msg domain.Message
 		var createdAt time.Time
-		if err := rows.Scan(&msg.MessageID, &msg.SessionID, &msg.Text, &msg.Role, &msg.Direction, &createdAt); err != nil {
+		if err := rows.Scan(&msg.MessageID, &msg.SessionID, &msg.Text, &msg.Role, &msg.Direction, &msg.RawPayload, &createdAt); err != nil {
 			return domain.PagedResult[domain.Message]{}, err
 		}
 		msg.MessageType = msg.Role

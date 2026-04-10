@@ -625,11 +625,12 @@ func TestWebChatBootstrapReturnsTimelineAndCSRF(t *testing.T) {
 		Session: repo.session,
 		Messages: []domain.Message{
 			{MessageID: "msg_user", Direction: "inbound", Role: "user", Text: "hello"},
-			{MessageID: "msg_bot", Direction: "outbound", Role: "assistant", Text: "hi"},
+			{MessageID: "msg_bot", Direction: "outbound", Role: "assistant", Text: "hi", RawPayload: []byte(`{"is_partial":true}`)},
 		},
+		Runs: []domain.Run{{ID: "run_1", SessionID: "session_web", Status: "running", StartedAt: time.Now().UTC(), LastEventAt: time.Now().UTC()}},
 	}
 	app := &App{
-		Config:   config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_profile_default", WebChatCookieName: "nexus_webchat_session"},
+		Config:   config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_profile_default", WebChatCookieName: "nexus_webchat_session", WebChatInteractionVisibility: "simple"},
 		Repo:     repo,
 		WebAuth:  auth,
 		Identity: &identityStub{},
@@ -645,9 +646,11 @@ func TestWebChatBootstrapReturnsTimelineAndCSRF(t *testing.T) {
 	}
 	var payload struct {
 		Data struct {
-			Email     string               `json:"email"`
-			CSRFToken string               `json:"csrf_token"`
-			Items     []domain.WebChatItem `json:"items"`
+			Email          string                  `json:"email"`
+			CSRFToken      string                  `json:"csrf_token"`
+			Items          []domain.WebChatItem    `json:"items"`
+			Activity       *domain.WebChatActivity `json:"activity"`
+			VisibilityMode string                  `json:"visibility_mode"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
@@ -655,6 +658,15 @@ func TestWebChatBootstrapReturnsTimelineAndCSRF(t *testing.T) {
 	}
 	if payload.Data.Email != "user@example.com" || payload.Data.CSRFToken == "" || len(payload.Data.Items) != 2 {
 		t.Fatalf("unexpected bootstrap payload %+v", payload)
+	}
+	if !payload.Data.Items[0].Partial {
+		t.Fatalf("expected latest assistant item to be partial, got %+v", payload.Data.Items[0])
+	}
+	if payload.Data.Activity == nil || payload.Data.Activity.Phase != "typing" {
+		t.Fatalf("expected typing activity, got %+v", payload.Data.Activity)
+	}
+	if payload.Data.VisibilityMode != "simple" {
+		t.Fatalf("expected simple visibility mode, got %+v", payload)
 	}
 }
 
@@ -896,7 +908,7 @@ func TestWebChatMessageNotifiesSessionSubscribers(t *testing.T) {
 }
 
 func TestWebChatIndexServesReactShell(t *testing.T) {
-	app := &App{}
+	app := &App{Config: config.Config{WebChatInteractionVisibility: "minimal"}}
 	req := httptest.NewRequest(http.MethodGet, "/webchat", nil)
 	rec := httptest.NewRecorder()
 
@@ -908,6 +920,54 @@ func TestWebChatIndexServesReactShell(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "/webchat/app.js") || !strings.Contains(body, "window.__NEXUS_WEBCHAT_CONFIG__") {
 		t.Fatalf("expected webchat react shell, got %s", body)
+	}
+	if !strings.Contains(body, `"interactionVisibility":"minimal"`) {
+		t.Fatalf("expected interaction visibility in config payload, got %s", body)
+	}
+}
+
+func TestBuildWebChatItemsMarksPartialAssistantMessages(t *testing.T) {
+	items := buildWebChatItems(domain.SessionDetail{
+		Messages: []domain.Message{
+			{MessageID: "msg_partial", Direction: "outbound", Role: "assistant", Text: "hel", RawPayload: []byte(`{"is_partial":true}`)},
+		},
+	})
+	if len(items) != 1 || !items[0].Partial {
+		t.Fatalf("expected one partial item, got %+v", items)
+	}
+}
+
+func TestBuildWebChatActivitySuppressesStatusForPendingAwait(t *testing.T) {
+	repo := &webchatRepoStub{}
+	activity := buildWebChatActivity(repo, context.Background(), "tenant_default", "session_web", []domain.WebChatItem{{
+		ID:     "await_1",
+		Type:   "await",
+		Status: "pending",
+	}})
+	if activity != nil {
+		t.Fatalf("expected nil activity for pending await, got %+v", activity)
+	}
+}
+
+func TestBuildWebChatActivityDetectsWorkingRun(t *testing.T) {
+	repo := &webchatRepoStub{}
+	repo.sessionDetail = domain.SessionDetail{
+		Runs: []domain.Run{{
+			ID:          "run_1",
+			SessionID:   "session_web",
+			Status:      "running",
+			StartedAt:   time.Now().UTC().Add(-time.Second),
+			LastEventAt: time.Now().UTC(),
+		}},
+	}
+	activity := buildWebChatActivity(repo, context.Background(), "tenant_default", "session_web", []domain.WebChatItem{{
+		ID:   "msg_1",
+		Type: "message",
+		Role: "assistant",
+		Text: "done soon",
+	}})
+	if activity == nil || activity.Phase != "working" {
+		t.Fatalf("expected working activity, got %+v", activity)
 	}
 }
 

@@ -314,7 +314,14 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 	if err != nil {
 		return err
 	}
-	runEvents, err := s.ACP.ResumeRun(ctx, await, req.Payload)
+	var runEvents domain.RunEventStream
+	if scoped, ok := s.ACP.(interface {
+		ResumeRunForSession(context.Context, domain.Session, domain.Await, []byte) (domain.RunEventStream, error)
+	}); ok {
+		runEvents, err = scoped.ResumeRunForSession(ctx, session, await, req.Payload)
+	} else {
+		runEvents, err = s.ACP.ResumeRun(ctx, await, req.Payload)
+	}
 	if err != nil {
 		return err
 	}

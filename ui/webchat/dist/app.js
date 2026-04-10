@@ -7290,6 +7290,7 @@ var WebChatClient = class {
   constructor(config2 = {}) {
     this.csrfToken = "";
     this.baseUrl = normalizeBaseUrl(config2.baseUrl ?? "");
+    this.interactionVisibility = config2.interactionVisibility;
   }
   async requestAuth(email) {
     await this.requestJSON("/auth/request", {
@@ -7465,14 +7466,20 @@ var defaultFeatures = {
 function WebChat(props) {
   const providedClient = (0, import_react.useContext)(clientContext);
   const client = (0, import_react.useMemo)(
-    () => props.client ?? providedClient ?? createWebChatClient({ baseUrl: props.baseUrl }),
-    [props.baseUrl, props.client, providedClient]
+    () => props.client ?? providedClient ?? createWebChatClient({ baseUrl: props.baseUrl, interactionVisibility: props.interactionVisibility }),
+    [props.baseUrl, props.client, props.interactionVisibility, providedClient]
   );
   const labels = { ...defaultLabels, ...props.labels };
   const features = { ...defaultFeatures, ...props.features };
   const [authenticated, setAuthenticated] = (0, import_react.useState)(false);
   const [email, setEmail] = (0, import_react.useState)("");
   const [items, setItems] = (0, import_react.useState)([]);
+  const [serverVisibilityMode, setServerVisibilityMode] = (0, import_react.useState)(
+    normalizeVisibilityMode(client.interactionVisibility ?? props.interactionVisibility ?? "full")
+  );
+  const [activity, setActivity] = (0, import_react.useState)(void 0);
+  const [optimisticActivity, setOptimisticActivity] = (0, import_react.useState)(void 0);
+  const [activityLabel, setActivityLabel] = (0, import_react.useState)("");
   const [requestEmail, setRequestEmail] = (0, import_react.useState)("");
   const [verifyEmail, setVerifyEmail] = (0, import_react.useState)("");
   const [verifyCode, setVerifyCode] = (0, import_react.useState)("");
@@ -7490,10 +7497,7 @@ function WebChat(props) {
         return;
       }
       setAuthenticated(true);
-      setEmail(data.email);
-      setItems(data.items ?? []);
-      setPhone(data.primary_phone ?? "");
-      setPhoneVerified(Boolean(data.primary_phone_verified));
+      applyBootstrapData(data);
       props.onAuthChange?.(true);
     }).catch((error) => {
       if (ignore) {
@@ -7515,9 +7519,28 @@ function WebChat(props) {
       return;
     }
     return client.subscribe((payload) => {
-      setItems(payload.items ?? []);
+      applyTimelinePayload(payload);
     });
   }, [authenticated, client, features.sse]);
+  const effectiveVisibilityMode = capVisibilityMode(
+    serverVisibilityMode,
+    props.interactionVisibility ?? client.interactionVisibility
+  );
+  const effectiveActivity = activity ?? optimisticActivity;
+  const visibleItems = (0, import_react.useMemo)(
+    () => filterVisibleItems(items, effectiveVisibilityMode, effectiveActivity),
+    [effectiveActivity, effectiveVisibilityMode, items]
+  );
+  (0, import_react.useEffect)(() => {
+    if (effectiveVisibilityMode === "full" || effectiveVisibilityMode === "off" || !effectiveActivity) {
+      setActivityLabel("");
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setActivityLabel(activityLabelForMode(effectiveVisibilityMode, effectiveActivity));
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [effectiveActivity, effectiveVisibilityMode]);
   const themeStyle = buildThemeStyle(props.theme);
   const rootClassName = props.className ? `nexus-webchat-shell ${props.className}` : "nexus-webchat-shell";
   async function handleRequestAuth(event) {
@@ -7536,10 +7559,7 @@ function WebChat(props) {
       await client.verifyOTP(verifyEmail, verifyCode);
       const data = await client.bootstrap();
       setAuthenticated(true);
-      setEmail(data.email);
-      setItems(data.items ?? []);
-      setPhone(data.primary_phone ?? "");
-      setPhoneVerified(Boolean(data.primary_phone_verified));
+      applyBootstrapData(data);
       setStatus("");
       setVerifyCode("");
       props.onAuthChange?.(true);
@@ -7551,21 +7571,25 @@ function WebChat(props) {
   async function handleSendMessage(event) {
     event.preventDefault();
     try {
+      setOptimisticActivity({ phase: "thinking", updated_at: (/* @__PURE__ */ new Date()).toISOString() });
       await client.sendMessage({ text: messageText.trim(), files });
       setMessageText("");
       setFiles([]);
       setSendStatus(labels.sendSuccess);
       props.onMessageSent?.();
     } catch (error) {
+      setOptimisticActivity(void 0);
       props.onError?.(asError(error));
       setSendStatus(labels.sendFailed);
     }
   }
   async function handleAwaitChoice(awaitId, choice) {
     try {
+      setOptimisticActivity({ phase: "thinking", updated_at: (/* @__PURE__ */ new Date()).toISOString() });
       await client.respondToAwait({ awaitId, reply: choice });
       props.onAwaitResolved?.(awaitId, choice);
     } catch (error) {
+      setOptimisticActivity(void 0);
       props.onError?.(asError(error));
       setSendStatus(labels.sendFailed);
     }
@@ -7574,7 +7598,7 @@ function WebChat(props) {
     try {
       await client.newChat();
       const history = await client.getHistory();
-      setItems(history.items ?? []);
+      applyTimelinePayload(history);
     } catch (error) {
       props.onError?.(asError(error));
     }
@@ -7611,6 +7635,8 @@ function WebChat(props) {
     } finally {
       setAuthenticated(false);
       setItems([]);
+      setActivity(void 0);
+      setOptimisticActivity(void 0);
       setEmail("");
       props.onAuthChange?.(false);
     }
@@ -7674,8 +7700,8 @@ function WebChat(props) {
       identityProfile?.link_hints ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { className: "nexus-webchat-hints", children: JSON.stringify(identityProfile.link_hints, null, 2) }) : null
     ] }) }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "nexus-webchat-panel nexus-webchat-timeline", children: [
-      items.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-empty", children: labels.emptyTimeline }) : null,
-      items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      visibleItems.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-empty", children: labels.emptyTimeline }) : null,
+      visibleItems.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
         TimelineItem,
         {
           item,
@@ -7683,7 +7709,8 @@ function WebChat(props) {
           resolveArtifactURL: (artifact) => client.artifactURL(artifact.id)
         },
         item.id
-      ))
+      )),
+      activityLabel ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-activity", children: activityLabel }) : null
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", { className: "nexus-webchat-panel nexus-webchat-composer", onSubmit: handleSendMessage, children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
@@ -7706,6 +7733,21 @@ function WebChat(props) {
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-status", children: sendStatus })
     ] })
   ] });
+  function applyBootstrapData(data) {
+    setEmail(data.email);
+    setItems(data.items ?? []);
+    setActivity(data.activity);
+    setOptimisticActivity(void 0);
+    setServerVisibilityMode(normalizeVisibilityMode(data.visibility_mode ?? "full"));
+    setPhone(data.primary_phone ?? "");
+    setPhoneVerified(Boolean(data.primary_phone_verified));
+  }
+  function applyTimelinePayload(payload) {
+    setItems(payload.items ?? []);
+    setActivity(payload.activity);
+    setOptimisticActivity(void 0);
+    setServerVisibilityMode(normalizeVisibilityMode(payload.visibility_mode ?? serverVisibilityMode));
+  }
 }
 function TimelineItem(props) {
   const role = props.item.role ?? "assistant";
@@ -7819,6 +7861,57 @@ function buildThemeStyle(theme) {
     "--nexus-webchat-pad": theme?.compact ? "0.95rem" : "1.35rem"
   };
 }
+function normalizeVisibilityMode(value) {
+  switch ((value ?? "").trim().toLowerCase()) {
+    case "simple":
+    case "minimal":
+    case "off":
+      return value.trim().toLowerCase();
+    case "full":
+    default:
+      return "full";
+  }
+}
+function capVisibilityMode(serverMode, requested) {
+  const requestedMode = normalizeVisibilityMode(requested ?? serverMode);
+  return visibilityRank(requestedMode) >= visibilityRank(serverMode) ? requestedMode : serverMode;
+}
+function visibilityRank(mode) {
+  switch (mode) {
+    case "simple":
+      return 1;
+    case "minimal":
+      return 2;
+    case "off":
+      return 3;
+    case "full":
+    default:
+      return 0;
+  }
+}
+function filterVisibleItems(items, mode, activity) {
+  if (mode !== "minimal" && mode !== "off" || !activity) {
+    return items;
+  }
+  return items.filter((item) => !(item.type === "message" && item.role === "assistant" && item.partial));
+}
+function activityLabelForMode(mode, activity) {
+  if (mode === "minimal") {
+    return "Typing...";
+  }
+  if (mode !== "simple") {
+    return "";
+  }
+  switch (activity.phase) {
+    case "typing":
+      return "Typing...";
+    case "working":
+      return "Working...";
+    case "thinking":
+    default:
+      return "Thinking...";
+  }
+}
 function asError(value) {
   return value instanceof Error ? value : new Error(String(value));
 }
@@ -7833,6 +7926,7 @@ if (rootElement) {
       WebChat,
       {
         baseUrl: config.baseUrl,
+        interactionVisibility: config.interactionVisibility,
         labels: config.labels,
         theme: config.theme,
         features: config.features

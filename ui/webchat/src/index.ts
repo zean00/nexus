@@ -4,8 +4,10 @@ export type {
   BootstrapData,
   EmbeddedWebChatConfig,
   RenderChoice,
+  WebChatActivity,
   WebChatClientConfig,
   WebChatFeatures,
+  WebChatInteractionVisibility,
   WebChatItem,
   WebChatLabels,
   WebChatTheme

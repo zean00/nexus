@@ -145,6 +145,10 @@ body {
 .nexus-webchat-item-body {
   white-space: pre-wrap;
 }
+.nexus-webchat-activity {
+  color: var(--nexus-webchat-muted);
+  font-style: italic;
+}
 .nexus-webchat-artifacts {
   display: grid;
   gap: 0.75rem;

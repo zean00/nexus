@@ -20,8 +20,10 @@ import (
 	"strings"
 	"time"
 
+	"nexus/internal/config"
 	"nexus/internal/domain"
 	"nexus/internal/httpx"
+	"nexus/internal/ports"
 	webchatui "nexus/ui/webchat"
 )
 
@@ -47,7 +49,8 @@ var webChatPageTemplate = template.Must(template.New("webchat-page").Parse(`<!do
 func (a *App) handleWebChatIndex(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	configJSON, _ := json.Marshal(map[string]any{
-		"baseUrl": "/webchat",
+		"baseUrl":               "/webchat",
+		"interactionVisibility": a.webChatInteractionVisibilityMode(),
 		"features": map[string]bool{
 			"auth":    true,
 			"uploads": true,
@@ -168,6 +171,7 @@ func (a *App) handleWebChatDevSession(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	activity := buildWebChatActivity(a.Repo, r.Context(), a.Config.DefaultTenantID, session.ID, items)
 	user, identities, recentStepUp, err := a.currentWebChatIdentityState(r.Context(), authSession)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -178,6 +182,8 @@ func (a *App) handleWebChatDevSession(w http.ResponseWriter, r *http.Request) {
 		"session_id":        session.ID,
 		"csrf_token":        csrfToken,
 		"items":             items,
+		"activity":          activity,
+		"visibility_mode":   a.webChatInteractionVisibilityMode(),
 		"user_id":           user.ID,
 		"linked_identities": identities,
 		"recent_step_up":    recentStepUp,
@@ -293,6 +299,7 @@ func (a *App) handleWebChatBootstrap(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	activity := buildWebChatActivity(a.Repo, r.Context(), a.Config.DefaultTenantID, session.ID, items)
 	user, identities, recentStepUp, err := a.currentWebChatIdentityState(r.Context(), authSession)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -303,6 +310,8 @@ func (a *App) handleWebChatBootstrap(w http.ResponseWriter, r *http.Request) {
 		"session_id":             session.ID,
 		"csrf_token":             csrfToken,
 		"items":                  items,
+		"activity":               activity,
+		"visibility_mode":        a.webChatInteractionVisibilityMode(),
 		"user_id":                user.ID,
 		"primary_phone":          user.PrimaryPhone,
 		"primary_phone_verified": user.PrimaryPhoneVerified,
@@ -321,12 +330,16 @@ func (a *App) handleWebChatHistory(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 100
 	}
-	_, items, err := a.loadWebChatState(r.Context(), authSession, limit)
+	session, items, err := a.loadWebChatState(r.Context(), authSession, limit)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	httpx.OK(w, map[string]any{"items": items}, nil)
+	httpx.OK(w, map[string]any{
+		"items":           items,
+		"activity":        buildWebChatActivity(a.Repo, r.Context(), a.Config.DefaultTenantID, session.ID, items),
+		"visibility_mode": a.webChatInteractionVisibilityMode(),
+	}, nil)
 }
 
 func (a *App) handleWebChatArtifact(w http.ResponseWriter, r *http.Request) {
@@ -396,7 +409,11 @@ func (a *App) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
 		notifyCh = a.WebChatHub.Subscribe(session.ID)
 		defer a.WebChatHub.Unsubscribe(session.ID, notifyCh)
 	}
-	payload, _ := json.Marshal(map[string]any{"items": items})
+	payload, _ := json.Marshal(map[string]any{
+		"items":           items,
+		"activity":        buildWebChatActivity(a.Repo, r.Context(), a.Config.DefaultTenantID, session.ID, items),
+		"visibility_mode": a.webChatInteractionVisibilityMode(),
+	})
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
 	flusher.Flush()
 	last := string(payload)
@@ -419,7 +436,11 @@ func (a *App) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		payload, _ = json.Marshal(map[string]any{"items": items})
+		payload, _ = json.Marshal(map[string]any{
+			"items":           items,
+			"activity":        buildWebChatActivity(a.Repo, r.Context(), a.Config.DefaultTenantID, session.ID, items),
+			"visibility_mode": a.webChatInteractionVisibilityMode(),
+		})
 		if string(payload) == last {
 			continue
 		}
@@ -1060,6 +1081,14 @@ func (a *App) issueWebChatCSRF(ctx context.Context, sessionID string) (string, e
 	return csrf, nil
 }
 
+func (a *App) webChatInteractionVisibilityMode() string {
+	mode, err := config.NormalizeWebChatInteractionVisibility(a.Config.WebChatInteractionVisibility)
+	if err != nil {
+		return "full"
+	}
+	return mode
+}
+
 func (a *App) validateWebChatCSRF(r *http.Request, sessionID string) error {
 	if a.WebAuth == nil {
 		return domain.ErrWebAuthSessionNotFound
@@ -1160,6 +1189,7 @@ func buildWebChatItems(detail domain.SessionDetail) []domain.WebChatItem {
 			Type:      "message",
 			Role:      role,
 			Text:      msg.Text,
+			Partial:   webChatMessagePartial(msg),
 			Artifacts: artifactByMessage[msg.MessageID],
 		})
 	}
@@ -1188,6 +1218,66 @@ func buildWebChatItems(detail domain.SessionDetail) []domain.WebChatItem {
 		})
 	}
 	return items
+}
+
+func buildWebChatActivity(repo ports.Repository, ctx context.Context, tenantID, sessionID string, items []domain.WebChatItem) *domain.WebChatActivity {
+	if tenantID == "" || sessionID == "" {
+		return nil
+	}
+	for _, item := range items {
+		if item.Type == "await" && item.Status == "pending" {
+			return nil
+		}
+	}
+	startingRuns, err := repo.ListRuns(ctx, domain.RunListQuery{
+		TenantID:   tenantID,
+		SessionID:  sessionID,
+		Status:     "starting",
+		CursorPage: domain.CursorPage{Limit: 1},
+	})
+	if err == nil && len(startingRuns.Items) > 0 {
+		return &domain.WebChatActivity{Phase: "thinking", UpdatedAt: webChatActivityTime(startingRuns.Items[0])}
+	}
+	runningRuns, err := repo.ListRuns(ctx, domain.RunListQuery{
+		TenantID:   tenantID,
+		SessionID:  sessionID,
+		Status:     "running",
+		CursorPage: domain.CursorPage{Limit: 1},
+	})
+	if err != nil || len(runningRuns.Items) == 0 {
+		return nil
+	}
+	updatedAt := webChatActivityTime(runningRuns.Items[0])
+	for _, item := range items {
+		if item.Type != "message" || item.Role != "assistant" {
+			continue
+		}
+		if item.Partial {
+			return &domain.WebChatActivity{Phase: "typing", UpdatedAt: updatedAt}
+		}
+		break
+	}
+	return &domain.WebChatActivity{Phase: "working", UpdatedAt: updatedAt}
+}
+
+func webChatMessagePartial(msg domain.Message) bool {
+	if len(msg.RawPayload) == 0 {
+		return false
+	}
+	var payload struct {
+		IsPartial bool `json:"is_partial"`
+	}
+	if err := json.Unmarshal(msg.RawPayload, &payload); err != nil {
+		return false
+	}
+	return payload.IsPartial
+}
+
+func webChatActivityTime(run domain.Run) time.Time {
+	if !run.LastEventAt.IsZero() {
+		return run.LastEventAt
+	}
+	return run.StartedAt
 }
 
 func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession, text string, artifacts []domain.Artifact) domain.CanonicalInboundEvent {

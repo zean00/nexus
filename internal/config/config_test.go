@@ -78,6 +78,25 @@ func TestLoadWebChatDevAuthFlag(t *testing.T) {
 	}
 }
 
+func TestLoadWebChatInteractionVisibilityDefault(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WebChatInteractionVisibility != "full" {
+		t.Fatalf("expected full visibility by default, got %q", cfg.WebChatInteractionVisibility)
+	}
+}
+
+func TestLoadRejectsInvalidWebChatInteractionVisibility(t *testing.T) {
+	t.Setenv("WEBCHAT_INTERACTION_VISIBILITY", "verbose")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "WEBCHAT_INTERACTION_VISIBILITY") {
+		t.Fatalf("expected visibility mode error, got %v", err)
+	}
+}
+
 func TestLoadProductionRejectsDevWebhookSecrets(t *testing.T) {
 	t.Setenv("NEXUS_ENV", "production")
 	t.Setenv("ADMIN_BEARER_TOKEN", "admin-secret")

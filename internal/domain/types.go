@@ -38,6 +38,7 @@ type Message struct {
 	Direction   string
 	Parts       []Part
 	Artifacts   []Artifact
+	RawPayload  []byte
 }
 
 type Part struct {
@@ -246,10 +247,16 @@ type WebChatItem struct {
 	Role      string            `json:"role,omitempty"`
 	Text      string            `json:"text,omitempty"`
 	Status    string            `json:"status,omitempty"`
+	Partial   bool              `json:"partial,omitempty"`
 	AwaitID   string            `json:"await_id,omitempty"`
 	Choices   []RenderChoice    `json:"choices,omitempty"`
 	Artifacts []Artifact        `json:"artifacts,omitempty"`
 	Meta      map[string]string `json:"meta,omitempty"`
+}
+
+type WebChatActivity struct {
+	Phase     string    `json:"phase"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 type DeliveryResult struct {

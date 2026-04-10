@@ -250,8 +250,18 @@ func (r *appRepoStub) ListSessions(context.Context, domain.SessionListQuery) (do
 func (r *appRepoStub) CountSessions(context.Context, domain.SessionListQuery) (int, error) {
 	return 1, nil
 }
-func (r *appRepoStub) ListRuns(context.Context, domain.RunListQuery) (domain.PagedResult[domain.Run], error) {
-	return domain.PagedResult[domain.Run]{}, nil
+func (r *appRepoStub) ListRuns(_ context.Context, query domain.RunListQuery) (domain.PagedResult[domain.Run], error) {
+	out := make([]domain.Run, 0, len(r.sessionDetail.Runs))
+	for _, run := range r.sessionDetail.Runs {
+		if query.Status != "" && run.Status != query.Status {
+			continue
+		}
+		out = append(out, run)
+	}
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[:query.Limit]
+	}
+	return domain.PagedResult[domain.Run]{Items: out}, nil
 }
 func (r *appRepoStub) CountRuns(_ context.Context, query domain.RunListQuery) (int, error) {
 	if r.runCounts != nil {

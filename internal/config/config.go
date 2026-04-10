@@ -45,6 +45,7 @@ type Config struct {
 	EmailFromAddress              string
 	WebChatCookieName             string
 	WebChatDevAuth                bool
+	WebChatInteractionVisibility  string
 	WebChatSessionHours           int
 	WebChatOTPMinutes             int
 	IdentityLinkMinutes           int
@@ -115,6 +116,7 @@ func Load() (Config, error) {
 		EmailFromAddress:              env("EMAIL_FROM_ADDRESS", "nexus@example.com"),
 		WebChatCookieName:             env("WEBCHAT_COOKIE_NAME", "nexus_webchat_session"),
 		WebChatDevAuth:                envBool("WEBCHAT_DEV_AUTH", false),
+		WebChatInteractionVisibility:  env("WEBCHAT_INTERACTION_VISIBILITY", "full"),
 		IdentityLinkMinutes:           mustEnvIntDefault("IDENTITY_LINK_MINUTES", 10),
 		StepUpOTPMinutes:              mustEnvIntDefault("STEP_UP_OTP_MINUTES", 10),
 		StepUpWindowMinutes:           mustEnvIntDefault("STEP_UP_WINDOW_MINUTES", 15),
@@ -249,7 +251,24 @@ func Load() (Config, error) {
 	if err := validateProductionConfig(cfg); err != nil {
 		return Config{}, err
 	}
+	mode, err := NormalizeWebChatInteractionVisibility(cfg.WebChatInteractionVisibility)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.WebChatInteractionVisibility = mode
 	return cfg, nil
+}
+
+func NormalizeWebChatInteractionVisibility(value string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	switch mode {
+	case "", "full":
+		return "full", nil
+	case "simple", "minimal", "off":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid WEBCHAT_INTERACTION_VISIBILITY %q", value)
+	}
 }
 
 func validateProductionConfig(cfg Config) error {

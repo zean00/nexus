@@ -3,7 +3,9 @@ import { WebChatClient, createWebChatClient } from "./client";
 import type {
   Artifact,
   IdentityProfileData,
+  WebChatActivity,
   WebChatFeatures,
+  WebChatInteractionVisibility,
   WebChatItem,
   WebChatLabels,
   WebChatTheme
@@ -26,6 +28,7 @@ export function useWebChatClient() {
 type WebChatProps = {
   client?: WebChatClient;
   baseUrl?: string;
+  interactionVisibility?: WebChatInteractionVisibility;
   labels?: WebChatLabels;
   theme?: WebChatTheme;
   features?: WebChatFeatures;
@@ -73,8 +76,8 @@ const defaultFeatures: Required<WebChatFeatures> = {
 export function WebChat(props: WebChatProps) {
   const providedClient = useContext(clientContext);
   const client = useMemo(
-    () => props.client ?? providedClient ?? createWebChatClient({ baseUrl: props.baseUrl }),
-    [props.baseUrl, props.client, providedClient]
+    () => props.client ?? providedClient ?? createWebChatClient({ baseUrl: props.baseUrl, interactionVisibility: props.interactionVisibility }),
+    [props.baseUrl, props.client, props.interactionVisibility, providedClient]
   );
   const labels = { ...defaultLabels, ...props.labels };
   const features = { ...defaultFeatures, ...props.features };
@@ -82,6 +85,12 @@ export function WebChat(props: WebChatProps) {
   const [authenticated, setAuthenticated] = useState(false);
   const [email, setEmail] = useState("");
   const [items, setItems] = useState<WebChatItem[]>([]);
+  const [serverVisibilityMode, setServerVisibilityMode] = useState<WebChatInteractionVisibility>(
+    normalizeVisibilityMode(client.interactionVisibility ?? props.interactionVisibility ?? "full")
+  );
+  const [activity, setActivity] = useState<WebChatActivity | undefined>(undefined);
+  const [optimisticActivity, setOptimisticActivity] = useState<WebChatActivity | undefined>(undefined);
+  const [activityLabel, setActivityLabel] = useState("");
   const [requestEmail, setRequestEmail] = useState("");
   const [verifyEmail, setVerifyEmail] = useState("");
   const [verifyCode, setVerifyCode] = useState("");
@@ -100,10 +109,7 @@ export function WebChat(props: WebChatProps) {
         return;
       }
       setAuthenticated(true);
-      setEmail(data.email);
-      setItems(data.items ?? []);
-      setPhone(data.primary_phone ?? "");
-      setPhoneVerified(Boolean(data.primary_phone_verified));
+      applyBootstrapData(data);
       props.onAuthChange?.(true);
     }).catch((error: Error) => {
       if (ignore) {
@@ -126,9 +132,30 @@ export function WebChat(props: WebChatProps) {
       return;
     }
     return client.subscribe((payload) => {
-      setItems(payload.items ?? []);
+      applyTimelinePayload(payload);
     });
   }, [authenticated, client, features.sse]);
+
+  const effectiveVisibilityMode = capVisibilityMode(
+    serverVisibilityMode,
+    props.interactionVisibility ?? client.interactionVisibility
+  );
+  const effectiveActivity = activity ?? optimisticActivity;
+  const visibleItems = useMemo(
+    () => filterVisibleItems(items, effectiveVisibilityMode, effectiveActivity),
+    [effectiveActivity, effectiveVisibilityMode, items]
+  );
+
+  useEffect(() => {
+    if (effectiveVisibilityMode === "full" || effectiveVisibilityMode === "off" || !effectiveActivity) {
+      setActivityLabel("");
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setActivityLabel(activityLabelForMode(effectiveVisibilityMode, effectiveActivity));
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [effectiveActivity, effectiveVisibilityMode]);
 
   const themeStyle = buildThemeStyle(props.theme);
   const rootClassName = props.className ? `nexus-webchat-shell ${props.className}` : "nexus-webchat-shell";
@@ -150,10 +177,7 @@ export function WebChat(props: WebChatProps) {
       await client.verifyOTP(verifyEmail, verifyCode);
       const data = await client.bootstrap();
       setAuthenticated(true);
-      setEmail(data.email);
-      setItems(data.items ?? []);
-      setPhone(data.primary_phone ?? "");
-      setPhoneVerified(Boolean(data.primary_phone_verified));
+      applyBootstrapData(data);
       setStatus("");
       setVerifyCode("");
       props.onAuthChange?.(true);
@@ -166,12 +190,14 @@ export function WebChat(props: WebChatProps) {
   async function handleSendMessage(event: React.FormEvent) {
     event.preventDefault();
     try {
+      setOptimisticActivity({ phase: "thinking", updated_at: new Date().toISOString() });
       await client.sendMessage({ text: messageText.trim(), files });
       setMessageText("");
       setFiles([]);
       setSendStatus(labels.sendSuccess);
       props.onMessageSent?.();
     } catch (error) {
+      setOptimisticActivity(undefined);
       props.onError?.(asError(error));
       setSendStatus(labels.sendFailed);
     }
@@ -179,9 +205,11 @@ export function WebChat(props: WebChatProps) {
 
   async function handleAwaitChoice(awaitId: string, choice: string) {
     try {
+      setOptimisticActivity({ phase: "thinking", updated_at: new Date().toISOString() });
       await client.respondToAwait({ awaitId, reply: choice });
       props.onAwaitResolved?.(awaitId, choice);
     } catch (error) {
+      setOptimisticActivity(undefined);
       props.onError?.(asError(error));
       setSendStatus(labels.sendFailed);
     }
@@ -191,7 +219,7 @@ export function WebChat(props: WebChatProps) {
     try {
       await client.newChat();
       const history = await client.getHistory();
-      setItems(history.items ?? []);
+      applyTimelinePayload(history);
     } catch (error) {
       props.onError?.(asError(error));
     }
@@ -231,6 +259,8 @@ export function WebChat(props: WebChatProps) {
     } finally {
       setAuthenticated(false);
       setItems([]);
+      setActivity(undefined);
+      setOptimisticActivity(undefined);
       setEmail("");
       props.onAuthChange?.(false);
     }
@@ -301,8 +331,8 @@ export function WebChat(props: WebChatProps) {
         </form>
       </section>
       <section className="nexus-webchat-panel nexus-webchat-timeline">
-        {items.length === 0 ? <div className="nexus-webchat-empty">{labels.emptyTimeline}</div> : null}
-        {items.map((item) => (
+        {visibleItems.length === 0 ? <div className="nexus-webchat-empty">{labels.emptyTimeline}</div> : null}
+        {visibleItems.map((item) => (
           <TimelineItem
             key={item.id}
             item={item}
@@ -310,6 +340,7 @@ export function WebChat(props: WebChatProps) {
             resolveArtifactURL={(artifact) => client.artifactURL(artifact.id)}
           />
         ))}
+        {activityLabel ? <div className="nexus-webchat-activity">{activityLabel}</div> : null}
       </section>
       <form className="nexus-webchat-panel nexus-webchat-composer" onSubmit={handleSendMessage}>
         <textarea
@@ -331,6 +362,34 @@ export function WebChat(props: WebChatProps) {
       </form>
     </div>
   );
+
+  function applyBootstrapData(data: {
+    email: string;
+    items?: WebChatItem[];
+    activity?: WebChatActivity;
+    visibility_mode?: WebChatInteractionVisibility;
+    primary_phone?: string;
+    primary_phone_verified?: boolean;
+  }) {
+    setEmail(data.email);
+    setItems(data.items ?? []);
+    setActivity(data.activity);
+    setOptimisticActivity(undefined);
+    setServerVisibilityMode(normalizeVisibilityMode(data.visibility_mode ?? "full"));
+    setPhone(data.primary_phone ?? "");
+    setPhoneVerified(Boolean(data.primary_phone_verified));
+  }
+
+  function applyTimelinePayload(payload: {
+    items?: WebChatItem[];
+    activity?: WebChatActivity;
+    visibility_mode?: WebChatInteractionVisibility;
+  }) {
+    setItems(payload.items ?? []);
+    setActivity(payload.activity);
+    setOptimisticActivity(undefined);
+    setServerVisibilityMode(normalizeVisibilityMode(payload.visibility_mode ?? serverVisibilityMode));
+  }
 }
 
 function TimelineItem(props: {
@@ -480,6 +539,66 @@ function buildThemeStyle(theme?: WebChatTheme): React.CSSProperties {
     "--nexus-webchat-gap": theme?.compact ? "0.8rem" : "1.25rem",
     "--nexus-webchat-pad": theme?.compact ? "0.95rem" : "1.35rem"
   } as React.CSSProperties;
+}
+
+function normalizeVisibilityMode(value: string): WebChatInteractionVisibility {
+  switch ((value ?? "").trim().toLowerCase()) {
+    case "simple":
+    case "minimal":
+    case "off":
+      return value.trim().toLowerCase() as WebChatInteractionVisibility;
+    case "full":
+    default:
+      return "full";
+  }
+}
+
+function capVisibilityMode(serverMode: WebChatInteractionVisibility, requested?: WebChatInteractionVisibility): WebChatInteractionVisibility {
+  const requestedMode = normalizeVisibilityMode(requested ?? serverMode);
+  return visibilityRank(requestedMode) >= visibilityRank(serverMode) ? requestedMode : serverMode;
+}
+
+function visibilityRank(mode: WebChatInteractionVisibility): number {
+  switch (mode) {
+    case "simple":
+      return 1;
+    case "minimal":
+      return 2;
+    case "off":
+      return 3;
+    case "full":
+    default:
+      return 0;
+  }
+}
+
+function filterVisibleItems(
+  items: WebChatItem[],
+  mode: WebChatInteractionVisibility,
+  activity?: WebChatActivity
+): WebChatItem[] {
+  if ((mode !== "minimal" && mode !== "off") || !activity) {
+    return items;
+  }
+  return items.filter((item) => !(item.type === "message" && item.role === "assistant" && item.partial));
+}
+
+function activityLabelForMode(mode: WebChatInteractionVisibility, activity: WebChatActivity): string {
+  if (mode === "minimal") {
+    return "Typing...";
+  }
+  if (mode !== "simple") {
+    return "";
+  }
+  switch (activity.phase) {
+    case "typing":
+      return "Typing...";
+    case "working":
+      return "Working...";
+    case "thinking":
+    default:
+      return "Thinking...";
+  }
 }
 
 function asError(value: unknown): Error {

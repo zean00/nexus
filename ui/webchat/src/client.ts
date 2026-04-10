@@ -1,16 +1,19 @@
 import type {
   BootstrapData,
   IdentityProfileData,
+  WebChatInteractionVisibility,
   WebChatClientConfig,
   WebChatEventsPayload
 } from "./types";
 
 export class WebChatClient {
   private readonly baseUrl: string;
+  readonly interactionVisibility?: WebChatInteractionVisibility;
   private csrfToken = "";
 
   constructor(config: WebChatClientConfig = {}) {
     this.baseUrl = normalizeBaseUrl(config.baseUrl ?? "");
+    this.interactionVisibility = config.interactionVisibility;
   }
 
   async requestAuth(email: string): Promise<void> {

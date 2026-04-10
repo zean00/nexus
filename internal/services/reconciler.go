@@ -170,15 +170,22 @@ func (r Reconciler) refreshStaleRuns(ctx context.Context, now time.Time, limit i
 		return err
 	}
 	for _, run := range runs {
-		snapshot, err := r.ACP.GetRun(ctx, run.ACPRunID)
+		session, err := r.Repo.GetSession(ctx, run.SessionID)
+		if err != nil {
+			return err
+		}
+		var snapshot domain.RunStatusSnapshot
+		if scoped, ok := r.ACP.(interface {
+			GetRunForSession(context.Context, domain.Session, string) (domain.RunStatusSnapshot, error)
+		}); ok {
+			snapshot, err = scoped.GetRunForSession(ctx, session, run.ACPRunID)
+		} else {
+			snapshot, err = r.ACP.GetRun(ctx, run.ACPRunID)
+		}
 		if err != nil {
 			return err
 		}
 		if err := r.Repo.UpdateRunStatus(ctx, run.ID, snapshot.Status); err != nil {
-			return err
-		}
-		session, err := r.Repo.GetSession(ctx, run.SessionID)
-		if err != nil {
 			return err
 		}
 		if err := r.Repo.Audit(ctx, domain.AuditEvent{

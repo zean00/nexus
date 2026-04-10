@@ -1,4 +1,10 @@
 export type ChatItemType = "message" | "await";
+export type WebChatInteractionVisibility = "full" | "simple" | "minimal" | "off";
+
+export interface WebChatActivity {
+  phase: "thinking" | "typing" | "working";
+  updated_at?: string;
+}
 
 export interface RenderChoice {
   id: string;
@@ -22,6 +28,7 @@ export interface WebChatItem {
   role?: string;
   text?: string;
   status?: string;
+  partial?: boolean;
   await_id?: string;
   choices?: RenderChoice[];
   artifacts?: Artifact[];
@@ -33,6 +40,8 @@ export interface BootstrapData {
   session_id: string;
   csrf_token: string;
   items: WebChatItem[];
+  activity?: WebChatActivity;
+  visibility_mode?: WebChatInteractionVisibility;
   primary_phone?: string;
   primary_phone_verified?: boolean;
 }
@@ -49,10 +58,13 @@ export interface IdentityProfileData {
 
 export interface WebChatEventsPayload {
   items: WebChatItem[];
+  activity?: WebChatActivity;
+  visibility_mode?: WebChatInteractionVisibility;
 }
 
 export interface WebChatClientConfig {
   baseUrl?: string;
+  interactionVisibility?: WebChatInteractionVisibility;
 }
 
 export interface WebChatLabels {
@@ -106,6 +118,7 @@ export interface WebChatFeatures {
 
 export interface EmbeddedWebChatConfig {
   baseUrl?: string;
+  interactionVisibility?: WebChatInteractionVisibility;
   labels?: WebChatLabels;
   theme?: WebChatTheme;
   features?: WebChatFeatures;

@@ -43,13 +43,25 @@ func TestParmesanStartRunCompletesFromACPEvents(t *testing.T) {
 	var createdSession bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/acp/sessions/session_1":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/acp/agents/agent_support/sessions/session_1":
 			http.Error(w, "not found", http.StatusNotFound)
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/acp/sessions":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/acp/agents/agent_support/sessions":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := payload["agent_id"]; ok {
+				t.Fatalf("unexpected top-level agent_id in scoped session payload: %+v", payload)
+			}
+			meta, _ := payload["_meta"].(map[string]any)
+			parmesan, _ := meta["parmesan"].(map[string]any)
+			if parmesan["customer_id"] != "user_1" || parmesan["gateway_session_id"] != "session_1" {
+				t.Fatalf("unexpected _meta.parmesan: %+v", parmesan)
+			}
 			createdSession = true
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"id":"session_1","channel":"slack"}`)
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/acp/sessions/session_1/messages":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/acp/agents/agent_support/sessions/session_1/messages":
 			var payload map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatal(err)
@@ -66,7 +78,7 @@ func TestParmesanStartRunCompletesFromACPEvents(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/executions/exec_1":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"execution":{"id":"exec_1","session_id":"session_1","status":"succeeded"}}`)
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/acp/sessions/session_1/events":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/acp/agents/agent_support/sessions/session_1/events":
 			if got := r.URL.Query().Get("min_offset"); got != "2" {
 				t.Fatalf("min_offset = %q, want 2", got)
 			}
@@ -87,7 +99,7 @@ func TestParmesanStartRunCompletesFromACPEvents(t *testing.T) {
 	client.PollEvery = 1
 
 	run, stream, err := client.StartRun(context.Background(), domain.StartRunRequest{
-		Session:        domain.Session{ID: "session_1", ChannelType: "slack", AgentProfileID: "agent_support"},
+		Session:        domain.Session{ID: "session_1", ChannelType: "slack", OwnerUserID: "user_1", AgentProfileID: "agent_support", ChannelScopeKey: "C1:T1"},
 		RouteDecision:  domain.RouteDecision{ACPAgentName: "agent_support"},
 		Message:        domain.Message{Text: "hello there"},
 		IdempotencyKey: "queue_1",
@@ -185,6 +197,95 @@ func TestParmesanResumeRunRespondsApprovalAndWaitsForCompletion(t *testing.T) {
 	events := collectRunEvents(t, stream)
 	if len(events) != 1 || events[0].Status != "completed" || events[0].Text != "Approved, continuing now." {
 		t.Fatalf("unexpected resume events: %+v", events)
+	}
+}
+
+func TestParmesanResumeRunForSessionUsesScopedApprovalAndEvents(t *testing.T) {
+	var postedDecision string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/acp/agents/agent_support/sessions/session_1/approvals/appr_1":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			postedDecision, _ = payload["decision"].(string)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"appr_1","status":"approved"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/executions/exec_1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"execution":{"id":"exec_1","session_id":"session_1","status":"succeeded"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/acp/agents/agent_support/sessions/session_1/events":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `[
+				{"id":"evt_after_1","session_id":"session_1","kind":"message","source":"ai_agent","offset":5,"execution_id":"exec_1","content":[{"type":"text","text":"Approved through scoped route."}]}
+			]`)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := NewParmesanClient(server.URL, "", 0)
+	client.HTTP = server.Client()
+	client.PollEvery = 1
+
+	stream, err := client.ResumeRunForSession(context.Background(),
+		domain.Session{ID: "session_1", AgentProfileID: "agent_support"},
+		domain.Await{
+			RunID:            "run_exec_1",
+			SessionID:        "session_1",
+			PromptRenderJSON: []byte(`{"approval_id":"appr_1","agent_profile_id":"agent_support","choices":[{"id":"approve","label":"Approve"},{"id":"reject","label":"Reject"}]}`),
+		},
+		[]byte(`{"choice":"approve"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if postedDecision != "approve" {
+		t.Fatalf("decision = %q, want approve", postedDecision)
+	}
+	events := collectRunEvents(t, stream)
+	if len(events) != 1 || events[0].Status != "completed" || events[0].Text != "Approved through scoped route." {
+		t.Fatalf("unexpected scoped resume events: %+v", events)
+	}
+}
+
+func TestParmesanFindRunByIdempotencyKeyUsesScopedSnapshot(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/acp/agents/agent_support/sessions/session_1/events":
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("min_offset") == "" {
+				_, _ = io.WriteString(w, `[
+					{"id":"evt_in_1","session_id":"session_1","kind":"message","source":"customer","offset":1,"execution_id":"exec_1","metadata":{"idempotency_key":"queue_1"}},
+					{"id":"evt_out_1","session_id":"session_1","kind":"message","source":"ai_agent","offset":2,"execution_id":"exec_1","content":[{"type":"text","text":"Recovered reply"}]}
+				]`)
+				return
+			}
+			t.Fatalf("unexpected min_offset: %s", r.URL.RawQuery)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/executions/exec_1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"execution":{"id":"exec_1","session_id":"session_1","status":"succeeded"}}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := NewParmesanClient(server.URL, "", 0)
+	client.HTTP = server.Client()
+
+	snapshot, found, err := client.FindRunByIdempotencyKey(context.Background(), domain.Session{
+		ID:             "session_1",
+		ACPSessionID:   "session_1",
+		AgentProfileID: "agent_support",
+	}, "queue_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || snapshot.ACPRunID != "exec_1" || snapshot.Status != "completed" || snapshot.Output != "Recovered reply" {
+		t.Fatalf("unexpected idempotency snapshot: %+v found=%v", snapshot, found)
 	}
 }
 

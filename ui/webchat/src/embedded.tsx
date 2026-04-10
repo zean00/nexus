@@ -18,6 +18,7 @@ if (rootElement) {
     <React.StrictMode>
       <WebChat
         baseUrl={config.baseUrl}
+        interactionVisibility={config.interactionVisibility}
         labels={config.labels}
         theme={config.theme}
         features={config.features}
