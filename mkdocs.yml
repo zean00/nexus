@@ -1,0 +1,50 @@
+site_name: Nexus
+site_description: Nexus gateway documentation
+site_url: https://example.invalid/nexus
+repo_name: nexus
+repo_url: https://example.invalid/nexus
+docs_dir: docs
+site_dir: site
+use_directory_urls: false
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
+  - mermaid2:
+      javascript: assets/javascripts/mermaid.min.js
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid_custom
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Overview: index.md
+  - Getting Started: GETTING_STARTED.md
+  - Architecture: ARCHITECTURE.md
+  - Features: FEATURES.md
+  - Configuration: CONFIGURATION.md
+  - ACP Protocols: ACP_PROTOCOL.md
+  - Channel Matrix: CHANNEL_MATRIX.md
+  - Extending Channels: EXTENDING_CHANNELS.md
+  - Operator Guide: OPERATOR_GUIDE.md
+  - CLI Guide: CLI_GUIDE.md
