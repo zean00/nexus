@@ -23,6 +23,7 @@ If you are new to the project, read these in order:
 - Adding a new channel: [Extending Nexus With a New Channel](./EXTENDING_CHANNELS.md)
 - Operating the system: [Operator Guide](./OPERATOR_GUIDE.md)
 - Local CLI usage: [CLI Guide](./CLI_GUIDE.md)
+- License: `Apache License 2.0` in `LICENSE`
 
 ## What Nexus Does
 

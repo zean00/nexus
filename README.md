@@ -19,16 +19,21 @@ If you are new to the project, start with:
 - [Extending Nexus With a New Channel](./docs/EXTENDING_CHANNELS.md)
 - [Supported ACP Protocols and Bridges](./docs/ACP_PROTOCOL.md)
 - [Channel Behavior and Compatibility Matrix](./docs/CHANNEL_MATRIX.md)
-- [Operator Guide](./OPERATOR_GUIDE.md)
-- [CLI Guide](./CLI_GUIDE.md)
+- [Operator Guide](./docs/OPERATOR_GUIDE.md)
+- [CLI Guide](./docs/CLI_GUIDE.md)
+- [License](./LICENSE)
 
-## Read By Role
+## Read By Goal
 
-- Building or running the project locally: [Getting Started](./docs/GETTING_STARTED.md)
-- Operating Nexus in a real environment: [Configuration](./docs/CONFIGURATION.md), [Operator Guide](./OPERATOR_GUIDE.md)
-- Understanding the core system shape: [Architecture](./docs/ARCHITECTURE.md)
-- Evaluating supported behavior across channels: [Features](./docs/FEATURES.md), [Channel Behavior and Compatibility Matrix](./docs/CHANNEL_MATRIX.md)
-- Adding a new channel or bridge: [Extending Nexus With a New Channel](./docs/EXTENDING_CHANNELS.md), [Supported ACP Protocols and Bridges](./docs/ACP_PROTOCOL.md)
+- Local setup and first run: [Getting Started](./docs/GETTING_STARTED.md)
+- Runtime model and data flow: [Architecture](./docs/ARCHITECTURE.md)
+- What the system supports today: [Features](./docs/FEATURES.md)
+- Deployment and environment variables: [Configuration](./docs/CONFIGURATION.md)
+- ACP bridge behavior: [Supported ACP Protocols and Bridges](./docs/ACP_PROTOCOL.md)
+- Channel behavior tradeoffs: [Channel Behavior and Compatibility Matrix](./docs/CHANNEL_MATRIX.md)
+- Adding a new channel: [Extending Nexus With a New Channel](./docs/EXTENDING_CHANNELS.md)
+- Operating the system: [Operator Guide](./docs/OPERATOR_GUIDE.md)
+- Local CLI usage: [CLI Guide](./docs/CLI_GUIDE.md)
 
 ## What Nexus Does
 
