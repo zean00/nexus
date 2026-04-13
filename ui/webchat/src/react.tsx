@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { WebChatClient, createWebChatClient } from "./client";
 import type {
   Artifact,
@@ -25,7 +25,7 @@ export function useWebChatClient() {
   return client;
 }
 
-type WebChatProps = {
+export type WebChatProps = {
   client?: WebChatClient;
   baseUrl?: string;
   interactionVisibility?: WebChatInteractionVisibility;
@@ -34,21 +34,34 @@ type WebChatProps = {
   features?: WebChatFeatures;
   className?: string;
   style?: React.CSSProperties;
+  compact?: boolean;
+  title?: string;
+  subtitle?: string;
+  statusLabel?: string;
+  panelLabel?: string;
   onAuthChange?: (authenticated: boolean) => void;
   onMessageSent?: () => void;
   onAwaitResolved?: (awaitId: string, choice: string) => void;
   onError?: (error: Error) => void;
 };
 
+export type WebChatWidgetProps = WebChatProps & {
+  defaultOpen?: boolean;
+  launcherLabel?: string;
+  launcherAriaLabel?: string;
+  launcherIcon?: React.ReactNode;
+  placement?: "bottom-right" | "bottom-left";
+};
+
 const defaultLabels: Required<WebChatLabels> = {
-  title: "Nexus Web Chat",
+  title: "Nexus Webchat",
   subtitle: "Use your email to receive a code or magic link.",
   emailLabel: "Email",
   otpLabel: "Code",
   requestCode: "Send code",
   verifyCode: "Verify code",
-  authHelp: "Check your email for a code or link.",
-  authSent: "Check your email for a code or link.",
+  authHelp: "Check your inbox for a code or magic link.",
+  authSent: "Check your inbox for a code or magic link.",
   authFailed: "Verification failed.",
   timelineTitle: "Conversation",
   newChat: "New chat",
@@ -72,6 +85,43 @@ const defaultFeatures: Required<WebChatFeatures> = {
   logout: true,
   sse: true
 };
+
+export function WebChatWidget(props: WebChatWidgetProps) {
+  const [open, setOpen] = useState(Boolean(props.defaultOpen));
+  const placement = props.placement ?? "bottom-right";
+  const launcherLabel = props.launcherLabel ?? "Open chat";
+  const launcherAriaLabel = props.launcherAriaLabel ?? launcherLabel;
+  const icon = props.launcherIcon ?? (
+    <span className="nexus-webchat-launcher-mark" aria-hidden="true">
+      N
+    </span>
+  );
+
+  return (
+    <div className={`nexus-webchat-widget-shell ${placement}`}>
+      <div
+        aria-hidden={!open}
+        className={`nexus-webchat-widget-panel ${open ? "open" : "closed"}`}
+      >
+        <WebChat
+          {...props}
+          compact={props.compact ?? true}
+          className={props.className ? `nexus-webchat-widget ${props.className}` : "nexus-webchat-widget"}
+        />
+      </div>
+      <button
+        aria-expanded={open}
+        aria-label={launcherAriaLabel}
+        className="nexus-webchat-launcher"
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        {icon}
+        <span>{open ? "Close chat" : launcherLabel}</span>
+      </button>
+    </div>
+  );
+}
 
 export function WebChat(props: WebChatProps) {
   const providedClient = useContext(clientContext);
@@ -101,6 +151,8 @@ export function WebChat(props: WebChatProps) {
   const [phone, setPhone] = useState("");
   const [phoneVerified, setPhoneVerified] = useState(false);
   const [identityProfile, setIdentityProfile] = useState<IdentityProfileData | null>(null);
+  const timelineRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let ignore = false;
@@ -136,6 +188,36 @@ export function WebChat(props: WebChatProps) {
     });
   }, [authenticated, client, features.sse]);
 
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    const content = listRef.current;
+    if (!timeline || !content) {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      const gap = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
+      if (gap < 120) {
+        timeline.scrollTo({ top: timeline.scrollHeight, behavior: "auto" });
+      }
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [authenticated, items.length]);
+
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const gap = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
+      if (gap < 160) {
+        timeline.scrollTo({ top: timeline.scrollHeight, behavior: "smooth" });
+      }
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [items, activityLabel]);
+
   const effectiveVisibilityMode = capVisibilityMode(
     serverVisibilityMode,
     props.interactionVisibility ?? client.interactionVisibility
@@ -157,7 +239,11 @@ export function WebChat(props: WebChatProps) {
     return () => window.clearTimeout(timer);
   }, [effectiveActivity, effectiveVisibilityMode]);
 
-  const themeStyle = buildThemeStyle(props.theme);
+  const themeStyle = buildThemeStyle(props.theme, props.compact);
+  const title = props.title ?? labels.title;
+  const subtitle = props.subtitle ?? labels.subtitle;
+  const statusLabel = props.statusLabel ?? "Live";
+  const panelLabel = props.panelLabel ?? "Session";
   const rootClassName = props.className ? `nexus-webchat-shell ${props.className}` : "nexus-webchat-shell";
 
   async function handleRequestAuth(event: React.FormEvent) {
@@ -189,6 +275,9 @@ export function WebChat(props: WebChatProps) {
 
   async function handleSendMessage(event: React.FormEvent) {
     event.preventDefault();
+    if (!messageText.trim() && files.length === 0) {
+      return;
+    }
     try {
       setOptimisticActivity({ phase: "thinking", updated_at: new Date().toISOString() });
       await client.sendMessage({ text: messageText.trim(), files });
@@ -270,13 +359,19 @@ export function WebChat(props: WebChatProps) {
     return (
       <div className={rootClassName} style={{ ...themeStyle, ...props.style }}>
         <div className="nexus-webchat-auth">
-          <div className="nexus-webchat-brand">
-            <p className="nexus-webchat-kicker">Reusable chat surface</p>
-            <h1>{labels.title}</h1>
-            <p>{labels.subtitle}</p>
-          </div>
-          <div className="nexus-webchat-auth-grid">
+          <section className="nexus-webchat-auth-hero">
+            <p className="nexus-webchat-kicker">Connected support surface</p>
+            <h1>{title}</h1>
+            <p>{subtitle}</p>
+          </section>
+          <section className="nexus-webchat-auth-grid">
             <form className="nexus-webchat-panel" onSubmit={handleRequestAuth}>
+              <div className="nexus-webchat-panel-head">
+                <div>
+                  <p className="nexus-webchat-eyebrow">Request access</p>
+                  <h2>Email sign-in</h2>
+                </div>
+              </div>
               <label>
                 <span>{labels.emailLabel}</span>
                 <input type="email" value={requestEmail} onChange={(event) => setRequestEmail(event.target.value)} required />
@@ -284,6 +379,12 @@ export function WebChat(props: WebChatProps) {
               <button type="submit">{labels.requestCode}</button>
             </form>
             <form className="nexus-webchat-panel" onSubmit={handleVerifyAuth}>
+              <div className="nexus-webchat-panel-head">
+                <div>
+                  <p className="nexus-webchat-eyebrow">Verify code</p>
+                  <h2>Continue session</h2>
+                </div>
+              </div>
               <label>
                 <span>{labels.emailLabel}</span>
                 <input type="email" value={verifyEmail} onChange={(event) => setVerifyEmail(event.target.value)} required />
@@ -294,7 +395,7 @@ export function WebChat(props: WebChatProps) {
               </label>
               <button type="submit">{labels.verifyCode}</button>
             </form>
-          </div>
+          </section>
           <p className="nexus-webchat-status">{status || labels.authHelp}</p>
         </div>
       </div>
@@ -303,63 +404,95 @@ export function WebChat(props: WebChatProps) {
 
   return (
     <div className={rootClassName} style={{ ...themeStyle, ...props.style }}>
-      <header className="nexus-webchat-header">
-        <div>
-          <p className="nexus-webchat-kicker">{labels.timelineTitle}</p>
-          <h1>{labels.title}</h1>
-          <p>{labels.signedInAsPrefix} {email}</p>
-        </div>
-        <div className="nexus-webchat-actions">
-          {features.newChat ? <button className="secondary" onClick={handleNewChat} type="button">{labels.newChat}</button> : null}
-          {features.logout ? <button onClick={handleLogout} type="button">{labels.logout}</button> : null}
-        </div>
-      </header>
-      <section className="nexus-webchat-panel">
-        <form className="nexus-webchat-identity-form" onSubmit={handleSavePhone}>
-          <label>
-            <span>{labels.phoneLabel}</span>
-            <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+628123456789" />
-          </label>
-          <div className="nexus-webchat-actions">
-            <button type="submit">{labels.savePhone}</button>
-            {phone ? <button className="secondary" onClick={handleRemovePhone} type="button">{labels.removePhone}</button> : null}
+      <div className="nexus-webchat-frame">
+        <header className="nexus-webchat-header">
+          <div className="nexus-webchat-header-copy">
+            <p className="nexus-webchat-kicker">{labels.timelineTitle}</p>
+            <h1>{title}</h1>
+            <p>{labels.signedInAsPrefix} {email}</p>
           </div>
-          <p className="nexus-webchat-status">
-            {phone ? `${phoneVerified ? "Verified" : "Unverified"} phone on profile.` : "Optional phone helps with explicit Telegram or WhatsApp pairing."}
-          </p>
-          {identityProfile?.link_hints ? <pre className="nexus-webchat-hints">{JSON.stringify(identityProfile.link_hints, null, 2)}</pre> : null}
-        </form>
-      </section>
-      <section className="nexus-webchat-panel nexus-webchat-timeline">
-        {visibleItems.length === 0 ? <div className="nexus-webchat-empty">{labels.emptyTimeline}</div> : null}
-        {visibleItems.map((item) => (
-          <TimelineItem
-            key={item.id}
-            item={item}
-            onAwaitChoice={handleAwaitChoice}
-            resolveArtifactURL={(artifact) => client.artifactURL(artifact.id)}
-          />
-        ))}
-        {activityLabel ? <div className="nexus-webchat-activity">{activityLabel}</div> : null}
-      </section>
-      <form className="nexus-webchat-panel nexus-webchat-composer" onSubmit={handleSendMessage}>
-        <textarea
-          placeholder={labels.composerPlaceholder}
-          value={messageText}
-          onChange={(event) => setMessageText(event.target.value)}
-        />
-        {features.uploads ? (
-          <input
-            type="file"
-            multiple
-            onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
-          />
-        ) : null}
-        <div className="nexus-webchat-actions">
-          <button type="submit">{labels.send}</button>
+          <div className="nexus-webchat-actions">
+            {features.newChat ? <button className="secondary" onClick={handleNewChat} type="button">{labels.newChat}</button> : null}
+            {features.logout ? <button className="secondary" onClick={handleLogout} type="button">{labels.logout}</button> : null}
+          </div>
+        </header>
+
+        <div className="nexus-webchat-body">
+          <section className="nexus-webchat-main">
+            <div className="nexus-webchat-toolbar">
+              <div className="nexus-webchat-presence">
+                <span className="nexus-webchat-presence-dot" aria-hidden="true" />
+                <span>{statusLabel}</span>
+              </div>
+              <p className="nexus-webchat-panel-caption">{panelLabel}</p>
+            </div>
+
+            <section className="nexus-webchat-panel nexus-webchat-timeline-shell">
+              <div className="nexus-webchat-timeline" ref={timelineRef}>
+                <div className="nexus-webchat-message-list" ref={listRef}>
+                  {visibleItems.length === 0 ? <div className="nexus-webchat-empty">{labels.emptyTimeline}</div> : null}
+                  {visibleItems.map((item) => (
+                    <TimelineItem
+                      key={item.id}
+                      item={item}
+                      onAwaitChoice={handleAwaitChoice}
+                      resolveArtifactURL={(artifact) => client.artifactURL(artifact.id)}
+                    />
+                  ))}
+                  {activityLabel ? <TypingRow label={activityLabel} /> : null}
+                </div>
+              </div>
+            </section>
+
+            <form className="nexus-webchat-panel nexus-webchat-composer" onSubmit={handleSendMessage}>
+              <textarea
+                placeholder={labels.composerPlaceholder}
+                value={messageText}
+                onChange={(event) => setMessageText(event.target.value)}
+              />
+              {features.uploads ? (
+                <label className="nexus-webchat-upload">
+                  <span>{files.length > 0 ? `${files.length} file${files.length === 1 ? "" : "s"} selected` : "Attach files"}</span>
+                  <input
+                    multiple
+                    onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
+                    type="file"
+                  />
+                </label>
+              ) : null}
+              <div className="nexus-webchat-actions">
+                <button type="submit">{labels.send}</button>
+              </div>
+              <p className="nexus-webchat-status">{sendStatus}</p>
+            </form>
+          </section>
+
+          <aside className="nexus-webchat-side">
+            <section className="nexus-webchat-panel">
+              <div className="nexus-webchat-panel-head">
+                <div>
+                  <p className="nexus-webchat-eyebrow">Profile</p>
+                  <h2>Identity</h2>
+                </div>
+              </div>
+              <form className="nexus-webchat-identity-form" onSubmit={handleSavePhone}>
+                <label>
+                  <span>{labels.phoneLabel}</span>
+                  <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+628123456789" />
+                </label>
+                <div className="nexus-webchat-actions">
+                  <button type="submit">{labels.savePhone}</button>
+                  {phone ? <button className="secondary" onClick={handleRemovePhone} type="button">{labels.removePhone}</button> : null}
+                </div>
+                <p className="nexus-webchat-status">
+                  {phone ? `${phoneVerified ? "Verified" : "Unverified"} phone on profile.` : "Optional phone helps with explicit Telegram or WhatsApp pairing."}
+                </p>
+                {identityProfile?.link_hints ? <pre className="nexus-webchat-hints">{JSON.stringify(identityProfile.link_hints, null, 2)}</pre> : null}
+              </form>
+            </section>
+          </aside>
         </div>
-        <p className="nexus-webchat-status">{sendStatus}</p>
-      </form>
+      </div>
     </div>
   );
 
@@ -392,38 +525,66 @@ export function WebChat(props: WebChatProps) {
   }
 }
 
+function TypingRow(props: { label: string }) {
+  return (
+    <div className="nexus-webchat-typing" aria-live="polite">
+      <div className="nexus-webchat-typing-avatar" aria-hidden="true">A</div>
+      <div className="nexus-webchat-typing-body">
+        <div className="nexus-webchat-typing-dots" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+        <span>{props.label}</span>
+      </div>
+    </div>
+  );
+}
+
 function TimelineItem(props: {
   item: WebChatItem;
   onAwaitChoice: (awaitId: string, choice: string) => void;
   resolveArtifactURL: (artifact: Artifact) => string;
 }) {
-  const role = props.item.role ?? "assistant";
+  const role = props.item.role === "user" ? "user" : "assistant";
   const awaitID = props.item.await_id ?? "";
+  const label = role === "user" ? "You" : "Assistant";
+  const text = props.item.text || props.item.status || props.item.type;
+
   return (
     <article className={`nexus-webchat-item ${role}`}>
-      <div className="nexus-webchat-item-body">
-        {props.item.text || props.item.status || props.item.type}
+      <div className="nexus-webchat-item-avatar" aria-hidden="true">
+        {role === "user" ? "Y" : "A"}
       </div>
-      {props.item.choices && props.item.choices.length > 0 && awaitID ? (
-        <div className="nexus-webchat-actions">
-          {props.item.choices.map((choice) => (
-            <button key={choice.id} type="button" onClick={() => props.onAwaitChoice(awaitID, choice.id)}>
-              {choice.label}
-            </button>
-          ))}
+      <div className="nexus-webchat-item-content">
+        <div className="nexus-webchat-item-meta">
+          <strong>{label}</strong>
+          {props.item.partial ? <span>typing</span> : null}
         </div>
-      ) : null}
-      {props.item.artifacts && props.item.artifacts.length > 0 ? (
-        <div className="nexus-webchat-artifacts">
-          {props.item.artifacts.map((artifact) => (
-            <ArtifactLine
-              key={artifact.id}
-              artifact={artifact}
-              href={props.resolveArtifactURL(artifact)}
-            />
-          ))}
+        <div className="nexus-webchat-item-body">
+          {text}
         </div>
-      ) : null}
+        {props.item.choices && props.item.choices.length > 0 && awaitID ? (
+          <div className="nexus-webchat-actions">
+            {props.item.choices.map((choice) => (
+              <button key={choice.id} type="button" onClick={() => props.onAwaitChoice(awaitID, choice.id)}>
+                {choice.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {props.item.artifacts && props.item.artifacts.length > 0 ? (
+          <div className="nexus-webchat-artifacts">
+            {props.item.artifacts.map((artifact) => (
+              <ArtifactLine
+                key={artifact.id}
+                artifact={artifact}
+                href={props.resolveArtifactURL(artifact)}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
     </article>
   );
 }
@@ -432,13 +593,12 @@ function ArtifactLine(props: { artifact: Artifact; href: string }) {
   const [previewFailed, setPreviewFailed] = useState(false);
   const mimeType = (props.artifact.mime_type ?? "").trim().toLowerCase();
   const kind = artifactPreviewKind(mimeType);
-  const name = props.artifact.name || props.artifact.id;
   const meta = artifactMeta(props.artifact);
   if (!previewFailed && props.href && kind === "image") {
     return (
       <div className="nexus-webchat-artifact-card">
         <img
-          alt={name}
+          alt={props.artifact.name || props.artifact.id}
           className="nexus-webchat-artifact-image"
           loading="lazy"
           onError={() => setPreviewFailed(true)}
@@ -472,7 +632,7 @@ function ArtifactFileRow(props: { artifact: Artifact; href: string; meta: string
   return (
     <div className="nexus-webchat-artifact-file">
       {props.href ? (
-        <a href={props.href} target="_blank" rel="noreferrer">
+        <a href={props.href} rel="noreferrer" target="_blank">
           {name}
         </a>
       ) : (
@@ -522,7 +682,7 @@ function formatBytes(value: number): string {
   return `${size.toFixed(fixed)} ${units[unitIndex]}`;
 }
 
-function buildThemeStyle(theme?: WebChatTheme): React.CSSProperties {
+function buildThemeStyle(theme?: WebChatTheme, compact?: boolean): React.CSSProperties {
   return {
     "--nexus-webchat-accent": theme?.accent,
     "--nexus-webchat-accent-contrast": theme?.accentContrast,
@@ -536,8 +696,8 @@ function buildThemeStyle(theme?: WebChatTheme): React.CSSProperties {
     "--nexus-webchat-radius": theme?.radius,
     "--nexus-webchat-shadow": theme?.shadow,
     "--nexus-webchat-font": theme?.fontFamily,
-    "--nexus-webchat-gap": theme?.compact ? "0.8rem" : "1.25rem",
-    "--nexus-webchat-pad": theme?.compact ? "0.95rem" : "1.35rem"
+    "--nexus-webchat-gap": compact || theme?.compact ? "0.8rem" : "1.15rem",
+    "--nexus-webchat-pad": compact || theme?.compact ? "0.95rem" : "1.2rem"
   } as React.CSSProperties;
 }
 

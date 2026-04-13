@@ -7433,14 +7433,14 @@ function createWebChatClient(config2 = {}) {
 var import_jsx_runtime = __toESM(require_jsx_runtime(), 1);
 var clientContext = (0, import_react.createContext)(null);
 var defaultLabels = {
-  title: "Nexus Web Chat",
+  title: "Nexus Webchat",
   subtitle: "Use your email to receive a code or magic link.",
   emailLabel: "Email",
   otpLabel: "Code",
   requestCode: "Send code",
   verifyCode: "Verify code",
-  authHelp: "Check your email for a code or link.",
-  authSent: "Check your email for a code or link.",
+  authHelp: "Check your inbox for a code or magic link.",
+  authSent: "Check your inbox for a code or magic link.",
   authFailed: "Verification failed.",
   timelineTitle: "Conversation",
   newChat: "New chat",
@@ -7490,6 +7490,8 @@ function WebChat(props) {
   const [phone, setPhone] = (0, import_react.useState)("");
   const [phoneVerified, setPhoneVerified] = (0, import_react.useState)(false);
   const [identityProfile, setIdentityProfile] = (0, import_react.useState)(null);
+  const timelineRef = (0, import_react.useRef)(null);
+  const listRef = (0, import_react.useRef)(null);
   (0, import_react.useEffect)(() => {
     let ignore = false;
     client.bootstrap().then((data) => {
@@ -7522,6 +7524,34 @@ function WebChat(props) {
       applyTimelinePayload(payload);
     });
   }, [authenticated, client, features.sse]);
+  (0, import_react.useEffect)(() => {
+    const timeline = timelineRef.current;
+    const content = listRef.current;
+    if (!timeline || !content) {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      const gap = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
+      if (gap < 120) {
+        timeline.scrollTo({ top: timeline.scrollHeight, behavior: "auto" });
+      }
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [authenticated, items.length]);
+  (0, import_react.useEffect)(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const gap = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
+      if (gap < 160) {
+        timeline.scrollTo({ top: timeline.scrollHeight, behavior: "smooth" });
+      }
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [items, activityLabel]);
   const effectiveVisibilityMode = capVisibilityMode(
     serverVisibilityMode,
     props.interactionVisibility ?? client.interactionVisibility
@@ -7541,7 +7571,11 @@ function WebChat(props) {
     }, 800);
     return () => window.clearTimeout(timer);
   }, [effectiveActivity, effectiveVisibilityMode]);
-  const themeStyle = buildThemeStyle(props.theme);
+  const themeStyle = buildThemeStyle(props.theme, props.compact);
+  const title = props.title ?? labels.title;
+  const subtitle = props.subtitle ?? labels.subtitle;
+  const statusLabel = props.statusLabel ?? "Live";
+  const panelLabel = props.panelLabel ?? "Session";
   const rootClassName = props.className ? `nexus-webchat-shell ${props.className}` : "nexus-webchat-shell";
   async function handleRequestAuth(event) {
     event.preventDefault();
@@ -7570,6 +7604,9 @@ function WebChat(props) {
   }
   async function handleSendMessage(event) {
     event.preventDefault();
+    if (!messageText.trim() && files.length === 0) {
+      return;
+    }
     try {
       setOptimisticActivity({ phase: "thinking", updated_at: (/* @__PURE__ */ new Date()).toISOString() });
       await client.sendMessage({ text: messageText.trim(), files });
@@ -7643,13 +7680,17 @@ function WebChat(props) {
   }
   if (!authenticated) {
     return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: rootClassName, style: { ...themeStyle, ...props.style }, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-auth", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-brand", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-kicker", children: "Reusable chat surface" }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { children: labels.title }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: labels.subtitle })
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "nexus-webchat-auth-hero", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-kicker", children: "Connected support surface" }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { children: title }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: subtitle })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-auth-grid", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "nexus-webchat-auth-grid", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", { className: "nexus-webchat-panel", onSubmit: handleRequestAuth, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-panel-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-eyebrow", children: "Request access" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Email sign-in" })
+          ] }) }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: labels.emailLabel }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", { type: "email", value: requestEmail, onChange: (event) => setRequestEmail(event.target.value), required: true })
@@ -7657,6 +7698,10 @@ function WebChat(props) {
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "submit", children: labels.requestCode })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", { className: "nexus-webchat-panel", onSubmit: handleVerifyAuth, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-panel-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-eyebrow", children: "Verify code" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Continue session" })
+          ] }) }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: labels.emailLabel }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", { type: "email", value: verifyEmail, onChange: (event) => setVerifyEmail(event.target.value), required: true })
@@ -7671,11 +7716,11 @@ function WebChat(props) {
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-status", children: status || labels.authHelp })
     ] }) });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: rootClassName, style: { ...themeStyle, ...props.style }, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: rootClassName, style: { ...themeStyle, ...props.style }, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-frame", children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { className: "nexus-webchat-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-header-copy", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-kicker", children: labels.timelineTitle }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { children: labels.title }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { children: title }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
           labels.signedInAsPrefix,
           " ",
@@ -7684,55 +7729,75 @@ function WebChat(props) {
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-actions", children: [
         features.newChat ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "secondary", onClick: handleNewChat, type: "button", children: labels.newChat }) : null,
-        features.logout ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { onClick: handleLogout, type: "button", children: labels.logout }) : null
+        features.logout ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "secondary", onClick: handleLogout, type: "button", children: labels.logout }) : null
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "nexus-webchat-panel", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", { className: "nexus-webchat-identity-form", onSubmit: handleSavePhone, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: labels.phoneLabel }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", { value: phone, onChange: (event) => setPhone(event.target.value), placeholder: "+628123456789" })
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "nexus-webchat-main", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-toolbar", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-presence", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "nexus-webchat-presence-dot", "aria-hidden": "true" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: statusLabel })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-panel-caption", children: panelLabel })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "nexus-webchat-panel nexus-webchat-timeline-shell", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-timeline", ref: timelineRef, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-message-list", ref: listRef, children: [
+          visibleItems.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-empty", children: labels.emptyTimeline }) : null,
+          visibleItems.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            TimelineItem,
+            {
+              item,
+              onAwaitChoice: handleAwaitChoice,
+              resolveArtifactURL: (artifact) => client.artifactURL(artifact.id)
+            },
+            item.id
+          )),
+          activityLabel ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TypingRow, { label: activityLabel }) : null
+        ] }) }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", { className: "nexus-webchat-panel nexus-webchat-composer", onSubmit: handleSendMessage, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            "textarea",
+            {
+              placeholder: labels.composerPlaceholder,
+              value: messageText,
+              onChange: (event) => setMessageText(event.target.value)
+            }
+          ),
+          features.uploads ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { className: "nexus-webchat-upload", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: files.length > 0 ? `${files.length} file${files.length === 1 ? "" : "s"} selected` : "Attach files" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+              "input",
+              {
+                multiple: true,
+                onChange: (event) => setFiles(Array.from(event.target.files ?? [])),
+                type: "file"
+              }
+            )
+          ] }) : null,
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-actions", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "submit", children: labels.send }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-status", children: sendStatus })
+        ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-actions", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "submit", children: labels.savePhone }),
-        phone ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "secondary", onClick: handleRemovePhone, type: "button", children: labels.removePhone }) : null
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-status", children: phone ? `${phoneVerified ? "Verified" : "Unverified"} phone on profile.` : "Optional phone helps with explicit Telegram or WhatsApp pairing." }),
-      identityProfile?.link_hints ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { className: "nexus-webchat-hints", children: JSON.stringify(identityProfile.link_hints, null, 2) }) : null
-    ] }) }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "nexus-webchat-panel nexus-webchat-timeline", children: [
-      visibleItems.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-empty", children: labels.emptyTimeline }) : null,
-      visibleItems.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-        TimelineItem,
-        {
-          item,
-          onAwaitChoice: handleAwaitChoice,
-          resolveArtifactURL: (artifact) => client.artifactURL(artifact.id)
-        },
-        item.id
-      )),
-      activityLabel ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-activity", children: activityLabel }) : null
-    ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", { className: "nexus-webchat-panel nexus-webchat-composer", onSubmit: handleSendMessage, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-        "textarea",
-        {
-          placeholder: labels.composerPlaceholder,
-          value: messageText,
-          onChange: (event) => setMessageText(event.target.value)
-        }
-      ),
-      features.uploads ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-        "input",
-        {
-          type: "file",
-          multiple: true,
-          onChange: (event) => setFiles(Array.from(event.target.files ?? []))
-        }
-      ) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-actions", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "submit", children: labels.send }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-status", children: sendStatus })
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("aside", { className: "nexus-webchat-side", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "nexus-webchat-panel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-panel-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-eyebrow", children: "Profile" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Identity" })
+        ] }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", { className: "nexus-webchat-identity-form", onSubmit: handleSavePhone, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: labels.phoneLabel }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", { value: phone, onChange: (event) => setPhone(event.target.value), placeholder: "+628123456789" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-actions", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "submit", children: labels.savePhone }),
+            phone ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "secondary", onClick: handleRemovePhone, type: "button", children: labels.removePhone }) : null
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "nexus-webchat-status", children: phone ? `${phoneVerified ? "Verified" : "Unverified"} phone on profile.` : "Optional phone helps with explicit Telegram or WhatsApp pairing." }),
+          identityProfile?.link_hints ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { className: "nexus-webchat-hints", children: JSON.stringify(identityProfile.link_hints, null, 2) }) : null
+        ] })
+      ] }) })
     ] })
-  ] });
+  ] }) });
   function applyBootstrapData(data) {
     setEmail(data.email);
     setItems(data.items ?? []);
@@ -7749,34 +7814,55 @@ function WebChat(props) {
     setServerVisibilityMode(normalizeVisibilityMode(payload.visibility_mode ?? serverVisibilityMode));
   }
 }
+function TypingRow(props) {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-typing", "aria-live": "polite", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-typing-avatar", "aria-hidden": "true", children: "A" }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-typing-body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-typing-dots", "aria-hidden": "true", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {})
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: props.label })
+    ] })
+  ] });
+}
 function TimelineItem(props) {
-  const role = props.item.role ?? "assistant";
+  const role = props.item.role === "user" ? "user" : "assistant";
   const awaitID = props.item.await_id ?? "";
+  const label = role === "user" ? "You" : "Assistant";
+  const text = props.item.text || props.item.status || props.item.type;
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", { className: `nexus-webchat-item ${role}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-item-body", children: props.item.text || props.item.status || props.item.type }),
-    props.item.choices && props.item.choices.length > 0 && awaitID ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-actions", children: props.item.choices.map((choice) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: () => props.onAwaitChoice(awaitID, choice.id), children: choice.label }, choice.id)) }) : null,
-    props.item.artifacts && props.item.artifacts.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-artifacts", children: props.item.artifacts.map((artifact) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-      ArtifactLine,
-      {
-        artifact,
-        href: props.resolveArtifactURL(artifact)
-      },
-      artifact.id
-    )) }) : null
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-item-avatar", "aria-hidden": "true", children: role === "user" ? "Y" : "A" }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-item-content", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-item-meta", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: label }),
+        props.item.partial ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "typing" }) : null
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-item-body", children: text }),
+      props.item.choices && props.item.choices.length > 0 && awaitID ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-actions", children: props.item.choices.map((choice) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: () => props.onAwaitChoice(awaitID, choice.id), children: choice.label }, choice.id)) }) : null,
+      props.item.artifacts && props.item.artifacts.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "nexus-webchat-artifacts", children: props.item.artifacts.map((artifact) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        ArtifactLine,
+        {
+          artifact,
+          href: props.resolveArtifactURL(artifact)
+        },
+        artifact.id
+      )) }) : null
+    ] })
   ] });
 }
 function ArtifactLine(props) {
   const [previewFailed, setPreviewFailed] = (0, import_react.useState)(false);
   const mimeType = (props.artifact.mime_type ?? "").trim().toLowerCase();
   const kind = artifactPreviewKind(mimeType);
-  const name = props.artifact.name || props.artifact.id;
   const meta = artifactMeta(props.artifact);
   if (!previewFailed && props.href && kind === "image") {
     return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-artifact-card", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
         "img",
         {
-          alt: name,
+          alt: props.artifact.name || props.artifact.id,
           className: "nexus-webchat-artifact-image",
           loading: "lazy",
           onError: () => setPreviewFailed(true),
@@ -7803,7 +7889,7 @@ function ArtifactLine(props) {
 function ArtifactFileRow(props) {
   const name = props.artifact.name || props.artifact.id;
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "nexus-webchat-artifact-file", children: [
-    props.href ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("a", { href: props.href, target: "_blank", rel: "noreferrer", children: name }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: name }),
+    props.href ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("a", { href: props.href, rel: "noreferrer", target: "_blank", children: name }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: name }),
     props.meta ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: props.meta }) : null
   ] });
 }
@@ -7843,7 +7929,7 @@ function formatBytes(value) {
   const fixed = size >= 10 || unitIndex === 0 ? 0 : 1;
   return `${size.toFixed(fixed)} ${units[unitIndex]}`;
 }
-function buildThemeStyle(theme) {
+function buildThemeStyle(theme, compact) {
   return {
     "--nexus-webchat-accent": theme?.accent,
     "--nexus-webchat-accent-contrast": theme?.accentContrast,
@@ -7857,8 +7943,8 @@ function buildThemeStyle(theme) {
     "--nexus-webchat-radius": theme?.radius,
     "--nexus-webchat-shadow": theme?.shadow,
     "--nexus-webchat-font": theme?.fontFamily,
-    "--nexus-webchat-gap": theme?.compact ? "0.8rem" : "1.25rem",
-    "--nexus-webchat-pad": theme?.compact ? "0.95rem" : "1.35rem"
+    "--nexus-webchat-gap": compact || theme?.compact ? "0.8rem" : "1.15rem",
+    "--nexus-webchat-pad": compact || theme?.compact ? "0.95rem" : "1.2rem"
   };
 }
 function normalizeVisibilityMode(value) {

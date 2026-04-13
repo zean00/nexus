@@ -14,6 +14,11 @@ export type {
 } from "./types";
 export {
   WebChat,
+  WebChatWidget,
   WebChatProvider,
   useWebChatClient
+} from "./react";
+export type {
+  WebChatProps,
+  WebChatWidgetProps
 } from "./react";
