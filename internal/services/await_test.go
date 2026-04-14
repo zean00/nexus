@@ -118,6 +118,12 @@ func (r *awaitRepo) GetAwaitDetail(context.Context, string, int) (domain.AwaitDe
 func (r *awaitRepo) GetDelivery(context.Context, string) (domain.OutboundDelivery, error) {
 	return domain.OutboundDelivery{}, nil
 }
+func (r *awaitRepo) CountSentDeliveriesSince(context.Context, string, time.Time) (int, error) {
+	return 0, nil
+}
+func (r *awaitRepo) HasRecentInboundMessageSince(context.Context, string, time.Time) (bool, error) {
+	return true, nil
+}
 func (r *awaitRepo) GetLatestDeliveryByLogicalMessage(context.Context, string) (*domain.OutboundDelivery, error) {
 	return nil, nil
 }

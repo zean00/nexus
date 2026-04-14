@@ -147,6 +147,12 @@ func (s InboundService) resolveCanonicalUser(ctx context.Context, identityRepo p
 	default:
 		identity, err := identityRepo.GetLinkedIdentity(ctx, evt.TenantID, evt.Channel, evt.Sender.ChannelUserID)
 		if err != nil {
+			for _, candidate := range relatedChannelIdentities(evt.Channel, evt.Sender.ChannelUserID) {
+				identity, err = identityRepo.GetLinkedIdentity(ctx, evt.TenantID, candidate.ChannelType, candidate.ChannelUserID)
+				if err == nil {
+					return identityRepo.GetUser(ctx, evt.TenantID, identity.UserID)
+				}
+			}
 			return domain.User{}, err
 		}
 		return identityRepo.GetUser(ctx, evt.TenantID, identity.UserID)
@@ -197,6 +203,19 @@ func (s InboundService) handleIdentityCommand(ctx context.Context, evt domain.Ca
 	}); err != nil {
 		return true, InboundResult{Status: "identity_link_rejected"}, err
 	}
+	for _, identity := range relatedChannelIdentities(evt.Channel, evt.Sender.ChannelUserID) {
+		if err := s.Identity.UpsertLinkedIdentity(ctx, domain.LinkedIdentity{
+			TenantID:       evt.TenantID,
+			UserID:         challenge.UserID,
+			ChannelType:    identity.ChannelType,
+			ChannelUserID:  identity.ChannelUserID,
+			Status:         "linked",
+			LinkedAt:       time.Now().UTC(),
+			LastVerifiedAt: time.Now().UTC(),
+		}); err != nil {
+			return true, InboundResult{Status: "identity_link_rejected"}, err
+		}
+	}
 	if auditRepo, ok := s.Repo.(interface {
 		Audit(context.Context, domain.AuditEvent) error
 	}); ok {
@@ -211,6 +230,36 @@ func (s InboundService) handleIdentityCommand(ctx context.Context, evt domain.Ca
 		})
 	}
 	return true, InboundResult{Status: "identity_linked"}, nil
+}
+
+func relatedChannelIdentities(channelType, channelUserID string) []domain.LinkedIdentity {
+	normalized := normalizeLinkedIdentityUserID(channelType, channelUserID)
+	switch channelType {
+	case "whatsapp", "whatsapp_web":
+		if normalized == "" {
+			return nil
+		}
+		return []domain.LinkedIdentity{
+			{ChannelType: "whatsapp", ChannelUserID: normalized},
+			{ChannelType: "whatsapp_web", ChannelUserID: normalized},
+		}
+	default:
+		return nil
+	}
+}
+
+func normalizeLinkedIdentityUserID(channelType, channelUserID string) string {
+	channelUserID = strings.TrimSpace(channelUserID)
+	if channelType != "whatsapp" && channelType != "whatsapp_web" {
+		return channelUserID
+	}
+	var b strings.Builder
+	for _, ch := range channelUserID {
+		if ch >= '0' && ch <= '9' {
+			b.WriteRune(ch)
+		}
+	}
+	return b.String()
 }
 
 func parseIdentityCommand(text string) (string, string) {

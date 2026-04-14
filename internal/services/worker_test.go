@@ -86,6 +86,12 @@ func (r *workerRepo) ResolveAwait(context.Context, string, string, string, strin
 func (r *workerRepo) GetAwait(context.Context, string) (domain.Await, error) {
 	return r.await, nil
 }
+func (r *workerRepo) CountSentDeliveriesSince(context.Context, string, time.Time) (int, error) {
+	return 0, nil
+}
+func (r *workerRepo) HasRecentInboundMessageSince(context.Context, string, time.Time) (bool, error) {
+	return true, nil
+}
 func (r *workerRepo) EnqueueAwaitResume(context.Context, domain.ResumeRequest, string) error {
 	return nil
 }

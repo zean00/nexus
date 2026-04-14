@@ -1410,17 +1410,17 @@ func normalizePhone(input string) (string, string, error) {
 
 func buildWebChatLinkHints(user domain.User, identities []domain.LinkedIdentity) map[string]map[string]any {
 	hints := map[string]map[string]any{}
-	for _, channel := range []string{"telegram", "whatsapp"} {
+	for _, channel := range []string{"telegram", "whatsapp", "whatsapp_web"} {
 		hint := map[string]any{}
 		if user.PrimaryPhone != "" {
 			hint["primary_phone"] = user.PrimaryPhone
 			hint["primary_phone_verified"] = user.PrimaryPhoneVerified
 			hint["phone_hint"] = fmt.Sprintf("Use the %s account that matches %s when pairing.", channel, user.PrimaryPhone)
 		}
-		if channel == "whatsapp" && user.PrimaryPhoneNormalized != "" {
+		if (channel == "whatsapp" || channel == "whatsapp_web") && user.PrimaryPhoneNormalized != "" {
 			matched := false
 			for _, identity := range identities {
-				if identity.ChannelType != "whatsapp" {
+				if identity.ChannelType != "whatsapp" && identity.ChannelType != "whatsapp_web" {
 					continue
 				}
 				if normalizePhoneDigits(identity.ChannelUserID) == normalizePhoneDigits(user.PrimaryPhoneNormalized) {

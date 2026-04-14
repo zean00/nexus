@@ -17,6 +17,7 @@ import (
 	"nexus/internal/adapters/telegram"
 	"nexus/internal/adapters/webchat"
 	"nexus/internal/adapters/whatsapp"
+	"nexus/internal/adapters/whatsappweb"
 	"nexus/internal/config"
 	"nexus/internal/domain"
 	"nexus/internal/httpx"
@@ -27,27 +28,29 @@ import (
 )
 
 type App struct {
-	Config     config.Config
-	Repo       ports.Repository
-	DB         *db.PostgresRepository
-	Inbound    services.InboundService
-	Await      services.AwaitService
-	Artifacts  services.ArtifactService
-	Retention  services.RetentionService
-	Catalog    *services.AgentCatalog
-	Worker     services.WorkerService
-	Reconciler services.Reconciler
-	ACP        ports.ACPBridge
-	WebAuth    ports.WebAuthRepository
-	Identity   ports.IdentityRepository
-	Slack      slack.Adapter
-	WhatsApp   whatsapp.Adapter
-	Email      email.Adapter
-	WebChat    webchat.Adapter
-	Telegram   telegram.Adapter
-	Channels   map[string]ports.ChannelAdapter
-	Runtime    *RuntimeState
-	WebChatHub *WebChatSessionHub
+	Config             config.Config
+	Repo               ports.Repository
+	DB                 *db.PostgresRepository
+	Inbound            services.InboundService
+	Await              services.AwaitService
+	Artifacts          services.ArtifactService
+	Retention          services.RetentionService
+	Catalog            *services.AgentCatalog
+	Worker             services.WorkerService
+	Reconciler         services.Reconciler
+	ACP                ports.ACPBridge
+	WebAuth            ports.WebAuthRepository
+	Identity           ports.IdentityRepository
+	Slack              slack.Adapter
+	WhatsApp           whatsapp.Adapter
+	WhatsAppWeb        whatsappweb.Adapter
+	WhatsAppWebEnabled bool
+	Email              email.Adapter
+	WebChat            webchat.Adapter
+	Telegram           telegram.Adapter
+	Channels           map[string]ports.ChannelAdapter
+	Runtime            *RuntimeState
+	WebChatHub         *WebChatSessionHub
 }
 
 type RuntimeState struct {
@@ -289,6 +292,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 	slackAdapter := slack.New(cfg.SlackSigningSecret, cfg.SlackBotToken)
 	whatsappAdapter := whatsapp.New(cfg.WhatsAppVerifyToken, cfg.WhatsAppAccessToken, cfg.WhatsAppAppSecret, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppAPIBaseURL)
+	whatsappWebAdapter := whatsappweb.New(cfg.WhatsAppWebBaseURL, cfg.WhatsAppWebAPIKey, cfg.WhatsAppWebSession, cfg.WhatsAppWebEngine, cfg.WhatsAppWebWebhookSecret, cfg.NexusPublicBaseURL)
 	emailAdapter := email.New(cfg.EmailWebhookSecret, cfg.EmailSMTPAddr, cfg.EmailSMTPUsername, cfg.EmailSMTPPassword, cfg.EmailFromAddress)
 	policy := resilience.NewPolicy(resilience.Config{
 		MaxAttempts:      cfg.RetryMaxAttempts,
@@ -298,8 +302,22 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	})
 	slackAdapter.HTTP = policy.HTTPClient("slack.api", 10*time.Second)
 	whatsappAdapter.HTTP = policy.HTTPClient("whatsapp.api", 10*time.Second)
+	whatsappWebAdapter.HTTP = policy.HTTPClient("waha.api", 15*time.Second)
 	emailAdapter.RetryDo = policy.Do
 	whatsappAdapter.MaxMediaBytes = cfg.WhatsAppMediaMaxBytes
+	whatsappWebAdapter.EnableAntiBlock = cfg.WhatsAppWebEnableAntiBlock
+	whatsappWebAdapter.EnableSeen = cfg.WhatsAppWebEnableSeen
+	whatsappWebAdapter.EnableTyping = cfg.WhatsAppWebEnableTyping
+	whatsappWebAdapter.SetOfflineAfterSend = cfg.WhatsAppWebSetOfflineAfterSend
+	whatsappWebAdapter.RequireRecentInbound = cfg.WhatsAppWebRequireRecentInbound
+	whatsappWebAdapter.MinDelay = time.Duration(cfg.WhatsAppWebMinDelayMS) * time.Millisecond
+	whatsappWebAdapter.MaxDelay = time.Duration(cfg.WhatsAppWebMaxDelayMS) * time.Millisecond
+	whatsappWebAdapter.HourlyMessageCap = cfg.WhatsAppWebHourlyMessageCap
+	whatsappWebAdapter.RecentInboundWindow = time.Duration(cfg.WhatsAppWebRecentInboundWindowMinutes) * time.Minute
+	whatsappWebAdapter.BurstWindow = time.Duration(cfg.WhatsAppWebBurstWindowMinutes) * time.Minute
+	whatsappWebAdapter.BurstMessageCap = cfg.WhatsAppWebBurstMessageCap
+	whatsappWebAdapter.CountSentDeliveriesSince = repo.CountSentDeliveriesSince
+	whatsappWebAdapter.HasRecentInboundMessageSince = repo.HasRecentInboundMessageSince
 	emailAdapter.MaxWebhookSkew = time.Duration(cfg.EmailWebhookMaxSkewSeconds) * time.Second
 	emailAdapter.MaxAttachmentBytes = cfg.EmailMaxAttachmentBytes
 	emailAdapter.MaxAttachments = cfg.EmailMaxAttachments
@@ -332,6 +350,10 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		"email":    emailAdapter,
 		"webchat":  webchatAdapter,
 		"telegram": telegramAdapter,
+	}
+	if cfg.WhatsAppWebEnabled {
+		renderers["whatsapp_web"] = services.WhatsAppWebRenderer{}
+		channels["whatsapp_web"] = whatsappWebAdapter
 	}
 	acpClient := acp.NewBridge(acp.BridgeConfig{
 		Implementation:   cfg.ACPImplementation,
@@ -423,17 +445,19 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 			},
 			Observer: runtime,
 		},
-		ACP:        acpClient,
-		WebAuth:    repo,
-		Identity:   repo,
-		Slack:      slackAdapter,
-		WhatsApp:   whatsappAdapter,
-		Email:      emailAdapter,
-		WebChat:    webchatAdapter,
-		Telegram:   telegramAdapter,
-		Channels:   channels,
-		Runtime:    runtime,
-		WebChatHub: webchatHub,
+		ACP:                acpClient,
+		WebAuth:            repo,
+		Identity:           repo,
+		Slack:              slackAdapter,
+		WhatsApp:           whatsappAdapter,
+		WhatsAppWeb:        whatsappWebAdapter,
+		WhatsAppWebEnabled: cfg.WhatsAppWebEnabled,
+		Email:              emailAdapter,
+		WebChat:            webchatAdapter,
+		Telegram:           telegramAdapter,
+		Channels:           channels,
+		Runtime:            runtime,
+		WebChatHub:         webchatHub,
 	}, nil
 }
 
@@ -467,6 +491,7 @@ func (a *App) GatewayHandler() http.Handler {
 	})
 	mux.HandleFunc("/webhooks/slack", a.handleSlackWebhook)
 	mux.HandleFunc("/webhooks/whatsapp", a.handleWhatsAppWebhook)
+	mux.HandleFunc("/webhooks/whatsapp-web", a.handleWhatsAppWebWebhook)
 	mux.HandleFunc("/webhooks/email", a.handleEmailWebhook)
 	mux.HandleFunc("/webhooks/telegram", a.handleTelegramWebhook)
 	mux.HandleFunc("/webchat", a.handleWebChatIndex)
@@ -561,6 +586,11 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/deliveries", a.handleListDeliveries)
 	mux.HandleFunc("/admin/runs/cancel", a.handleCancelRun)
 	mux.HandleFunc("/admin/deliveries/retry", a.handleRetryDelivery)
+	mux.HandleFunc("/admin/whatsapp-web/session", a.handleWhatsAppWebSessionStatus)
+	mux.HandleFunc("/admin/whatsapp-web/session/start", a.handleWhatsAppWebSessionStart)
+	mux.HandleFunc("/admin/whatsapp-web/session/stop", a.handleWhatsAppWebSessionStop)
+	mux.HandleFunc("/admin/whatsapp-web/session/qr", a.handleWhatsAppWebSessionQR)
+	mux.HandleFunc("/admin/whatsapp-web/session/webhook/sync", a.handleWhatsAppWebWebhookSync)
 	return tracex.Middleware("admin", a.adminAuthMiddleware(mux))
 }
 

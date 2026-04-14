@@ -115,6 +115,36 @@ Behavior notes:
 - inbound media hydration supports image, document, and audio
 - outbound artifact delivery requires a reachable `http(s)` artifact URL
 
+## WhatsApp Web
+
+| Variable | Default | Purpose | Notes |
+| --- | --- | --- | --- |
+| `WHATSAPP_WEB_ENABLED` | `false` | Enable the WAHA-backed `whatsapp_web` channel | Separate from official WhatsApp Cloud API |
+| `WHATSAPP_WEB_BASE_URL` | `http://localhost:3000` | WAHA API base URL | Required when enabled |
+| `WHATSAPP_WEB_API_KEY` | empty | WAHA API key | Recommended in production |
+| `WHATSAPP_WEB_SESSION` | `default` | WAHA session name | Nexus manages this configured session |
+| `WHATSAPP_WEB_ENGINE` | empty | Preferred WAHA engine | Optional |
+| `WHATSAPP_WEB_WEBHOOK_SECRET` | empty | HMAC secret for WAHA webhooks | Should be set in production |
+| `WHATSAPP_WEB_ENABLE_ANTI_BLOCK` | `true` | Enable seen / typing / delay send flow | Applies only to `whatsapp_web` |
+| `WHATSAPP_WEB_ENABLE_SEEN` | `true` | Send `seen` before message sends | Applies only when anti-block is enabled |
+| `WHATSAPP_WEB_ENABLE_TYPING` | `true` | Send typing presence before sends | Applies only when anti-block is enabled |
+| `WHATSAPP_WEB_SET_OFFLINE_AFTER_SEND` | `true` | Reset WAHA session presence to `offline` after successful sends | Keeps the session from looking permanently active |
+| `WHATSAPP_WEB_REQUIRE_RECENT_INBOUND` | `true` | Require a recent inbound message before outbound sends are allowed | Enforces reply-oriented behavior for `whatsapp_web` |
+| `WHATSAPP_WEB_MIN_DELAY_MS` | `800` | Minimum delay before sends | Anti-block pacing floor |
+| `WHATSAPP_WEB_MAX_DELAY_MS` | `2500` | Maximum delay before sends | Anti-block pacing ceiling |
+| `WHATSAPP_WEB_HOURLY_MESSAGE_CAP` | `120` | Rolling hourly delivery cap per Nexus session | Uses sent delivery history |
+| `WHATSAPP_WEB_RECENT_INBOUND_WINDOW_MINUTES` | `30` | How recent the last inbound message must be when recent-inbound gating is enabled | Per Nexus session |
+| `WHATSAPP_WEB_BURST_WINDOW_MINUTES` | `2` | Short rolling window used for burst throttling | Per Nexus session |
+| `WHATSAPP_WEB_BURST_MESSAGE_CAP` | `4` | Maximum sent deliveries allowed within the burst window | Set `0` to disable burst throttling |
+| `NEXUS_PUBLIC_BASE_URL` | empty | Public gateway base URL | Required for WAHA webhook sync and QR/session lifecycle flows |
+
+Behavior notes:
+
+- `whatsapp_web` is a separate channel from `whatsapp`
+- outbound artifacts are sent through WAHA directly and do not require public URLs
+- Nexus exposes admin session lifecycle endpoints for the configured WAHA session
+- phone-based identity linking is shared with the official WhatsApp channel
+
 ## Email
 
 | Variable | Default | Purpose | Notes |

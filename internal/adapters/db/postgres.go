@@ -1287,6 +1287,28 @@ func (r *PostgresRepository) GetLatestDeliveryByLogicalMessage(ctx context.Conte
 	return &delivery, nil
 }
 
+func (r *PostgresRepository) CountSentDeliveriesSince(ctx context.Context, sessionID string, since time.Time) (int, error) {
+	var count int
+	err := r.queryRow(ctx, `
+		select count(*)
+		from outbound_deliveries
+		where session_id=$1 and status='sent' and updated_at >= $2
+	`, sessionID, since).Scan(&count)
+	return count, err
+}
+
+func (r *PostgresRepository) HasRecentInboundMessageSince(ctx context.Context, sessionID string, since time.Time) (bool, error) {
+	var ok bool
+	err := r.queryRow(ctx, `
+		select exists(
+			select 1
+			from messages
+			where session_id=$1 and direction='inbound' and created_at >= $2
+		)
+	`, sessionID, since).Scan(&ok)
+	return ok, err
+}
+
 func (r *PostgresRepository) MarkDeliverySent(ctx context.Context, deliveryID string, result domain.DeliveryResult) error {
 	_, err := r.exec(ctx, `
 		update outbound_deliveries

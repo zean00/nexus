@@ -18,6 +18,7 @@ Implemented channels:
 - Slack
 - Telegram
 - WhatsApp
+- WhatsApp Web
 - Email
 - Webchat
 
@@ -25,28 +26,28 @@ If you are evaluating the project for the first time, start with Webchat. It exp
 
 ## End-to-End Behavior Matrix
 
-| Capability | Slack | Telegram | WhatsApp | Email | Webchat |
-| --- | --- | --- | --- | --- | --- |
-| Inbound verification | HMAC signature | Secret token | Verify token + HMAC signature | Secret or timestamped HMAC | First-party session |
-| Inbound text | Yes | Yes | Yes | Yes | Yes |
-| Inbound interactive await response | Yes | Yes | Yes | Yes | Yes |
-| Inbound artifacts | Yes | No native file ingest in current adapter | Yes | Yes | Yes |
-| Outbound status message | Yes | Yes | Yes | Yes | Persisted state + webchat adapter delivery |
-| Outbound await prompt | Buttons | Inline keyboard | Buttons or text fallback | Email instructions | Native UI/API |
-| Outbound artifacts | Yes | Yes | Yes, only public `http(s)` URLs | Yes | Yes |
-| Partial streaming exposed to user | No | No | No | No | Yes |
-| Identity linking path | Yes | Yes | Yes | Yes | Native first-party identity plus linking |
-| Session commands | No | Yes | No | No | UI/API actions instead |
+| Capability | Slack | Telegram | WhatsApp | WhatsApp Web | Email | Webchat |
+| --- | --- | --- | --- | --- | --- | --- |
+| Inbound verification | HMAC signature | Secret token | Verify token + HMAC signature | WAHA HMAC signature | Secret or timestamped HMAC | First-party session |
+| Inbound text | Yes | Yes | Yes | Yes | Yes | Yes |
+| Inbound interactive await response | Yes | Yes | Yes | Text fallback in v1 | Yes | Yes |
+| Inbound artifacts | Yes | No native file ingest in current adapter | Yes | Yes | Yes | Yes |
+| Outbound status message | Yes | Yes | Yes | Yes | Yes | Persisted state + webchat adapter delivery |
+| Outbound await prompt | Buttons | Inline keyboard | Buttons or text fallback | Text fallback | Email instructions | Native UI/API |
+| Outbound artifacts | Yes | Yes | Yes, only public `http(s)` URLs | Yes, direct file/media send | Yes | Yes |
+| Partial streaming exposed to user | No | No | No | No | No | Yes |
+| Identity linking path | Yes | Yes | Yes | Shared with WhatsApp phone identity | Yes | Native first-party identity plus linking |
+| Session commands | No | Yes | No | Admin session lifecycle APIs | No | UI/API actions instead |
 
 ## UX Fidelity Matrix
 
-| UX Area | Slack | Telegram | WhatsApp | Email | Webchat |
-| --- | --- | --- | --- | --- | --- |
-| Native interactive choices | Strong | Strong | Moderate | Weak | Strong |
-| Artifact UX | Strong | Moderate | Moderate | Strong | Strong |
-| Real-time updates | Replace-style status updates | Replace/edit-style status updates | Message sends only | Async email thread | SSE timeline |
-| Rich artifact preview | Provider-native | Provider-native/basic | Provider-native/basic | Attachment-based | Inline image/audio/video |
-| Best channel for ongoing conversations | Good | Good | Acceptable | Weak | Best |
+| UX Area | Slack | Telegram | WhatsApp | WhatsApp Web | Email | Webchat |
+| --- | --- | --- | --- | --- | --- | --- |
+| Native interactive choices | Strong | Strong | Moderate | Moderate | Weak | Strong |
+| Artifact UX | Strong | Moderate | Moderate | Strong | Strong | Strong |
+| Real-time updates | Replace-style status updates | Replace/edit-style status updates | Message sends only | Message sends plus anti-block pacing | Async email thread | SSE timeline |
+| Rich artifact preview | Provider-native | Provider-native/basic | Provider-native/basic | Provider-native/basic | Attachment-based | Inline image/audio/video |
+| Best channel for ongoing conversations | Good | Good | Acceptable | Good with transport caveats | Weak | Best |
 
 ## Channel-by-Channel Notes
 
@@ -91,6 +92,20 @@ Current notes:
 - if there are more than three choices, the await UX degrades to text instructions
 - partial streaming is not surfaced
 
+### WhatsApp Web
+
+Strengths:
+
+- WAHA-backed transport with session lifecycle managed through Nexus admin
+- anti-block send flow with seen, typing, and pacing controls
+- direct outbound artifact delivery without public URL requirements
+
+Current notes:
+
+- this is a separate channel from the official Meta Cloud API path
+- v1 await UX uses text fallback rather than provider-native buttons
+- partial streaming is not surfaced
+
 ### Email
 
 Strengths:
@@ -122,28 +137,28 @@ Current notes:
 
 ## Artifact Matrix
 
-| Artifact Behavior | Slack | Telegram | WhatsApp | Email | Webchat |
-| --- | --- | --- | --- | --- | --- |
-| Inbound artifact parsing | File metadata | No current file parsing | Image / document / audio metadata | Attachment metadata | Browser uploads |
-| Inbound artifact hydration | Provider download | N/A | Provider media download | Base64 decode | Direct save to object store |
-| Outbound artifact delivery | Upload send | Document send | Media send from public URL | Email attachment | Authenticated web delivery |
-| Inline artifact preview | Provider-dependent | Provider-dependent | Provider-dependent | Client-dependent | Yes |
+| Artifact Behavior | Slack | Telegram | WhatsApp | WhatsApp Web | Email | Webchat |
+| --- | --- | --- | --- | --- | --- | --- |
+| Inbound artifact parsing | File metadata | No current file parsing | Image / document / audio metadata | WAHA media metadata | Attachment metadata | Browser uploads |
+| Inbound artifact hydration | Provider download | N/A | Provider media download | WAHA media download | Base64 decode | Direct save to object store |
+| Outbound artifact delivery | Upload send | Document send | Media send from public URL | Direct WAHA file/media send | Email attachment | Authenticated web delivery |
+| Inline artifact preview | Provider-dependent | Provider-dependent | Provider-dependent | Provider-dependent | Client-dependent | Yes |
 
 ## Await / Approval Matrix
 
-| Await Capability | Slack | Telegram | WhatsApp | Email | Webchat |
-| --- | --- | --- | --- | --- | --- |
-| Structured choice rendering | Yes | Yes | Yes, with limits | Text fallback | Yes |
-| Arbitrary reply resume | Via mapped button choice payload | Via callback payload | Via button/list reply or text fallback | Email body reply | Native UI/API |
-| Actor binding | Provider user ID | Provider user ID | Provider phone/user ID | Sender email | Auth session identity |
+| Await Capability | Slack | Telegram | WhatsApp | WhatsApp Web | Email | Webchat |
+| --- | --- | --- | --- | --- | --- | --- |
+| Structured choice rendering | Yes | Yes | Yes, with limits | Text fallback | Text fallback | Yes |
+| Arbitrary reply resume | Via mapped button choice payload | Via callback payload | Via button/list reply or text fallback | Via text fallback marker | Email body reply | Native UI/API |
+| Actor binding | Provider user ID | Provider user ID | Provider phone/user ID | Provider phone/user ID | Sender email | Auth session identity |
 
 ## Streaming Matrix
 
-| Streaming Behavior | Slack | Telegram | WhatsApp | Email | Webchat |
-| --- | --- | --- | --- | --- | --- |
-| Worker persists incremental output | Yes | Yes | Yes | Yes | Yes |
-| Renderer exposes partial output | No | No | No | No | No, but UI reads persisted partial state directly |
-| User sees incremental output | No | No | No | No | Yes |
+| Streaming Behavior | Slack | Telegram | WhatsApp | WhatsApp Web | Email | Webchat |
+| --- | --- | --- | --- | --- | --- | --- |
+| Worker persists incremental output | Yes | Yes | Yes | Yes | Yes | Yes |
+| Renderer exposes partial output | No | No | No | No | No | No, but UI reads persisted partial state directly |
+| User sees incremental output | No | No | No | No | No | Yes |
 
 The distinction matters:
 
@@ -166,6 +181,7 @@ Artifact support is intentionally asymmetric:
 
 - Slack, Telegram, and email can upload local/file-backed artifacts
 - WhatsApp requires a public URL for outbound media sends
+- WhatsApp Web can send object-store-backed files through WAHA
 - webchat reads artifacts through the authenticated artifact endpoint
 
 Those differences are structural, not accidental. Some providers simply expose a richer transport model than others.
@@ -178,6 +194,7 @@ Those differences are structural, not accidental. Some providers simply expose a
 | Rich first-party UX | Webchat |
 | Team approvals in chat | Slack or Telegram |
 | Mobile async interaction | WhatsApp |
+| Mobile interaction with WAHA-style transport and pacing | WhatsApp Web |
 | Long-form async review trail | Email |
 
 ## Related Docs

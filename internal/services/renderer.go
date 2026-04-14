@@ -13,6 +13,7 @@ import (
 type SlackRenderer struct{}
 type TelegramRenderer struct{}
 type WhatsAppRenderer struct{}
+type WhatsAppWebRenderer struct{}
 type EmailRenderer struct{}
 type WebChatRenderer struct{}
 
@@ -344,6 +345,82 @@ func (r WhatsAppRenderer) RenderRunEvent(_ context.Context, session domain.Sessi
 	}
 }
 
+func (r WhatsAppWebRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
+	if evt.IsPartial {
+		return nil, nil
+	}
+	recipient := session.ChannelScopeKey
+	switch evt.Status {
+	case "awaiting":
+		payload, err := renderWhatsAppWebAwaitPayload(recipient, "await_"+evt.RunID, evt.AwaitPrompt)
+		if err != nil {
+			return nil, err
+		}
+		return []domain.OutboundDelivery{{
+			ID:               "delivery_" + evt.RunID + "_await",
+			TenantID:         session.TenantID,
+			SessionID:        session.ID,
+			RunID:            evt.RunID,
+			AwaitID:          "await_" + evt.RunID,
+			ChannelType:      session.ChannelType,
+			DeliveryKind:     "send",
+			Status:           "queued",
+			LogicalMessageID: "logical_" + evt.RunID + "_await",
+			PayloadJSON:      payload,
+		}}, nil
+	case "completed", "running", "failed":
+		text := evt.Text
+		if len(evt.Artifacts) > 0 {
+			text = appendArtifactSummary(text, evt.Artifacts)
+		}
+		payload, err := json.Marshal(map[string]any{
+			"chatId": recipient,
+			"text":   text,
+		})
+		if err != nil {
+			return nil, err
+		}
+		deliveries := []domain.OutboundDelivery{{
+			ID:               "delivery_" + evt.RunID + "_" + evt.Status,
+			TenantID:         session.TenantID,
+			SessionID:        session.ID,
+			RunID:            evt.RunID,
+			ChannelType:      session.ChannelType,
+			DeliveryKind:     "send",
+			Status:           "queued",
+			LogicalMessageID: "logical_" + evt.RunID + "_status",
+			PayloadJSON:      payload,
+		}}
+		for idx, artifact := range evt.Artifacts {
+			artifactPayload, err := json.Marshal(map[string]any{
+				"kind":        "artifact_upload",
+				"chatId":      recipient,
+				"storage_uri": artifact.StorageURI,
+				"file_name":   artifact.Name,
+				"mime_type":   artifact.MIMEType,
+				"caption":     artifact.Name,
+			})
+			if err != nil {
+				return nil, err
+			}
+			deliveries = append(deliveries, domain.OutboundDelivery{
+				ID:               fmt.Sprintf("delivery_%s_waha_artifact_%d", evt.RunID, idx),
+				TenantID:         session.TenantID,
+				SessionID:        session.ID,
+				RunID:            evt.RunID,
+				ChannelType:      session.ChannelType,
+				DeliveryKind:     "send",
+				Status:           "queued",
+				LogicalMessageID: fmt.Sprintf("logical_%s_waha_artifact_%d", evt.RunID, idx),
+				PayloadJSON:      artifactPayload,
+			})
+		}
+		return deliveries, nil
+	default:
+		return nil, nil
+	}
+}
+
 func (r EmailRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
 	if evt.IsPartial {
 		return nil, nil
@@ -522,30 +599,9 @@ func renderTelegramAwaitPayload(chatID, awaitID string, prompt []byte) ([]byte, 
 }
 
 func renderWhatsAppAwaitPayload(recipient, awaitID string, prompt []byte) ([]byte, error) {
-	var model struct {
-		Title   string                `json:"title"`
-		Body    string                `json:"body"`
-		Choices []domain.RenderChoice `json:"choices"`
-	}
-	if len(prompt) > 0 {
-		if err := json.Unmarshal(prompt, &model); err != nil {
-			return nil, err
-		}
-	}
-	text := model.Title
-	if text == "" {
-		text = "The agent needs your input to continue."
-	}
-	if model.Body != "" {
-		text += "\n" + model.Body
-	}
-	if len(model.Choices) > 3 {
-		lines := make([]string, 0, len(model.Choices)+3)
-		lines = append(lines, text, "", "Reply with one of:")
-		for _, choice := range model.Choices {
-			lines = append(lines, fmt.Sprintf("[await:%s] %s", awaitID, choice.ID))
-		}
-		text = strings.Join(lines, "\n")
+	text, choices, err := renderAwaitTextChoices(awaitID, prompt, false)
+	if err != nil {
+		return nil, err
 	}
 	payload := map[string]any{
 		"messaging_product": "whatsapp",
@@ -553,9 +609,9 @@ func renderWhatsAppAwaitPayload(recipient, awaitID string, prompt []byte) ([]byt
 		"type":              "text",
 		"text":              map[string]any{"body": text},
 	}
-	if len(model.Choices) > 0 && len(model.Choices) <= 3 {
-		buttons := make([]map[string]any, 0, len(model.Choices))
-		for _, choice := range model.Choices {
+	if len(choices) > 0 && len(choices) <= 3 {
+		buttons := make([]map[string]any, 0, len(choices))
+		for _, choice := range choices {
 			buttons = append(buttons, map[string]any{
 				"type": "reply",
 				"reply": map[string]any{
@@ -574,6 +630,46 @@ func renderWhatsAppAwaitPayload(recipient, awaitID string, prompt []byte) ([]byt
 		}
 	}
 	return json.Marshal(payload)
+}
+
+func renderWhatsAppWebAwaitPayload(recipient, awaitID string, prompt []byte) ([]byte, error) {
+	text, _, err := renderAwaitTextChoices(awaitID, prompt, true)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{
+		"chatId": recipient,
+		"text":   text,
+	})
+}
+
+func renderAwaitTextChoices(awaitID string, prompt []byte, alwaysIncludeChoices bool) (string, []domain.RenderChoice, error) {
+	var model struct {
+		Title   string                `json:"title"`
+		Body    string                `json:"body"`
+		Choices []domain.RenderChoice `json:"choices"`
+	}
+	if len(prompt) > 0 {
+		if err := json.Unmarshal(prompt, &model); err != nil {
+			return "", nil, err
+		}
+	}
+	text := model.Title
+	if text == "" {
+		text = "The agent needs your input to continue."
+	}
+	if model.Body != "" {
+		text += "\n" + model.Body
+	}
+	if len(model.Choices) > 3 || (alwaysIncludeChoices && len(model.Choices) > 0) {
+		lines := make([]string, 0, len(model.Choices)+3)
+		lines = append(lines, text, "", "Reply with one of:")
+		for _, choice := range model.Choices {
+			lines = append(lines, fmt.Sprintf("[await:%s] %s", awaitID, choice.ID))
+		}
+		text = strings.Join(lines, "\n")
+	}
+	return text, model.Choices, nil
 }
 
 func renderEmailAwaitPayload(recipient, threadID, awaitID string, prompt []byte) ([]byte, error) {

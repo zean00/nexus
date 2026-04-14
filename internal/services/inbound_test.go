@@ -139,6 +139,12 @@ func (r *fakeRepo) ResolveAwait(context.Context, string, string, string, string,
 func (r *fakeRepo) GetAwait(context.Context, string) (domain.Await, error) {
 	return domain.Await{}, nil
 }
+func (r *fakeRepo) CountSentDeliveriesSince(context.Context, string, time.Time) (int, error) {
+	return 0, nil
+}
+func (r *fakeRepo) HasRecentInboundMessageSince(context.Context, string, time.Time) (bool, error) {
+	return true, nil
+}
 func (r *fakeRepo) EnqueueAwaitResume(context.Context, domain.ResumeRequest, string) error {
 	return nil
 }

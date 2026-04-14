@@ -132,3 +132,72 @@ func TestWhatsAppRendererAddsArtifactUploadsForPublicURLs(t *testing.T) {
 		t.Fatalf("unexpected whatsapp artifact payload: %+v", artifactPayload)
 	}
 }
+
+func TestWhatsAppWebRendererAddsArtifactUploadsForStoredFiles(t *testing.T) {
+	renderer := WhatsAppWebRenderer{}
+	deliveries, err := renderer.RenderRunEvent(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "whatsapp_web",
+		ChannelScopeKey: "628123456789@c.us",
+	}, domain.RunEvent{
+		RunID:  "run_1",
+		Status: "completed",
+		Text:   "done",
+		Artifacts: []domain.Artifact{
+			{ID: "artifact_1", Name: "report.pdf", MIMEType: "application/pdf", StorageURI: "file:///tmp/report.pdf"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 2 {
+		t.Fatalf("expected text plus one artifact delivery, got %+v", deliveries)
+	}
+	var artifactPayload map[string]any
+	if err := json.Unmarshal(deliveries[1].PayloadJSON, &artifactPayload); err != nil {
+		t.Fatal(err)
+	}
+	if artifactPayload["kind"] != "artifact_upload" || artifactPayload["storage_uri"] != "file:///tmp/report.pdf" {
+		t.Fatalf("unexpected whatsapp_web artifact payload: %+v", artifactPayload)
+	}
+}
+
+func TestWhatsAppWebRendererKeepsAwaitReplySyntax(t *testing.T) {
+	renderer := WhatsAppWebRenderer{}
+	prompt, err := json.Marshal(map[string]any{
+		"title": "Approval needed",
+		"body":  "Choose one option.",
+		"choices": []domain.RenderChoice{
+			{ID: "approve", Label: "Approve"},
+			{ID: "reject", Label: "Reject"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliveries, err := renderer.RenderRunEvent(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "whatsapp_web",
+		ChannelScopeKey: "628123456789@c.us",
+	}, domain.RunEvent{
+		RunID:       "run_1",
+		Status:      "awaiting",
+		AwaitPrompt: prompt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 1 {
+		t.Fatalf("expected one await delivery, got %+v", deliveries)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(deliveries[0].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := payload["text"].(string)
+	if !strings.Contains(text, "[await:await_run_1] approve") || !strings.Contains(text, "[await:await_run_1] reject") {
+		t.Fatalf("expected await reply syntax in whatsapp_web text, got %q", text)
+	}
+}

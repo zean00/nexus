@@ -114,6 +114,8 @@ type Repository interface {
 	GetInboundMessage(ctx context.Context, messageID string) (domain.Message, error)
 	GetDelivery(ctx context.Context, deliveryID string) (domain.OutboundDelivery, error)
 	GetLatestDeliveryByLogicalMessage(ctx context.Context, logicalMessageID string) (*domain.OutboundDelivery, error)
+	CountSentDeliveriesSince(ctx context.Context, sessionID string, since time.Time) (int, error)
+	HasRecentInboundMessageSince(ctx context.Context, sessionID string, since time.Time) (bool, error)
 	GetRun(ctx context.Context, runID string) (domain.Run, error)
 	GetRunByACP(ctx context.Context, acpRunID string) (domain.Run, error)
 	GetAwaitsForRun(ctx context.Context, runID string, limit int) ([]domain.Await, error)

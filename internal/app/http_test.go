@@ -77,6 +77,16 @@ func (b testACPBridge) RuntimeStatus() acpadapter.StdioRuntimeStatus {
 
 var _ ports.ACPBridge = testACPBridge{}
 
+func TestWhatsAppWebHandlersReturnNotFoundWhenDisabled(t *testing.T) {
+	app := &App{}
+	req := httptest.NewRequest(http.MethodGet, "/admin/whatsapp-web/session", nil)
+	rec := httptest.NewRecorder()
+	app.handleWhatsAppWebSessionStatus(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when whatsapp_web disabled, got %d", rec.Code)
+	}
+}
+
 type testRouter struct{}
 
 func (testRouter) Route(context.Context, domain.CanonicalInboundEvent, domain.Session) (domain.RouteDecision, error) {
@@ -195,6 +205,12 @@ func (r *appRepoStub) GetDelivery(context.Context, string) (domain.OutboundDeliv
 }
 func (r *appRepoStub) GetLatestDeliveryByLogicalMessage(context.Context, string) (*domain.OutboundDelivery, error) {
 	return nil, nil
+}
+func (r *appRepoStub) CountSentDeliveriesSince(context.Context, string, time.Time) (int, error) {
+	return 0, nil
+}
+func (r *appRepoStub) HasRecentInboundMessageSince(context.Context, string, time.Time) (bool, error) {
+	return true, nil
 }
 func (r *appRepoStub) GetRun(context.Context, string) (domain.Run, error) { return domain.Run{}, nil }
 func (r *appRepoStub) GetRunByACP(context.Context, string) (domain.Run, error) {

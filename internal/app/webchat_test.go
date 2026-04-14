@@ -980,7 +980,7 @@ func TestWebChatStaticAssetsServed(t *testing.T) {
 	if jsRec.Code != http.StatusOK {
 		t.Fatalf("expected js 200, got %d body=%s", jsRec.Code, jsRec.Body.String())
 	}
-	if !strings.Contains(jsRec.Body.String(), "Nexus Web Chat") {
+	if !strings.Contains(jsRec.Body.String(), "window.__NEXUS_WEBCHAT_CONFIG__") && !strings.Contains(jsRec.Body.String(), "nexus-webchat-shell") {
 		t.Fatalf("expected webchat js bundle, got %s", jsRec.Body.String())
 	}
 
