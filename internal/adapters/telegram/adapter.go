@@ -3,6 +3,7 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +38,7 @@ func (a Adapter) VerifyInbound(_ context.Context, r *http.Request, _ []byte) err
 	if a.WebhookSecret == "" {
 		return nil
 	}
-	if got := r.Header.Get("X-Telegram-Bot-Api-Secret-Token"); got != a.WebhookSecret {
+	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(r.Header.Get("X-Telegram-Bot-Api-Secret-Token"))), []byte(a.WebhookSecret)) != 1 {
 		return errors.New("invalid telegram webhook secret")
 	}
 	return nil

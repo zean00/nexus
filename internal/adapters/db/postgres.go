@@ -691,8 +691,8 @@ func (r *PostgresRepository) CreateRun(ctx context.Context, run domain.Run) erro
 	_, err := r.exec(ctx, `
 		insert into runs (
 			id, session_id, acp_run_id, agent_name, mode, status, started_at, completed_at, last_event_at
-		) values ($1,$2,$3,'default-agent','async',$4,$5,null,$6)
-	`, run.ID, run.SessionID, run.ACPRunID, run.Status, run.StartedAt, run.LastEventAt)
+		) values ($1,$2,$3,$4,'async',$5,$6,null,$7)
+	`, run.ID, run.SessionID, run.ACPRunID, run.ACPAgentName, run.Status, run.StartedAt, run.LastEventAt)
 	return err
 }
 
@@ -1543,7 +1543,7 @@ func (r *PostgresRepository) ListRuns(ctx context.Context, query domain.RunListQ
 	}
 	args = append(args, limit+1)
 	rows, err := r.query(ctx, fmt.Sprintf(`
-		select r.id, r.session_id, '', r.acp_run_id, r.status, r.started_at, r.last_event_at
+		select r.id, r.session_id, r.agent_name, r.acp_run_id, r.status, r.started_at, r.last_event_at
 		from runs r join sessions s on s.id = r.session_id
 		where %s order by r.started_at desc, r.id desc limit $%d
 	`, strings.Join(clauses, " and "), len(args)), args...)
@@ -1555,7 +1555,7 @@ func (r *PostgresRepository) ListRuns(ctx context.Context, query domain.RunListQ
 	var cursor []cursorValue
 	for rows.Next() {
 		var run domain.Run
-		if err := rows.Scan(&run.ID, &run.SessionID, &run.ACPConnectionID, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt); err != nil {
+		if err := rows.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt); err != nil {
 			return domain.PagedResult[domain.Run]{}, err
 		}
 		out = append(out, run)
@@ -1757,16 +1757,16 @@ func (r *PostgresRepository) CountAuditEvents(ctx context.Context, query domain.
 }
 
 func (r *PostgresRepository) GetRun(ctx context.Context, runID string) (domain.Run, error) {
-	row := r.queryRow(ctx, `select id, session_id, '', acp_run_id, status, started_at, last_event_at from runs where id=$1`, runID)
+	row := r.queryRow(ctx, `select id, session_id, agent_name, acp_run_id, status, started_at, last_event_at from runs where id=$1`, runID)
 	var run domain.Run
-	err := row.Scan(&run.ID, &run.SessionID, &run.ACPConnectionID, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt)
+	err := row.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt)
 	return run, err
 }
 
 func (r *PostgresRepository) GetRunByACP(ctx context.Context, acpRunID string) (domain.Run, error) {
-	row := r.queryRow(ctx, `select id, session_id, '', acp_run_id, status, started_at, last_event_at from runs where acp_run_id=$1`, acpRunID)
+	row := r.queryRow(ctx, `select id, session_id, agent_name, acp_run_id, status, started_at, last_event_at from runs where acp_run_id=$1`, acpRunID)
 	var run domain.Run
-	err := row.Scan(&run.ID, &run.SessionID, &run.ACPConnectionID, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt)
+	err := row.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt)
 	return run, err
 }
 
@@ -2011,7 +2011,7 @@ func (r *PostgresRepository) ListStuckQueueItems(ctx context.Context, before tim
 
 func (r *PostgresRepository) ListStaleRuns(ctx context.Context, before time.Time, limit int) ([]domain.Run, error) {
 	rows, err := r.query(ctx, `
-		select id, session_id, '', acp_run_id, status, started_at, last_event_at
+		select id, session_id, agent_name, acp_run_id, status, started_at, last_event_at
 		from runs
 		where status in ('starting','running','awaiting') and last_event_at < $1
 		order by last_event_at asc
@@ -2024,7 +2024,7 @@ func (r *PostgresRepository) ListStaleRuns(ctx context.Context, before time.Time
 	var out []domain.Run
 	for rows.Next() {
 		var run domain.Run
-		if err := rows.Scan(&run.ID, &run.SessionID, &run.ACPConnectionID, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt); err != nil {
+		if err := rows.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt); err != nil {
 			return nil, err
 		}
 		out = append(out, run)
@@ -2102,12 +2102,18 @@ func (r *PostgresRepository) RepairRunFromSnapshot(ctx context.Context, queueIte
 		return domain.Run{}, err
 	}
 	run = domain.Run{
-		ID:          "run_" + snapshot.ACPRunID,
-		SessionID:   queueItem.SessionID,
-		ACPRunID:    snapshot.ACPRunID,
-		Status:      snapshot.Status,
-		StartedAt:   time.Now().UTC(),
+		ID:        "run_" + snapshot.ACPRunID,
+		SessionID: queueItem.SessionID,
+		ACPRunID:  snapshot.ACPRunID,
+		Status:    snapshot.Status,
+		StartedAt: time.Now().UTC(),
 		LastEventAt: time.Now().UTC(),
+	}
+	if route, routeErr := r.GetRouteDecision(ctx, queueItem.ID); routeErr == nil {
+		run.ACPAgentName = route.ACPAgentName
+	}
+	if run.ACPAgentName == "" {
+		run.ACPAgentName = "default-agent"
 	}
 	if err := r.CreateRun(ctx, run); err != nil {
 		return domain.Run{}, err

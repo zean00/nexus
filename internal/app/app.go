@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -640,8 +641,15 @@ func (a *App) WorkerLoop(ctx context.Context) error {
 	}
 	for {
 		if err := a.Worker.ProcessOnce(ctx, 10); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			a.Runtime.MarkWorkerError(err)
-			return err
+			slog.Error("worker.process_once_failed", "error", err.Error())
+			if !waitForLoopDelay(ctx, a.Config.WorkerPollInterval) {
+				return ctx.Err()
+			}
+			continue
 		}
 		a.Runtime.MarkWorkerRun(time.Now().UTC())
 		select {
@@ -650,18 +658,40 @@ func (a *App) WorkerLoop(ctx context.Context) error {
 		case <-ticker.C:
 		case <-reconcileTicker.C:
 			if err := a.Reconciler.RunOnce(ctx, 10); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				a.Runtime.MarkReconcileError(err)
-				return err
+				slog.Error("worker.reconcile_once_failed", "error", err.Error())
+				continue
 			}
 			a.Runtime.MarkReconcileRun(time.Now().UTC())
 		case <-retentionCh:
 			summary, err := a.Retention.RunOnce(ctx, "", false, a.Config.RetentionBatchSize)
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				a.Runtime.MarkRetentionError(err)
-				return err
+				slog.Error("worker.retention_once_failed", "error", err.Error())
+				continue
 			}
 			a.Runtime.MarkRetentionRun(time.Now().UTC(), summary.Totals)
 		}
+	}
+}
+
+func waitForLoopDelay(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		delay = time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

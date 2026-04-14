@@ -113,6 +113,7 @@ type Run struct {
 	ID              string
 	SessionID       string
 	ACPConnectionID string
+	ACPAgentName    string
 	ACPRunID        string
 	Status          string
 	StartedAt       time.Time

@@ -37,12 +37,14 @@ type strictSession struct {
 }
 
 type strictRun struct {
-	ID        string        `json:"id"`
-	SessionID string        `json:"session_id"`
-	Status    string        `json:"status"`
-	Output    string        `json:"output"`
-	Artifacts []strictAsset `json:"artifacts"`
-	Await     *strictAwait  `json:"await"`
+	ID             string         `json:"id"`
+	SessionID      string         `json:"session_id"`
+	Status         string         `json:"status"`
+	Output         string         `json:"output"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	Metadata       map[string]any `json:"metadata"`
+	Artifacts      []strictAsset  `json:"artifacts"`
+	Await          *strictAwait   `json:"await"`
 }
 
 type strictAsset struct {
@@ -136,6 +138,7 @@ func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) 
 	if err != nil {
 		return domain.Run{}, domain.RunEventStream{}, err
 	}
+	run.ACPAgentName = req.RouteDecision.ACPAgentName
 	return run, staticRunEventStream(event), nil
 }
 
@@ -160,7 +163,26 @@ func (c StrictClient) GetRun(ctx context.Context, acpRunID string) (domain.RunSt
 	return c.mapSnapshot(response)
 }
 
-func (c StrictClient) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+func (c StrictClient) FindRunByIdempotencyKey(ctx context.Context, session domain.Session, idempotencyKey string) (domain.RunStatusSnapshot, bool, error) {
+	if session.ACPSessionID == "" || strings.TrimSpace(idempotencyKey) == "" {
+		return domain.RunStatusSnapshot{}, false, nil
+	}
+	var runs []strictRun
+	if err := c.getJSON(ctx, "/sessions/"+url.PathEscape(session.ACPSessionID)+"/runs", map[string]string{"limit": "50"}, &runs); err != nil {
+		return domain.RunStatusSnapshot{}, false, err
+	}
+	for _, run := range runs {
+		if run.IdempotencyKey != idempotencyKey {
+			if value, _ := run.Metadata["idempotency_key"].(string); value != idempotencyKey {
+				continue
+			}
+		}
+		snapshot, err := c.mapSnapshot(run)
+		if err != nil {
+			return domain.RunStatusSnapshot{}, false, err
+		}
+		return snapshot, true, nil
+	}
 	return domain.RunStatusSnapshot{}, false, nil
 }
 

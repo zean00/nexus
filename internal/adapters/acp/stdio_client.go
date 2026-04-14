@@ -22,6 +22,11 @@ import (
 	"nexus/internal/domain"
 )
 
+const (
+	stdioMaxFileContentBytes = 1 << 20
+	stdioMaxWriteBytes       = 1 << 20
+)
+
 type StdioConfig struct {
 	Command          string
 	Args             []string
@@ -341,7 +346,7 @@ func (c *StdioClient) StartRun(ctx context.Context, req domain.StartRunRequest) 
 	go c.streamPrompt(ctx, proc, sessionID, updates, map[string]any{
 		"sessionId": sessionID,
 		"prompt":    buildStdioPromptParts(req.Message),
-	}, req.Session.ID, req.IdempotencyKey, "", eventCh, errCh, runCh, startErrCh)
+	}, req.Session.ID, req.IdempotencyKey, req.RouteDecision.ACPAgentName, "", eventCh, errCh, runCh, startErrCh)
 
 	select {
 	case run := <-runCh:
@@ -383,6 +388,7 @@ func (c *StdioClient) streamPrompt(
 	params map[string]any,
 	gatewaySessionID string,
 	idempotencyKey string,
+	agentName string,
 	existingRunID string,
 	eventCh chan<- domain.RunEvent,
 	errCh chan<- error,
@@ -432,6 +438,7 @@ func (c *StdioClient) streamPrompt(
 			ID:              runID,
 			SessionID:       gatewaySessionID,
 			ACPConnectionID: "stdio",
+			ACPAgentName:    agentName,
 			ACPRunID:        composed,
 			Status:          "running",
 			StartedAt:       time.Now().UTC(),
@@ -552,7 +559,7 @@ func (c *StdioClient) streamResume(
 	eventCh chan<- domain.RunEvent,
 	errCh chan<- error,
 ) {
-	c.streamPrompt(ctx, proc, sessionID, updates, params, "", "", runID, eventCh, errCh, nil, nil)
+	c.streamPrompt(ctx, proc, sessionID, updates, params, "", "", "", runID, eventCh, errCh, nil, nil)
 }
 
 func reportStdioStartError(startErrCh chan<- error, errCh chan<- error, runPublished bool, err error) {
@@ -1017,11 +1024,17 @@ func (p *stdioProcess) handlePermission(params json.RawMessage) (any, error) {
 			break
 		}
 	}
-	if selected == "" && len(req.Options) > 0 {
-		selected, _ = req.Options[0]["id"].(string)
+	if selected == "" {
+		for _, option := range req.Options {
+			id, _ := option["id"].(string)
+			if id == "deny_once" || id == "deny" || id == "reject" {
+				selected = id
+				break
+			}
+		}
 	}
 	if selected == "" {
-		selected = "allow_once"
+		return nil, &stdioRPCError{Code: -32000, Message: "no explicit permission decision available"}
 	}
 	return map[string]any{"optionId": selected}, nil
 }
@@ -1039,26 +1052,25 @@ func (p *stdioProcess) handleReadTextFile(params json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if req.Line > 0 || req.Limit > 0 {
+		content, err := readTextFileWindow(path, req.Line, req.Limit, stdioMaxFileContentBytes)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"content": content}, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > stdioMaxFileContentBytes {
+		return nil, fmt.Errorf("read_text_file exceeds %d bytes", stdioMaxFileContentBytes)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	content := string(data)
-	if req.Line > 0 || req.Limit > 0 {
-		lines := strings.SplitAfter(content, "\n")
-		start := 0
-		if req.Line > 1 {
-			start = req.Line - 1
-			if start > len(lines) {
-				start = len(lines)
-			}
-		}
-		end := len(lines)
-		if req.Limit > 0 && start+req.Limit < end {
-			end = start + req.Limit
-		}
-		content = strings.Join(lines[start:end], "")
-	}
 	return map[string]any{"content": content}, nil
 }
 
@@ -1069,6 +1081,12 @@ func (p *stdioProcess) handleWriteTextFile(params json.RawMessage) (any, error) 
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		return nil, fmt.Errorf("write_text_file: missing path")
+	}
+	if len(req.Content) > stdioMaxWriteBytes {
+		return nil, fmt.Errorf("write_text_file exceeds %d bytes", stdioMaxWriteBytes)
 	}
 	path, err := normalizeWorkspacePath(p.root, req.Path)
 	if err != nil {
@@ -1234,6 +1252,45 @@ func normalizeWorkspacePath(root, path string) (string, error) {
 		return "", fmt.Errorf("path %q escapes workspace root", path)
 	}
 	return abs, nil
+}
+
+func readTextFileWindow(path string, startLine, limit, maxBytes int) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	if startLine <= 0 {
+		startLine = 1
+	}
+	currentLine := 1
+	linesRead := 0
+	reader := bufio.NewReader(file)
+	var out strings.Builder
+	for {
+		chunk, readErr := reader.ReadString('\n')
+		if currentLine >= startLine {
+			if out.Len()+len(chunk) > maxBytes {
+				return "", fmt.Errorf("read_text_file window exceeds %d bytes", maxBytes)
+			}
+			out.WriteString(chunk)
+			linesRead++
+			if limit > 0 && linesRead >= limit {
+				return out.String(), nil
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			if currentLine >= startLine {
+				return out.String(), nil
+			}
+			return "", nil
+		}
+		if readErr != nil {
+			return "", readErr
+		}
+		currentLine++
+	}
 }
 
 func (t *managedTerminal) capture(reader io.Reader) {

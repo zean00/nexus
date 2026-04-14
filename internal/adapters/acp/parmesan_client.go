@@ -203,6 +203,7 @@ func (c ParmesanClient) StartRun(ctx context.Context, req domain.StartRunRequest
 		ID:              "run_" + created.ExecutionID,
 		SessionID:       req.Session.ID,
 		ACPConnectionID: "parmesan",
+		ACPAgentName:    req.RouteDecision.ACPAgentName,
 		ACPRunID:        created.ExecutionID,
 		Status:          "running",
 		StartedAt:       time.Now().UTC(),

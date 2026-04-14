@@ -314,6 +314,26 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 	if err != nil {
 		return err
 	}
+	var currentCompat *domain.AgentCompatibility
+	if s.Catalog != nil {
+		run, err := s.Repo.GetRun(ctx, await.RunID)
+		if err != nil {
+			return err
+		}
+		// Older rows were persisted with a hardcoded default-agent value, so
+		// only enforce resume-time compatibility once the real agent name is
+		// available on the run record.
+		if name := strings.TrimSpace(run.ACPAgentName); name != "" && name != "default-agent" {
+			compat, err := s.Catalog.Validate(ctx, name, false)
+			if err != nil {
+				return err
+			}
+			if !compat.Compatible {
+				return fmt.Errorf("agent %s is incompatible: %v", name, compat.Reasons)
+			}
+			currentCompat = &compat
+		}
+	}
 	var runEvents domain.RunEventStream
 	if scoped, ok := s.ACP.(interface {
 		ResumeRunForSession(context.Context, domain.Session, domain.Await, []byte) (domain.RunEventStream, error)
@@ -328,6 +348,7 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 	tracex.Logger(ctx).Info("worker.await_resume.loaded", "await_id", await.ID, "run_id", await.RunID)
 	terminalStatus := ""
 	for runEvent := range runEvents.Events {
+		runEvent = enforceCompatibility(runEvent, currentCompat, session.ChannelType)
 		if strings.TrimSpace(runEvent.MessageKey) == "" {
 			runEvent.MessageKey = await.ID + ":resume"
 		}

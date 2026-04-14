@@ -105,6 +105,7 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	var err error
 	cfg := Config{
 		ServiceName:                           env("SERVICE_NAME", "nexus-gateway"),
 		Environment:                           env("NEXUS_ENV", "development"),
@@ -174,6 +175,58 @@ func Load() (Config, error) {
 		ObjectStorageBaseURL:                  env("OBJECT_STORAGE_BASE_URL", "file:///tmp/nexus-objects"),
 		DefaultTenantID:                       env("DEFAULT_TENANT_ID", "tenant_default"),
 		DefaultAgentProfileID:                 env("DEFAULT_AGENT_PROFILE_ID", "agent_profile_default"),
+	}
+
+	if cfg.WhatsAppWebMinDelayMS, err = envInt("WHATSAPP_WEB_MIN_DELAY_MS", cfg.WhatsAppWebMinDelayMS); err != nil {
+		return Config{}, fmt.Errorf("parse WHATSAPP_WEB_MIN_DELAY_MS: %w", err)
+	}
+	if cfg.WhatsAppWebMaxDelayMS, err = envInt("WHATSAPP_WEB_MAX_DELAY_MS", cfg.WhatsAppWebMaxDelayMS); err != nil {
+		return Config{}, fmt.Errorf("parse WHATSAPP_WEB_MAX_DELAY_MS: %w", err)
+	}
+	if cfg.WhatsAppWebHourlyMessageCap, err = envInt("WHATSAPP_WEB_HOURLY_MESSAGE_CAP", cfg.WhatsAppWebHourlyMessageCap); err != nil {
+		return Config{}, fmt.Errorf("parse WHATSAPP_WEB_HOURLY_MESSAGE_CAP: %w", err)
+	}
+	if cfg.WhatsAppWebRecentInboundWindowMinutes, err = envInt("WHATSAPP_WEB_RECENT_INBOUND_WINDOW_MINUTES", cfg.WhatsAppWebRecentInboundWindowMinutes); err != nil {
+		return Config{}, fmt.Errorf("parse WHATSAPP_WEB_RECENT_INBOUND_WINDOW_MINUTES: %w", err)
+	}
+	if cfg.WhatsAppWebBurstWindowMinutes, err = envInt("WHATSAPP_WEB_BURST_WINDOW_MINUTES", cfg.WhatsAppWebBurstWindowMinutes); err != nil {
+		return Config{}, fmt.Errorf("parse WHATSAPP_WEB_BURST_WINDOW_MINUTES: %w", err)
+	}
+	if cfg.WhatsAppWebBurstMessageCap, err = envInt("WHATSAPP_WEB_BURST_MESSAGE_CAP", cfg.WhatsAppWebBurstMessageCap); err != nil {
+		return Config{}, fmt.Errorf("parse WHATSAPP_WEB_BURST_MESSAGE_CAP: %w", err)
+	}
+	if cfg.IdentityLinkMinutes, err = envInt("IDENTITY_LINK_MINUTES", cfg.IdentityLinkMinutes); err != nil {
+		return Config{}, fmt.Errorf("parse IDENTITY_LINK_MINUTES: %w", err)
+	}
+	if cfg.StepUpOTPMinutes, err = envInt("STEP_UP_OTP_MINUTES", cfg.StepUpOTPMinutes); err != nil {
+		return Config{}, fmt.Errorf("parse STEP_UP_OTP_MINUTES: %w", err)
+	}
+	if cfg.StepUpWindowMinutes, err = envInt("STEP_UP_WINDOW_MINUTES", cfg.StepUpWindowMinutes); err != nil {
+		return Config{}, fmt.Errorf("parse STEP_UP_WINDOW_MINUTES: %w", err)
+	}
+	if cfg.RetryMaxAttempts, err = envInt("RETRY_MAX_ATTEMPTS", cfg.RetryMaxAttempts); err != nil {
+		return Config{}, fmt.Errorf("parse RETRY_MAX_ATTEMPTS: %w", err)
+	}
+	if cfg.RetryBaseDelayMS, err = envInt("RETRY_BASE_DELAY_MS", cfg.RetryBaseDelayMS); err != nil {
+		return Config{}, fmt.Errorf("parse RETRY_BASE_DELAY_MS: %w", err)
+	}
+	if cfg.CircuitBreakerFailures, err = envInt("CIRCUIT_BREAKER_FAILURES", cfg.CircuitBreakerFailures); err != nil {
+		return Config{}, fmt.Errorf("parse CIRCUIT_BREAKER_FAILURES: %w", err)
+	}
+	if cfg.CircuitBreakerCoolDownSeconds, err = envInt("CIRCUIT_BREAKER_COOLDOWN_SECONDS", cfg.CircuitBreakerCoolDownSeconds); err != nil {
+		return Config{}, fmt.Errorf("parse CIRCUIT_BREAKER_COOLDOWN_SECONDS: %w", err)
+	}
+	if cfg.WhatsAppMediaMaxBytes, err = envInt64("WHATSAPP_MEDIA_MAX_BYTES", cfg.WhatsAppMediaMaxBytes); err != nil {
+		return Config{}, fmt.Errorf("parse WHATSAPP_MEDIA_MAX_BYTES: %w", err)
+	}
+	if cfg.EmailWebhookMaxSkewSeconds, err = envInt("EMAIL_WEBHOOK_MAX_SKEW_SECONDS", cfg.EmailWebhookMaxSkewSeconds); err != nil {
+		return Config{}, fmt.Errorf("parse EMAIL_WEBHOOK_MAX_SKEW_SECONDS: %w", err)
+	}
+	if cfg.EmailMaxAttachmentBytes, err = envInt64("EMAIL_MAX_ATTACHMENT_BYTES", cfg.EmailMaxAttachmentBytes); err != nil {
+		return Config{}, fmt.Errorf("parse EMAIL_MAX_ATTACHMENT_BYTES: %w", err)
+	}
+	if cfg.EmailMaxAttachments, err = envInt("EMAIL_MAX_ATTACHMENTS", cfg.EmailMaxAttachments); err != nil {
+		return Config{}, fmt.Errorf("parse EMAIL_MAX_ATTACHMENTS: %w", err)
 	}
 
 	seconds, err := envInt("WORKER_POLL_SECONDS", 2)
@@ -369,13 +422,18 @@ func mustEnvIntDefault(key string, fallback int) int {
 }
 
 func mustEnvInt64Default(key string, fallback int64) int64 {
-	if value := os.Getenv(key); value != "" {
-		n, err := strconv.ParseInt(value, 10, 64)
-		if err == nil {
-			return n
-		}
+	value, err := envInt64(key, fallback)
+	if err != nil {
+		return fallback
 	}
-	return fallback
+	return value
+}
+
+func envInt64(key string, fallback int64) (int64, error) {
+	if value := os.Getenv(key); value != "" {
+		return strconv.ParseInt(value, 10, 64)
+	}
+	return fallback, nil
 }
 
 func envFloat(key string, fallback float64) (float64, error) {

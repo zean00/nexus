@@ -6,12 +6,33 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"time"
 	"syscall"
 
 	"nexus/internal/app"
 	"nexus/internal/config"
 	"nexus/internal/tracex"
 )
+
+func runWorkerSupervisor(ctx context.Context, application *app.App) {
+	delay := 2 * time.Second
+	for {
+		if err := application.WorkerLoop(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("worker.loop_failed", "error", err.Error())
+			time.Sleep(delay)
+			delay = minDuration(delay*2, 30*time.Second)
+			continue
+		}
+		return
+	}
+}
+
+func minDuration(left, right time.Duration) time.Duration {
+	if left < right {
+		return left
+	}
+	return right
+}
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "gateway"))
@@ -55,15 +76,10 @@ func main() {
 	go func() {
 		if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server.admin_failed", "error", err.Error())
-			os.Exit(1)
+			_ = adminServer.Shutdown(context.Background())
 		}
 	}()
-	go func() {
-		if err := application.WorkerLoop(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("worker.loop_failed", "error", err.Error())
-			os.Exit(1)
-		}
-	}()
+	go runWorkerSupervisor(ctx, application)
 
 	go func() {
 		<-ctx.Done()

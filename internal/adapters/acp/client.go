@@ -162,6 +162,7 @@ func (c Client) StartRun(ctx context.Context, req domain.StartRunRequest) (domai
 	if err != nil {
 		return domain.Run{}, domain.RunEventStream{}, err
 	}
+	run.ACPAgentName = req.RouteDecision.ACPAgentName
 	if req.IdempotencyKey != "" {
 		c.state.storeSnapshot(req.IdempotencyKey, snapshot)
 	}

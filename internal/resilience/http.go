@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"math/rand"
@@ -64,12 +65,30 @@ type roundTripper struct {
 	policy  *Policy
 }
 
+const maxRetryBodySnapshotBytes = 1 << 20
+
 func (r *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err := r.policy.before(r.service); err != nil {
 		return nil, err
 	}
-	body, err := snapshotBody(req)
+	if !retryableMethod(req.Method) {
+		resp, err := r.base.RoundTrip(req)
+		if err == nil && !retryableStatus(resp.StatusCode) {
+			r.policy.success(r.service)
+			return resp, nil
+		}
+		r.policy.failure(r.service)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Body != nil {
+			resp.Body.Close()
+		}
+		return nil, errors.New(resp.Status)
+	}
+	body, err := snapshotBody(req, maxRetryBodySnapshotBytes)
 	if err != nil {
+		r.policy.failure(r.service)
 		return nil, err
 	}
 	var lastErr error
@@ -158,13 +177,19 @@ func (p *Policy) failure(service string) {
 	p.bs[service] = state
 }
 
-func snapshotBody(req *http.Request) ([]byte, error) {
+func snapshotBody(req *http.Request, maxBytes int64) ([]byte, error) {
 	if req.Body == nil {
 		return nil, nil
 	}
-	body, err := io.ReadAll(req.Body)
+	if maxBytes <= 0 {
+		maxBytes = maxRetryBodySnapshotBytes
+	}
+	body, err := io.ReadAll(io.LimitReader(req.Body, maxBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("request body exceeds retry snapshot limit of %d bytes", maxBytes)
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	return body, nil

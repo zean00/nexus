@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/subtle"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"net/mail"
 	"net/smtp"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,12 +60,18 @@ func (a Adapter) VerifyInbound(_ context.Context, r *http.Request, body []byte) 
 		if sig == "" {
 			return errors.New("missing email webhook signature")
 		}
-		parsed, err := time.Parse(time.RFC3339, ts)
+		parsed, err := parseWebhookTimestamp(ts)
 		if err != nil {
 			return errors.New("invalid email webhook timestamp")
 		}
-		if a.MaxWebhookSkew > 0 && time.Since(parsed.UTC()) > a.MaxWebhookSkew {
-			return errors.New("stale email webhook timestamp")
+		now := time.Now().UTC()
+		if a.MaxWebhookSkew > 0 {
+			if parsed.UTC().Before(now.Add(-a.MaxWebhookSkew)) {
+				return errors.New("stale email webhook timestamp")
+			}
+			if parsed.UTC().After(now.Add(a.MaxWebhookSkew)) {
+				return errors.New("future email webhook timestamp")
+			}
 		}
 		mac := hmac.New(sha256.New, []byte(a.WebhookSecret))
 		mac.Write([]byte(ts))
@@ -75,10 +83,23 @@ func (a Adapter) VerifyInbound(_ context.Context, r *http.Request, body []byte) 
 		}
 		return nil
 	}
-	if r.Header.Get("X-Nexus-Email-Secret") != a.WebhookSecret {
+	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(r.Header.Get("X-Nexus-Email-Secret"))), []byte(a.WebhookSecret)) != 1 {
 		return errors.New("invalid email webhook secret")
 	}
 	return nil
+}
+
+func parseWebhookTimestamp(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, nil
+		}
+	}
+	if unix, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return time.Unix(unix, 0).UTC(), nil
+	}
+	return time.Time{}, errors.New("invalid timestamp")
 }
 
 type inboundAttachment struct {

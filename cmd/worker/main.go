@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -11,6 +12,26 @@ import (
 	"nexus/internal/config"
 	"nexus/internal/tracex"
 )
+
+func runWorkerSupervisor(ctx context.Context, application *app.App) {
+	delay := 2 * time.Second
+	for {
+		if err := application.WorkerLoop(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("worker.loop_failed", "error", err.Error())
+			time.Sleep(delay)
+			delay = minDuration(delay*2, 30*time.Second)
+			continue
+		}
+		return
+	}
+}
+
+func minDuration(left, right time.Duration) time.Duration {
+	if left < right {
+		return left
+	}
+	return right
+}
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "worker"))
@@ -35,8 +56,5 @@ func main() {
 	}
 	defer application.Close()
 
-	if err := application.WorkerLoop(ctx); err != nil && ctx.Err() == nil {
-		slog.Error("worker.loop_failed", "error", err.Error())
-		os.Exit(1)
-	}
+	runWorkerSupervisor(ctx, application)
 }

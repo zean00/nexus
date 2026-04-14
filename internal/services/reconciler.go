@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -39,28 +40,29 @@ func (r Reconciler) RunOnce(ctx context.Context, limit int) (err error) {
 	ctx, end := tracex.StartSpan(ctx, "reconciler.run_once", "limit", limit)
 	defer func() { end(err) }()
 	now := time.Now().UTC()
+	var errs []error
 	if err = r.requeueClaimedOutbox(ctx, now, limit); err != nil {
 		tracex.Logger(ctx).Error("reconciler.requeue_claimed_outbox_failed", "error", err.Error())
-		return err
+		errs = append(errs, err)
 	}
 	if err = r.repairStuckQueueItems(ctx, now, limit); err != nil {
 		tracex.Logger(ctx).Error("reconciler.repair_stuck_queue_items_failed", "error", err.Error())
-		return err
+		errs = append(errs, err)
 	}
 	if err = r.refreshStaleRuns(ctx, now, limit); err != nil {
 		tracex.Logger(ctx).Error("reconciler.refresh_stale_runs_failed", "error", err.Error())
-		return err
+		errs = append(errs, err)
 	}
 	if err = r.expireAwaits(ctx, now, limit); err != nil {
 		tracex.Logger(ctx).Error("reconciler.expire_awaits_failed", "error", err.Error())
-		return err
+		errs = append(errs, err)
 	}
 	if err = r.retryStaleDeliveries(ctx, now, limit); err != nil {
 		tracex.Logger(ctx).Error("reconciler.retry_stale_deliveries_failed", "error", err.Error())
-		return err
+		errs = append(errs, err)
 	}
 	tracex.Logger(ctx).Info("reconciler.completed", "limit", limit)
-	return nil
+	return errors.Join(errs...)
 }
 
 func (r Reconciler) requeueClaimedOutbox(ctx context.Context, now time.Time, limit int) error {
@@ -68,9 +70,12 @@ func (r Reconciler) requeueClaimedOutbox(ctx context.Context, now time.Time, lim
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, item := range items {
 		if err := r.Repo.RequeueOutbox(ctx, item.ID); err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.requeue_outbox_item_failed", "outbox_event_id", item.ID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		if r.Observer != nil {
 			r.Observer.RecordOutboxRequeue()
@@ -85,7 +90,7 @@ func (r Reconciler) requeueClaimedOutbox(ctx context.Context, now time.Time, lim
 			CreatedAt:     now,
 		})
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (r Reconciler) repairStuckQueueItems(ctx context.Context, now time.Time, limit int) error {
@@ -93,18 +98,25 @@ func (r Reconciler) repairStuckQueueItems(ctx context.Context, now time.Time, li
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, item := range items {
 		session, err := r.Repo.GetSession(ctx, item.SessionID)
 		if err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.load_stuck_queue_session_failed", "queue_item_id", item.ID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		idempotencyKey, err := r.Repo.GetQueueStartIdempotencyKey(ctx, item.ID)
 		if err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.load_queue_idempotency_key_failed", "queue_item_id", item.ID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		snapshot, found, err := r.ACP.FindRunByIdempotencyKey(ctx, session, idempotencyKey)
 		if err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.find_run_by_idempotency_failed", "queue_item_id", item.ID, "idempotency_key", idempotencyKey, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		if !found {
 			if err := r.Repo.InTx(ctx, func(ctx context.Context, repo ports.Repository) error {
@@ -125,7 +137,9 @@ func (r Reconciler) repairStuckQueueItems(ctx context.Context, now time.Time, li
 					CreatedAt:     now,
 				})
 			}); err != nil {
-				return err
+				tracex.Logger(ctx).Error("reconciler.requeue_stuck_queue_item_failed", "queue_item_id", item.ID, "error", err.Error())
+				errs = append(errs, err)
+				continue
 			}
 			if r.Observer != nil {
 				r.Observer.RecordQueueRepairRequeued()
@@ -134,20 +148,28 @@ func (r Reconciler) repairStuckQueueItems(ctx context.Context, now time.Time, li
 		}
 		run, err := r.Repo.RepairRunFromSnapshot(ctx, item, snapshot)
 		if err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.repair_run_from_snapshot_failed", "queue_item_id", item.ID, "acp_run_id", snapshot.ACPRunID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		if err := r.Repo.UpdateQueueItemStatus(ctx, item.ID, snapshot.Status); err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.update_queue_status_failed", "queue_item_id", item.ID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		if err := r.Repo.UpdateRunStatus(ctx, run.ID, snapshot.Status); err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.update_run_status_failed", "run_id", run.ID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		if r.Observer != nil {
 			r.Observer.RecordQueueRepairRecovered()
 		}
 		repairedSession, err := r.Repo.GetSession(ctx, item.SessionID)
 		if err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.reload_repaired_session_failed", "queue_item_id", item.ID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		_ = r.Repo.Audit(ctx, domain.AuditEvent{
 			ID:            fmt.Sprintf("audit_queue_repair_recovered_%s_%d", item.ID, now.UnixNano()),
@@ -161,7 +183,7 @@ func (r Reconciler) repairStuckQueueItems(ctx context.Context, now time.Time, li
 			CreatedAt:     now,
 		})
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (r Reconciler) refreshStaleRuns(ctx context.Context, now time.Time, limit int) error {
@@ -169,10 +191,13 @@ func (r Reconciler) refreshStaleRuns(ctx context.Context, now time.Time, limit i
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, run := range runs {
 		session, err := r.Repo.GetSession(ctx, run.SessionID)
 		if err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.load_stale_run_session_failed", "run_id", run.ID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		var snapshot domain.RunStatusSnapshot
 		if scoped, ok := r.ACP.(interface {
@@ -183,10 +208,14 @@ func (r Reconciler) refreshStaleRuns(ctx context.Context, now time.Time, limit i
 			snapshot, err = r.ACP.GetRun(ctx, run.ACPRunID)
 		}
 		if err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.fetch_run_snapshot_failed", "run_id", run.ID, "acp_run_id", run.ACPRunID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		if err := r.Repo.UpdateRunStatus(ctx, run.ID, snapshot.Status); err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.persist_run_snapshot_failed", "run_id", run.ID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		if err := r.Repo.Audit(ctx, domain.AuditEvent{
 			ID:            fmt.Sprintf("audit_run_refresh_%s_%d", run.ID, now.UnixNano()),
@@ -199,21 +228,27 @@ func (r Reconciler) refreshStaleRuns(ctx context.Context, now time.Time, limit i
 			PayloadJSON:   mustJSON(snapshot),
 			CreatedAt:     now,
 		}); err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.audit_run_refresh_failed", "run_id", run.ID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		if r.Observer != nil {
 			r.Observer.RecordRunRefresh()
 		}
 		if snapshot.Status == "completed" || snapshot.Status == "failed" || snapshot.Status == "canceled" {
 			if err := r.Repo.UpdateActiveQueueItemStatus(ctx, run.SessionID, snapshot.Status); err != nil {
-				return err
+				tracex.Logger(ctx).Error("reconciler.update_active_queue_status_failed", "run_id", run.ID, "error", err.Error())
+				errs = append(errs, err)
+				continue
 			}
 			if _, err := r.Repo.EnqueueNextQueueItem(ctx, run.SessionID); err != nil {
-				return err
+				tracex.Logger(ctx).Error("reconciler.enqueue_next_queue_item_failed", "run_id", run.ID, "error", err.Error())
+				errs = append(errs, err)
+				continue
 			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (r Reconciler) expireAwaits(ctx context.Context, now time.Time, limit int) error {
@@ -221,6 +256,7 @@ func (r Reconciler) expireAwaits(ctx context.Context, now time.Time, limit int) 
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, item := range awaits {
 		if err := r.Repo.InTx(ctx, func(ctx context.Context, repo ports.Repository) error {
 			if err := repo.ExpireAwait(ctx, item.ID); err != nil {
@@ -252,13 +288,15 @@ func (r Reconciler) expireAwaits(ctx context.Context, now time.Time, limit int) 
 				CreatedAt:     now,
 			})
 		}); err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.expire_await_item_failed", "await_id", item.ID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		if r.Observer != nil {
 			r.Observer.RecordAwaitExpiry()
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (r Reconciler) retryStaleDeliveries(ctx context.Context, now time.Time, limit int) error {
@@ -266,15 +304,18 @@ func (r Reconciler) retryStaleDeliveries(ctx context.Context, now time.Time, lim
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, delivery := range deliveries {
 		if err := r.Repo.RetryDelivery(ctx, delivery.ID); err != nil {
-			return err
+			tracex.Logger(ctx).Error("reconciler.retry_delivery_failed", "delivery_id", delivery.ID, "error", err.Error())
+			errs = append(errs, err)
+			continue
 		}
 		if r.Observer != nil {
 			r.Observer.RecordDeliveryRetry()
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func mustJSON(v any) []byte {
