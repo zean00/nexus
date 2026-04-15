@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { WebChatClient, createWebChatClient } from "./client";
 import type {
   Artifact,
@@ -550,6 +552,7 @@ function TimelineItem(props: {
   const awaitID = props.item.await_id ?? "";
   const label = role === "user" ? "You" : "Assistant";
   const text = props.item.text || props.item.status || props.item.type;
+  const useMarkdown = role === "assistant" && Boolean(text);
 
   return (
     <article className={`nexus-webchat-item ${role}`}>
@@ -562,7 +565,7 @@ function TimelineItem(props: {
           {props.item.partial ? <span>typing</span> : null}
         </div>
         <div className="nexus-webchat-item-body">
-          {text}
+          {useMarkdown ? <MarkdownBody text={text} /> : text}
         </div>
         {props.item.choices && props.item.choices.length > 0 && awaitID ? (
           <div className="nexus-webchat-actions">
@@ -586,6 +589,26 @@ function TimelineItem(props: {
         ) : null}
       </div>
     </article>
+  );
+}
+
+function MarkdownBody(props: { text: string }) {
+  return (
+    <div className="nexus-webchat-markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ ...anchorProps }) => <a {...anchorProps} rel="noreferrer" target="_blank" />,
+          table: ({ children }) => (
+            <div className="nexus-webchat-table-wrap">
+              <table>{children}</table>
+            </div>
+          )
+        }}
+      >
+        {props.text}
+      </ReactMarkdown>
+    </div>
   );
 }
 

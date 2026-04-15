@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	stdhtml "html"
 	"strconv"
 	"strings"
 
@@ -45,10 +46,15 @@ func (r SlackRenderer) RenderRunEvent(_ context.Context, session domain.Session,
 		if len(evt.Artifacts) > 0 {
 			text = appendArtifactSummary(text, evt.Artifacts)
 		}
+		formatted := renderMarkdownVariants(text)
 		payload, err := json.Marshal(map[string]any{
 			"channel":   channelID,
 			"thread_ts": threadTS,
-			"text":      text,
+			"text":      firstNonEmpty(formatted.Plain, text),
+			"blocks": []map[string]any{{
+				"type": "section",
+				"text": map[string]any{"type": "mrkdwn", "text": firstNonEmpty(formatted.Slack, formatted.Plain, text)},
+			}},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("marshal text payload: %w", err)
@@ -124,31 +130,19 @@ func artifactDeliveryURL(artifact domain.Artifact) string {
 }
 
 func renderAwaitPayload(channelID, threadTS, awaitID string, prompt []byte) ([]byte, error) {
-	var model struct {
-		Title   string                `json:"title"`
-		Body    string                `json:"body"`
-		Choices []domain.RenderChoice `json:"choices"`
+	text, choices, err := parseAwaitPrompt(prompt)
+	if err != nil {
+		return nil, fmt.Errorf("unmarshal await render prompt: %w", err)
 	}
-	if len(prompt) > 0 {
-		if err := json.Unmarshal(prompt, &model); err != nil {
-			return nil, fmt.Errorf("unmarshal await render prompt: %w", err)
-		}
-	}
-	text := model.Title
-	if text == "" {
-		text = "The agent needs your input to continue."
-	}
-	if model.Body != "" {
-		text = text + "\n" + model.Body
-	}
+	formatted := renderMarkdownVariants(text)
 	payload := map[string]any{
 		"channel":   channelID,
 		"thread_ts": threadTS,
-		"text":      text,
+		"text":      firstNonEmpty(formatted.Plain, text),
 	}
-	if len(model.Choices) > 0 {
-		actions := make([]map[string]any, 0, len(model.Choices))
-		for _, choice := range model.Choices {
+	if len(choices) > 0 {
+		actions := make([]map[string]any, 0, len(choices))
+		for _, choice := range choices {
 			value, err := json.Marshal(map[string]string{
 				"await_id": awaitID,
 				"choice":   choice.ID,
@@ -166,13 +160,18 @@ func renderAwaitPayload(channelID, threadTS, awaitID string, prompt []byte) ([]b
 		payload["blocks"] = []map[string]any{
 			{
 				"type": "section",
-				"text": map[string]any{"type": "mrkdwn", "text": text},
+				"text": map[string]any{"type": "mrkdwn", "text": firstNonEmpty(formatted.Slack, formatted.Plain, text)},
 			},
 			{
 				"type":     "actions",
 				"elements": actions,
 			},
 		}
+	} else {
+		payload["blocks"] = []map[string]any{{
+			"type": "section",
+			"text": map[string]any{"type": "mrkdwn", "text": firstNonEmpty(formatted.Slack, formatted.Plain, text)},
+		}}
 	}
 	return json.Marshal(payload)
 }
@@ -213,9 +212,11 @@ func (r TelegramRenderer) RenderRunEvent(_ context.Context, session domain.Sessi
 		if len(evt.Artifacts) > 0 {
 			text = appendArtifactSummary(text, evt.Artifacts)
 		}
+		formatted := renderMarkdownVariants(text)
 		payloadMap := map[string]any{
-			"chat_id": chatID,
-			"text":    text,
+			"chat_id":    chatID,
+			"text":       firstNonEmpty(formatted.TelegramHTML, stdhtml.EscapeString(text)),
+			"parse_mode": "HTML",
 		}
 		if messageID != "" {
 			payloadMap["message_id"] = atoiLoose(messageID)
@@ -291,11 +292,12 @@ func (r WhatsAppRenderer) RenderRunEvent(_ context.Context, session domain.Sessi
 		if len(evt.Artifacts) > 0 {
 			text = appendArtifactSummary(text, evt.Artifacts)
 		}
+		formatted := renderMarkdownVariants(text)
 		payload, err := json.Marshal(map[string]any{
 			"messaging_product": "whatsapp",
 			"to":                recipient,
 			"type":              "text",
-			"text":              map[string]any{"body": text},
+			"text":              map[string]any{"body": firstNonEmpty(formatted.WhatsApp, formatted.Plain, text)},
 		})
 		if err != nil {
 			return nil, err
@@ -373,9 +375,10 @@ func (r WhatsAppWebRenderer) RenderRunEvent(_ context.Context, session domain.Se
 		if len(evt.Artifacts) > 0 {
 			text = appendArtifactSummary(text, evt.Artifacts)
 		}
+		formatted := renderMarkdownVariants(text)
 		payload, err := json.Marshal(map[string]any{
 			"chatId": recipient,
-			"text":   text,
+			"text":   firstNonEmpty(formatted.WhatsApp, formatted.Plain, text),
 		})
 		if err != nil {
 			return nil, err
@@ -450,11 +453,13 @@ func (r EmailRenderer) RenderRunEvent(_ context.Context, session domain.Session,
 		if len(evt.Artifacts) > 0 {
 			text = appendArtifactSummary(text, evt.Artifacts)
 		}
+		formatted := renderMarkdownVariants(text)
 		payloadMap := map[string]any{
 			"to":        recipient,
 			"thread_id": threadID,
 			"subject":   subjectForStatus(evt.Status),
-			"text":      text,
+			"text":      firstNonEmpty(formatted.Plain, text),
+			"html":      formatted.EmailHTML,
 		}
 		payload, err := json.Marshal(payloadMap)
 		if err != nil {
@@ -560,30 +565,19 @@ func renderTelegramRunText(evt domain.RunEvent) string {
 }
 
 func renderTelegramAwaitPayload(chatID, awaitID string, prompt []byte) ([]byte, error) {
-	var model struct {
-		Title   string                `json:"title"`
-		Body    string                `json:"body"`
-		Choices []domain.RenderChoice `json:"choices"`
+	text, choices, err := parseAwaitPrompt(prompt)
+	if err != nil {
+		return nil, fmt.Errorf("unmarshal telegram await prompt: %w", err)
 	}
-	if len(prompt) > 0 {
-		if err := json.Unmarshal(prompt, &model); err != nil {
-			return nil, fmt.Errorf("unmarshal telegram await prompt: %w", err)
-		}
-	}
-	text := model.Title
-	if text == "" {
-		text = "The agent needs your input to continue."
-	}
-	if model.Body != "" {
-		text += "\n" + model.Body
-	}
+	formatted := renderMarkdownVariants(text)
 	payload := map[string]any{
-		"chat_id": chatID,
-		"text":    text,
+		"chat_id":    chatID,
+		"text":       firstNonEmpty(formatted.TelegramHTML, stdhtml.EscapeString(text)),
+		"parse_mode": "HTML",
 	}
-	if len(model.Choices) > 0 {
-		rows := make([][]map[string]string, 0, len(model.Choices))
-		for _, choice := range model.Choices {
+	if len(choices) > 0 {
+		rows := make([][]map[string]string, 0, len(choices))
+		for _, choice := range choices {
 			data, err := json.Marshal(map[string]string{"await_id": awaitID, "choice": choice.ID})
 			if err != nil {
 				return nil, err
@@ -644,66 +638,48 @@ func renderWhatsAppWebAwaitPayload(recipient, awaitID string, prompt []byte) ([]
 }
 
 func renderAwaitTextChoices(awaitID string, prompt []byte, alwaysIncludeChoices bool) (string, []domain.RenderChoice, error) {
-	var model struct {
-		Title   string                `json:"title"`
-		Body    string                `json:"body"`
-		Choices []domain.RenderChoice `json:"choices"`
+	text, choices, err := parseAwaitPrompt(prompt)
+	if err != nil {
+		return "", nil, err
 	}
-	if len(prompt) > 0 {
-		if err := json.Unmarshal(prompt, &model); err != nil {
-			return "", nil, err
-		}
-	}
-	text := model.Title
-	if text == "" {
-		text = "The agent needs your input to continue."
-	}
-	if model.Body != "" {
-		text += "\n" + model.Body
-	}
-	if len(model.Choices) > 3 || (alwaysIncludeChoices && len(model.Choices) > 0) {
-		lines := make([]string, 0, len(model.Choices)+3)
+	formatted := renderMarkdownVariants(text)
+	text = firstNonEmpty(formatted.WhatsApp, formatted.Plain, text)
+	if len(choices) > 3 || (alwaysIncludeChoices && len(choices) > 0) {
+		lines := make([]string, 0, len(choices)+3)
 		lines = append(lines, text, "", "Reply with one of:")
-		for _, choice := range model.Choices {
+		for _, choice := range choices {
 			lines = append(lines, fmt.Sprintf("[await:%s] %s", awaitID, choice.ID))
 		}
 		text = strings.Join(lines, "\n")
 	}
-	return text, model.Choices, nil
+	return text, choices, nil
 }
 
 func renderEmailAwaitPayload(recipient, threadID, awaitID string, prompt []byte) ([]byte, error) {
-	var model struct {
-		Title   string                `json:"title"`
-		Body    string                `json:"body"`
-		Choices []domain.RenderChoice `json:"choices"`
+	text, choices, err := parseAwaitPrompt(prompt)
+	if err != nil {
+		return nil, err
 	}
-	if len(prompt) > 0 {
-		if err := json.Unmarshal(prompt, &model); err != nil {
-			return nil, err
-		}
-	}
-	text := model.Title
-	if text == "" {
-		text = "The agent needs your input to continue."
-	}
-	if model.Body != "" {
-		text += "\n\n" + model.Body
-	}
-	if len(model.Choices) > 0 {
-		lines := make([]string, 0, len(model.Choices)+2)
+	if len(choices) > 0 {
+		lines := make([]string, 0, len(choices)+2)
 		lines = append(lines, text, "")
-		for _, choice := range model.Choices {
+		for _, choice := range choices {
 			lines = append(lines, "- "+choice.Label+" ("+choice.ID+")")
 		}
 		text = strings.Join(lines, "\n")
 	}
+	formatted := renderMarkdownVariants(text)
+	html := formatted.EmailHTML
 	text += "\n\nReply to this email and keep [await:" + awaitID + "] in the subject."
+	if html != "" {
+		html += "<p>Reply to this email and keep <code>[await:" + stdhtml.EscapeString(awaitID) + "]</code> in the subject.</p>"
+	}
 	return json.Marshal(map[string]any{
 		"to":        recipient,
 		"thread_id": threadID,
 		"subject":   "Input needed [await:" + awaitID + "]",
-		"text":      text,
+		"text":      firstNonEmpty(formatted.Plain, text) + "\n\nReply to this email and keep [await:" + awaitID + "] in the subject.",
+		"html":      html,
 	})
 }
 
@@ -736,4 +712,13 @@ func truncate(in string, limit int) string {
 func atoiLoose(in string) int64 {
 	n, _ := strconv.ParseInt(in, 10, 64)
 	return n
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

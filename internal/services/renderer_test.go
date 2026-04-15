@@ -35,6 +35,37 @@ func TestSlackRendererFormatsOpenCodeAwaitBlockFailure(t *testing.T) {
 	if !strings.Contains(text, "Slack route") || !strings.Contains(text, "native await/resume") {
 		t.Fatalf("unexpected slack failure text: %q", text)
 	}
+	blocks, ok := payload["blocks"].([]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("expected slack blocks payload, got %+v", payload["blocks"])
+	}
+}
+
+func TestSlackRendererFormatsHeadingWithoutBrokenAsterisks(t *testing.T) {
+	renderer := SlackRenderer{}
+	deliveries, err := renderer.RenderRunEvent(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "slack",
+		ChannelScopeKey: "C123:1712400000.000100",
+	}, domain.RunEvent{
+		RunID:  "run_1",
+		Status: "completed",
+		Text:   "## Title",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(deliveries[0].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	blocks := payload["blocks"].([]any)
+	block := blocks[0].(map[string]any)
+	text := block["text"].(map[string]any)["text"].(string)
+	if text != "*Title*" {
+		t.Fatalf("unexpected slack heading formatting: %q", text)
+	}
 }
 
 func TestTelegramRendererFormatsOpenCodeAwaitBlockFailure(t *testing.T) {
@@ -62,6 +93,59 @@ func TestTelegramRendererFormatsOpenCodeAwaitBlockFailure(t *testing.T) {
 	text, _ := payload["text"].(string)
 	if !strings.Contains(text, "Telegram route") || !strings.Contains(text, "native await/resume") {
 		t.Fatalf("unexpected telegram failure text: %q", text)
+	}
+	if payload["parse_mode"] != "HTML" {
+		t.Fatalf("expected telegram html parse mode, got %+v", payload)
+	}
+}
+
+func TestTelegramRendererFormatsMarkdownAsHTML(t *testing.T) {
+	renderer := TelegramRenderer{}
+	deliveries, err := renderer.RenderRunEvent(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "telegram",
+		ChannelScopeKey: "123:55",
+	}, domain.RunEvent{
+		RunID:  "run_1",
+		Status: "completed",
+		Text:   "## Hello\n\n**bold** and _italic_ with [link](https://example.com)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(deliveries[0].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := payload["text"].(string)
+	if !strings.Contains(text, "<b>Hello</b>") || !strings.Contains(text, `<a href="https://example.com">link</a>`) {
+		t.Fatalf("unexpected telegram formatted text: %q", text)
+	}
+}
+
+func TestTelegramRendererKeepsInlineFormattingInsideListItems(t *testing.T) {
+	renderer := TelegramRenderer{}
+	deliveries, err := renderer.RenderRunEvent(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "telegram",
+		ChannelScopeKey: "123:55",
+	}, domain.RunEvent{
+		RunID:  "run_1",
+		Status: "completed",
+		Text:   "- **bold** item with [link](https://example.com)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(deliveries[0].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := payload["text"].(string)
+	if !strings.Contains(text, "<b>bold</b>") || !strings.Contains(text, `<a href="https://example.com">link</a>`) || strings.Contains(text, "&lt;b&gt;") || strings.Contains(text, "&lt;a") {
+		t.Fatalf("unexpected telegram list formatting: %q", text)
 	}
 }
 
@@ -99,6 +183,31 @@ func TestWhatsAppRendererListsFallbackChoices(t *testing.T) {
 	text := payload["text"].(map[string]any)["body"].(string)
 	if !strings.Contains(text, "[await:await_run_1] alpha") || !strings.Contains(text, "[await:await_run_1] delta") {
 		t.Fatalf("unexpected whatsapp fallback text: %q", text)
+	}
+}
+
+func TestWhatsAppRendererFormatsMarkdownToReadableText(t *testing.T) {
+	renderer := WhatsAppRenderer{}
+	deliveries, err := renderer.RenderRunEvent(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "whatsapp",
+		ChannelScopeKey: "15551234567",
+	}, domain.RunEvent{
+		RunID:  "run_1",
+		Status: "completed",
+		Text:   "**bold** and [link](https://example.com)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(deliveries[0].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	text := payload["text"].(map[string]any)["body"].(string)
+	if !strings.Contains(text, "*bold*") || !strings.Contains(text, "link: https://example.com") {
+		t.Fatalf("unexpected whatsapp markdown text: %q", text)
 	}
 }
 
@@ -199,5 +308,34 @@ func TestWhatsAppWebRendererKeepsAwaitReplySyntax(t *testing.T) {
 	text, _ := payload["text"].(string)
 	if !strings.Contains(text, "[await:await_run_1] approve") || !strings.Contains(text, "[await:await_run_1] reject") {
 		t.Fatalf("expected await reply syntax in whatsapp_web text, got %q", text)
+	}
+}
+
+func TestEmailRendererAddsHTMLAlternative(t *testing.T) {
+	renderer := EmailRenderer{}
+	deliveries, err := renderer.RenderRunEvent(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "email",
+		ChannelScopeKey: "user@example.com|thread_1",
+	}, domain.RunEvent{
+		RunID:  "run_1",
+		Status: "completed",
+		Text:   "## Hello\n\n**bold** and [link](https://example.com)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(deliveries[0].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	html, _ := payload["html"].(string)
+	text, _ := payload["text"].(string)
+	if !strings.Contains(html, "<h2>Hello</h2>") || !strings.Contains(html, `<a href="https://example.com">link</a>`) {
+		t.Fatalf("unexpected email html payload: %q", html)
+	}
+	if !strings.Contains(text, "**bold**") {
+		t.Fatalf("unexpected email text fallback: %q", text)
 	}
 }
