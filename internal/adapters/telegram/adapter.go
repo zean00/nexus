@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"nexus/internal/domain"
+	"nexus/internal/ports"
 )
 
 type Adapter struct {
@@ -46,11 +47,12 @@ func (a Adapter) VerifyInbound(_ context.Context, r *http.Request, _ []byte) err
 
 func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, tenantID string) (domain.CanonicalInboundEvent, error) {
 	var update struct {
-		UpdateID      int64 `json:"update_id"`
-		Message       *struct {
+		UpdateID int64 `json:"update_id"`
+		Message  *struct {
 			MessageID int64  `json:"message_id"`
 			Date      int64  `json:"date"`
 			Text      string `json:"text"`
+			Caption   string `json:"caption"`
 			Chat      struct {
 				ID   int64  `json:"id"`
 				Type string `json:"type"`
@@ -58,6 +60,35 @@ func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, t
 			From struct {
 				ID int64 `json:"id"`
 			} `json:"from"`
+			Document *struct {
+				FileID   string `json:"file_id"`
+				FileName string `json:"file_name"`
+				MimeType string `json:"mime_type"`
+				FileSize int64  `json:"file_size"`
+			} `json:"document"`
+			Photo []struct {
+				FileID   string `json:"file_id"`
+				Width    int    `json:"width"`
+				Height   int    `json:"height"`
+				FileSize int64  `json:"file_size"`
+			} `json:"photo"`
+			Audio *struct {
+				FileID   string `json:"file_id"`
+				FileName string `json:"file_name"`
+				MimeType string `json:"mime_type"`
+				FileSize int64  `json:"file_size"`
+			} `json:"audio"`
+			Video *struct {
+				FileID   string `json:"file_id"`
+				FileName string `json:"file_name"`
+				MimeType string `json:"mime_type"`
+				FileSize int64  `json:"file_size"`
+			} `json:"video"`
+			Voice *struct {
+				FileID   string `json:"file_id"`
+				MimeType string `json:"mime_type"`
+				FileSize int64  `json:"file_size"`
+			} `json:"voice"`
 		} `json:"message"`
 		CallbackQuery *struct {
 			ID   string `json:"id"`
@@ -82,10 +113,12 @@ func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, t
 		chatID := strconv.FormatInt(update.Message.Chat.ID, 10)
 		msgID := strconv.FormatInt(update.Message.MessageID, 10)
 		userID := strconv.FormatInt(update.Message.From.ID, 10)
+		text := strings.TrimSpace(firstNonEmpty(update.Message.Text, update.Message.Caption))
 		command := ""
-		if strings.HasPrefix(strings.TrimSpace(update.Message.Text), "/") {
-			command = strings.Fields(strings.TrimSpace(update.Message.Text))[0]
+		if strings.HasPrefix(text, "/") {
+			command = strings.Fields(text)[0]
 		}
+		artifacts := telegramArtifacts(*update.Message)
 		return domain.CanonicalInboundEvent{
 			EventID:         fmt.Sprintf("tg_%d", update.UpdateID),
 			TenantID:        tenantID,
@@ -106,9 +139,10 @@ func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, t
 			},
 			Message: domain.Message{
 				MessageID:   "tg_msg_" + msgID,
-				MessageType: "text",
-				Text:        update.Message.Text,
-				Parts:       []domain.Part{{ContentType: "text/plain", Content: update.Message.Text}},
+				MessageType: telegramMessageType(text, artifacts),
+				Text:        text,
+				Parts:       []domain.Part{{ContentType: "text/plain", Content: text}},
+				Artifacts:   artifacts,
 			},
 			Metadata: domain.Metadata{RawPayload: body, Command: command},
 		}, nil
@@ -161,12 +195,140 @@ func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, t
 	}
 }
 
+func telegramArtifacts(message struct {
+	MessageID int64  `json:"message_id"`
+	Date      int64  `json:"date"`
+	Text      string `json:"text"`
+	Caption   string `json:"caption"`
+	Chat      struct {
+		ID   int64  `json:"id"`
+		Type string `json:"type"`
+	} `json:"chat"`
+	From struct {
+		ID int64 `json:"id"`
+	} `json:"from"`
+	Document *struct {
+		FileID   string `json:"file_id"`
+		FileName string `json:"file_name"`
+		MimeType string `json:"mime_type"`
+		FileSize int64  `json:"file_size"`
+	} `json:"document"`
+	Photo []struct {
+		FileID   string `json:"file_id"`
+		Width    int    `json:"width"`
+		Height   int    `json:"height"`
+		FileSize int64  `json:"file_size"`
+	} `json:"photo"`
+	Audio *struct {
+		FileID   string `json:"file_id"`
+		FileName string `json:"file_name"`
+		MimeType string `json:"mime_type"`
+		FileSize int64  `json:"file_size"`
+	} `json:"audio"`
+	Video *struct {
+		FileID   string `json:"file_id"`
+		FileName string `json:"file_name"`
+		MimeType string `json:"mime_type"`
+		FileSize int64  `json:"file_size"`
+	} `json:"video"`
+	Voice *struct {
+		FileID   string `json:"file_id"`
+		MimeType string `json:"mime_type"`
+		FileSize int64  `json:"file_size"`
+	} `json:"voice"`
+}) []domain.Artifact {
+	artifacts := make([]domain.Artifact, 0, 4)
+	if message.Document != nil && strings.TrimSpace(message.Document.FileID) != "" {
+		name := strings.TrimSpace(firstNonEmpty(message.Document.FileName, message.Document.FileID))
+		artifacts = append(artifacts, domain.Artifact{
+			ID:        message.Document.FileID,
+			Name:      name,
+			MIMEType:  strings.TrimSpace(message.Document.MimeType),
+			SizeBytes: message.Document.FileSize,
+			SourceURL: "telegram-file:" + message.Document.FileID,
+		})
+	}
+	if len(message.Photo) > 0 {
+		best := message.Photo[len(message.Photo)-1]
+		artifacts = append(artifacts, domain.Artifact{
+			ID:        best.FileID,
+			Name:      best.FileID + ".jpg",
+			MIMEType:  "image/jpeg",
+			SizeBytes: best.FileSize,
+			SourceURL: "telegram-file:" + best.FileID,
+		})
+	}
+	if message.Audio != nil && strings.TrimSpace(message.Audio.FileID) != "" {
+		name := strings.TrimSpace(firstNonEmpty(message.Audio.FileName, message.Audio.FileID+".audio"))
+		artifacts = append(artifacts, domain.Artifact{
+			ID:        message.Audio.FileID,
+			Name:      name,
+			MIMEType:  strings.TrimSpace(message.Audio.MimeType),
+			SizeBytes: message.Audio.FileSize,
+			SourceURL: "telegram-file:" + message.Audio.FileID,
+		})
+	}
+	if message.Video != nil && strings.TrimSpace(message.Video.FileID) != "" {
+		name := strings.TrimSpace(firstNonEmpty(message.Video.FileName, message.Video.FileID+".video"))
+		artifacts = append(artifacts, domain.Artifact{
+			ID:        message.Video.FileID,
+			Name:      name,
+			MIMEType:  strings.TrimSpace(message.Video.MimeType),
+			SizeBytes: message.Video.FileSize,
+			SourceURL: "telegram-file:" + message.Video.FileID,
+		})
+	}
+	if message.Voice != nil && strings.TrimSpace(message.Voice.FileID) != "" {
+		artifacts = append(artifacts, domain.Artifact{
+			ID:        message.Voice.FileID,
+			Name:      message.Voice.FileID + ".ogg",
+			MIMEType:  strings.TrimSpace(firstNonEmpty(message.Voice.MimeType, "audio/ogg")),
+			SizeBytes: message.Voice.FileSize,
+			SourceURL: "telegram-file:" + message.Voice.FileID,
+		})
+	}
+	return artifacts
+}
+
+func telegramMessageType(text string, artifacts []domain.Artifact) string {
+	switch {
+	case len(artifacts) > 0 && strings.TrimSpace(text) != "":
+		return "mixed"
+	case len(artifacts) > 0:
+		return "artifact"
+	default:
+		return "text"
+	}
+}
+
 func (a Adapter) SendMessage(_ context.Context, delivery domain.OutboundDelivery) (domain.DeliveryResult, error) {
 	return a.send(delivery.PayloadJSON)
 }
 
 func (a Adapter) SendAwaitPrompt(_ context.Context, delivery domain.OutboundDelivery) (domain.DeliveryResult, error) {
 	return a.send(delivery.PayloadJSON)
+}
+
+func (a Adapter) HydrateInboundArtifacts(ctx context.Context, evt *domain.CanonicalInboundEvent, store ports.InboundArtifactStore) error {
+	if len(evt.Message.Artifacts) == 0 {
+		return nil
+	}
+	stored := make([]domain.Artifact, 0, len(evt.Message.Artifacts))
+	for _, artifact := range evt.Message.Artifacts {
+		content, err := a.downloadArtifact(ctx, artifact)
+		if err != nil {
+			return err
+		}
+		saved, err := store.SaveInbound(ctx, artifact.Name, artifact.MIMEType, content)
+		if err != nil {
+			return err
+		}
+		saved.ID = artifact.ID
+		saved.SourceURL = artifact.SourceURL
+		stored = append(stored, saved)
+	}
+	evt.Message.Artifacts = stored
+	return nil
 }
 
 func (a Adapter) send(payload []byte) (domain.DeliveryResult, error) {
@@ -178,7 +340,7 @@ func (a Adapter) send(payload []byte) (domain.DeliveryResult, error) {
 		return domain.DeliveryResult{}, err
 	}
 	if kind, _ := body["kind"].(string); kind == "artifact_upload" {
-		return a.uploadDocument(body)
+		return a.uploadArtifact(body)
 	}
 	method := "sendMessage"
 	if _, ok := body["message_id"]; ok {
@@ -207,7 +369,7 @@ func (a Adapter) postJSON(method string, payload map[string]any) (domain.Deliver
 		return domain.DeliveryResult{}, fmt.Errorf("telegram %s failed: status=%d body=%s", method, resp.StatusCode, string(body))
 	}
 	var parsed struct {
-		OK     bool   `json:"ok"`
+		OK     bool `json:"ok"`
 		Result struct {
 			MessageID int64 `json:"message_id"`
 		} `json:"result"`
@@ -221,12 +383,13 @@ func (a Adapter) postJSON(method string, payload map[string]any) (domain.Deliver
 	return domain.DeliveryResult{ProviderMessageID: strconv.FormatInt(parsed.Result.MessageID, 10)}, nil
 }
 
-func (a Adapter) uploadDocument(payload map[string]any) (domain.DeliveryResult, error) {
+func (a Adapter) uploadArtifact(payload map[string]any) (domain.DeliveryResult, error) {
 	storageURI, _ := payload["storage_uri"].(string)
 	chatID, _ := payload["chat_id"].(string)
 	if !strings.HasPrefix(storageURI, "file://") {
 		return domain.DeliveryResult{}, fmt.Errorf("unsupported telegram storage uri: %s", storageURI)
 	}
+	method, formField := telegramUploadTarget(asString(payload["mime_type"]))
 	path := strings.TrimPrefix(storageURI, "file://")
 	file, err := os.Open(path)
 	if err != nil {
@@ -243,7 +406,7 @@ func (a Adapter) uploadDocument(payload map[string]any) (domain.DeliveryResult, 
 			return domain.DeliveryResult{}, err
 		}
 	}
-	part, err := writer.CreateFormFile("document", filepathBase(path))
+	part, err := writer.CreateFormFile(formField, filepathBase(path))
 	if err != nil {
 		return domain.DeliveryResult{}, err
 	}
@@ -253,7 +416,7 @@ func (a Adapter) uploadDocument(payload map[string]any) (domain.DeliveryResult, 
 	if err := writer.Close(); err != nil {
 		return domain.DeliveryResult{}, err
 	}
-	req, err := http.NewRequest(http.MethodPost, a.apiURL("sendDocument"), &body)
+	req, err := http.NewRequest(http.MethodPost, a.apiURL(method), &body)
 	if err != nil {
 		return domain.DeliveryResult{}, err
 	}
@@ -265,7 +428,7 @@ func (a Adapter) uploadDocument(payload map[string]any) (domain.DeliveryResult, 
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return domain.DeliveryResult{}, fmt.Errorf("telegram sendDocument failed: status=%d body=%s", resp.StatusCode, string(raw))
+		return domain.DeliveryResult{}, fmt.Errorf("telegram %s failed: status=%d body=%s", method, resp.StatusCode, string(raw))
 	}
 	var parsed struct {
 		OK     bool `json:"ok"`
@@ -277,7 +440,7 @@ func (a Adapter) uploadDocument(payload map[string]any) (domain.DeliveryResult, 
 		return domain.DeliveryResult{}, err
 	}
 	if !parsed.OK {
-		return domain.DeliveryResult{}, errors.New("telegram sendDocument returned not ok")
+		return domain.DeliveryResult{}, fmt.Errorf("telegram %s returned not ok", method)
 	}
 	return domain.DeliveryResult{ProviderMessageID: strconv.FormatInt(parsed.Result.MessageID, 10)}, nil
 }
@@ -286,10 +449,96 @@ func (a Adapter) apiURL(method string) string {
 	return "https://api.telegram.org/bot" + a.BotToken + "/" + method
 }
 
+func (a Adapter) fileURL(path string) string {
+	return "https://api.telegram.org/file/bot" + a.BotToken + "/" + strings.TrimPrefix(path, "/")
+}
+
+func (a Adapter) downloadArtifact(ctx context.Context, artifact domain.Artifact) ([]byte, error) {
+	if a.BotToken == "" {
+		return nil, errors.New("missing telegram bot token")
+	}
+	fileID := strings.TrimSpace(strings.TrimPrefix(artifact.SourceURL, "telegram-file:"))
+	if fileID == "" {
+		fileID = strings.TrimSpace(artifact.ID)
+	}
+	reqBody, err := json.Marshal(map[string]string{"file_id": fileID})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.apiURL("getFile"), bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("telegram getFile failed: status=%d body=%s", resp.StatusCode, string(raw))
+	}
+	var parsed struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			FilePath string `json:"file_path"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+	if !parsed.OK || strings.TrimSpace(parsed.Result.FilePath) == "" {
+		return nil, errors.New("telegram getFile returned no file path")
+	}
+	fileReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.fileURL(parsed.Result.FilePath), nil)
+	if err != nil {
+		return nil, err
+	}
+	fileResp, err := a.HTTP.Do(fileReq)
+	if err != nil {
+		return nil, err
+	}
+	defer fileResp.Body.Close()
+	if fileResp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(fileResp.Body, 4096))
+		return nil, fmt.Errorf("telegram file download failed: status=%d body=%s", fileResp.StatusCode, string(raw))
+	}
+	return io.ReadAll(fileResp.Body)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func filepathBase(path string) string {
 	parts := strings.Split(path, "/")
 	if len(parts) == 0 {
 		return path
 	}
 	return parts[len(parts)-1]
+}
+
+func telegramUploadTarget(mimeType string) (method, formField string) {
+	mimeType = strings.TrimSpace(strings.ToLower(mimeType))
+	switch {
+	case mimeType == "image/jpeg", mimeType == "image/jpg", mimeType == "image/png", mimeType == "image/webp":
+		return "sendPhoto", "photo"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "sendAudio", "audio"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "sendVideo", "video"
+	default:
+		return "sendDocument", "document"
+	}
+}
+
+func asString(v any) string {
+	s, _ := v.(string)
+	return s
 }

@@ -97,7 +97,8 @@ Behavior notes:
 Behavior notes:
 
 - Telegram is the only channel with built-in session commands in the current codebase
-- Telegram artifact uploads are file-backed document sends
+- Telegram outbound artifacts are file-backed uploads routed by MIME type to native photo, audio, video, or document sends
+- inbound Telegram file/media messages are hydrated through the Bot API `getFile` flow
 
 ## WhatsApp
 

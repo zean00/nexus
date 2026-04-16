@@ -149,6 +149,36 @@ func TestTelegramRendererKeepsInlineFormattingInsideListItems(t *testing.T) {
 	}
 }
 
+func TestTelegramRendererIncludesMimeTypeForArtifactUploads(t *testing.T) {
+	renderer := TelegramRenderer{}
+	deliveries, err := renderer.RenderRunEvent(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "telegram",
+		ChannelScopeKey: "123:55",
+	}, domain.RunEvent{
+		RunID:  "run_1",
+		Status: "completed",
+		Text:   "done",
+		Artifacts: []domain.Artifact{
+			{ID: "artifact_1", Name: "photo.jpg", MIMEType: "image/jpeg", StorageURI: "file:///tmp/photo.jpg"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 2 {
+		t.Fatalf("expected text plus one artifact delivery, got %+v", deliveries)
+	}
+	var artifactPayload map[string]any
+	if err := json.Unmarshal(deliveries[1].PayloadJSON, &artifactPayload); err != nil {
+		t.Fatal(err)
+	}
+	if artifactPayload["mime_type"] != "image/jpeg" {
+		t.Fatalf("expected telegram artifact payload to preserve mime_type, got %+v", artifactPayload)
+	}
+}
+
 func TestWhatsAppRendererListsFallbackChoices(t *testing.T) {
 	renderer := WhatsAppRenderer{}
 	prompt, err := json.Marshal(map[string]any{

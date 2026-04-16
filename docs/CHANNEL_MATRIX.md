@@ -31,10 +31,10 @@ If you are evaluating the project for the first time, start with Webchat. It exp
 | Inbound verification | HMAC signature | Secret token | Verify token + HMAC signature | WAHA HMAC signature | Secret or timestamped HMAC | First-party session |
 | Inbound text | Yes | Yes | Yes | Yes | Yes | Yes |
 | Inbound interactive await response | Yes | Yes | Yes | Text fallback in v1 | Yes | Yes |
-| Inbound artifacts | Yes | No native file ingest in current adapter | Yes | Yes | Yes | Yes |
+| Inbound artifacts | Yes | Yes | Yes | Yes | Yes | Yes |
 | Outbound status message | Yes | Yes | Yes | Yes | Yes | Persisted state + webchat adapter delivery |
 | Outbound await prompt | Buttons | Inline keyboard | Buttons or text fallback | Text fallback | Email instructions | Native UI/API |
-| Outbound artifacts | Yes | Yes | Yes, only public `http(s)` URLs | Yes, direct file/media send | Yes | Yes |
+| Outbound artifacts | Yes | Yes, native media/document by MIME | Yes, only public `http(s)` URLs | Yes, direct file/media send | Yes | Yes |
 | Partial streaming exposed to user | No | No | No | No | No | Yes |
 | Identity linking path | Yes | Yes | Yes | Shared with WhatsApp phone identity | Yes | Native first-party identity plus linking |
 | Session commands | No | Yes | No | Admin session lifecycle APIs | No | UI/API actions instead |
@@ -71,11 +71,13 @@ Strengths:
 
 - inline keyboard await UX
 - explicit session commands in the current codebase
-- document upload support for outbound artifacts
+- native photo, audio, video, and document outbound artifact delivery
+- provider-backed inbound artifact ingest and hydration
 
 Current notes:
 
-- the current inbound adapter focuses on text and callback updates
+- inbound file support covers provider file types that arrive on `message` updates
+- outbound artifact delivery routes by MIME type to `sendPhoto`, `sendAudio`, `sendVideo`, or `sendDocument`
 - Telegram is the only channel with built-in session control commands today
 
 ### WhatsApp
@@ -139,8 +141,8 @@ Current notes:
 
 | Artifact Behavior | Slack | Telegram | WhatsApp | WhatsApp Web | Email | Webchat |
 | --- | --- | --- | --- | --- | --- | --- |
-| Inbound artifact parsing | File metadata | No current file parsing | Image / document / audio metadata | WAHA media metadata | Attachment metadata | Browser uploads |
-| Inbound artifact hydration | Provider download | N/A | Provider media download | WAHA media download | Base64 decode | Direct save to object store |
+| Inbound artifact parsing | File metadata | Message file metadata | Image / document / audio metadata | WAHA media metadata | Attachment metadata | Browser uploads |
+| Inbound artifact hydration | Provider download | Telegram `getFile` download | Provider media download | WAHA media download | Base64 decode | Direct save to object store |
 | Outbound artifact delivery | Upload send | Document send | Media send from public URL | Direct WAHA file/media send | Email attachment | Authenticated web delivery |
 | Inline artifact preview | Provider-dependent | Provider-dependent | Provider-dependent | Provider-dependent | Client-dependent | Yes |
 

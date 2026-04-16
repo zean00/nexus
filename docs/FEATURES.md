@@ -97,8 +97,8 @@ Implemented artifact features:
 
 Current state by area:
 
-- inbound artifacts: webchat, Slack, WhatsApp, email
-- outbound artifact delivery: Slack, Telegram, WhatsApp, email, webchat
+- inbound artifacts: webchat, Slack, Telegram, WhatsApp, WhatsApp Web, email
+- outbound artifact delivery: Slack, Telegram, WhatsApp, WhatsApp Web, email, webchat
 - webchat rendering: inline image/audio/video, file rows for other artifact types
 
 Artifact support is broad, but it is not uniform. The exact behavior depends on both the channel and the ACP bridge in use.

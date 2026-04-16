@@ -242,6 +242,7 @@ func (r TelegramRenderer) RenderRunEvent(_ context.Context, session domain.Sessi
 				"chat_id":     chatID,
 				"caption":     artifact.Name,
 				"storage_uri": artifact.StorageURI,
+				"mime_type":   artifact.MIMEType,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("marshal telegram artifact payload: %w", err)
