@@ -613,7 +613,10 @@ func (r *PostgresRepository) StoreOutboundMessage(ctx context.Context, session d
 			id, tenant_id, session_id, direction, channel_type, channel_message_id, role, text_preview, raw_payload_json, created_at
 		) values ($1,$2,$3,'outbound',$4,$5,'assistant',$6,$7,now())
 		on conflict (id) do update
-		set text_preview=excluded.text_preview,
+		set text_preview=case
+				when excluded.text_preview is not null and btrim(excluded.text_preview) <> '' then excluded.text_preview
+				else messages.text_preview
+			end,
 		    raw_payload_json=excluded.raw_payload_json
 	`, id, session.TenantID, session.ID, session.ChannelType, id, text, rawPayload)
 	return id, err
