@@ -20,6 +20,7 @@ Core channel capabilities:
 - canonical message normalization
 - responder binding for await/resume flows
 - outbound message delivery
+- external outbound push for reminders, broadcasts, and notifications
 - outbound await prompts
 - per-channel artifact handling where supported
 

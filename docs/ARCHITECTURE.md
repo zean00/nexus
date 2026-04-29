@@ -284,6 +284,10 @@ Inbound events are persisted before work execution starts. This makes duplicate 
 
 Runs and outbound sends are driven by outbox events instead of inline side effects. This gives the worker and reconciler a durable control plane.
 
+### External outbound push
+
+The admin API can enqueue outbound-only reminders, broadcasts, and notifications from an external scheduler or agent runtime. Push requests resolve a target session by session ID, notification surface, channel account, or linked identity, then reuse the same renderer, delivery table, and worker path as ACP run output.
+
 ### Session queueing
 
 A session can only have one active run at a time. New messages are queued behind the active run or pending await.

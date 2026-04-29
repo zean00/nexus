@@ -100,6 +100,8 @@ var _ ports.Router = testRouter{}
 
 type appRepoStub struct {
 	receiptCount          int
+	sessions              map[string]domain.Session
+	linkedIdentities      []domain.LinkedIdentity
 	surfaceItems          []domain.SurfaceSession
 	switchedSession       domain.Session
 	closedSession         domain.Session
@@ -181,7 +183,12 @@ func (r *appRepoStub) GetQueueItem(context.Context, string) (domain.QueueItem, e
 func (r *appRepoStub) GetQueueStartIdempotencyKey(context.Context, string) (string, error) {
 	return "", nil
 }
-func (r *appRepoStub) GetSession(context.Context, string) (domain.Session, error) {
+func (r *appRepoStub) GetSession(_ context.Context, sessionID string) (domain.Session, error) {
+	if r.sessions != nil {
+		if session, ok := r.sessions[sessionID]; ok {
+			return session, nil
+		}
+	}
 	return domain.Session{}, nil
 }
 func (r *appRepoStub) UpdateSessionACPSessionID(context.Context, string, string) error {
@@ -248,7 +255,7 @@ func (r *appRepoStub) CountLinkedIdentitiesByChannel(context.Context, string) (m
 	return map[string]int{}, nil
 }
 func (r *appRepoStub) ListLinkedIdentitiesForUser(context.Context, string, string) ([]domain.LinkedIdentity, error) {
-	return nil, nil
+	return r.linkedIdentities, nil
 }
 func (r *appRepoStub) DeleteLinkedIdentity(context.Context, string, string, string) error { return nil }
 func (r *appRepoStub) ListDeliveries(context.Context, domain.DeliveryListQuery) (domain.PagedResult[domain.OutboundDelivery], error) {
@@ -347,9 +354,12 @@ func (r *appRepoStub) CreateVirtualSession(context.Context, string, string, stri
 }
 func (r *appRepoStub) EnsureNotificationSession(_ context.Context, tenantID string, channelType string, surfaceKey string, ownerUserID string) (domain.Session, error) {
 	return domain.Session{
-		ID:          fmt.Sprintf("session_notice_%s_%s_%s_%s", tenantID, channelType, surfaceKey, ownerUserID),
-		ChannelType: channelType,
-		State:       "open",
+		ID:              fmt.Sprintf("session_notice_%s_%s_%s_%s", tenantID, channelType, surfaceKey, ownerUserID),
+		TenantID:        tenantID,
+		OwnerUserID:     ownerUserID,
+		ChannelType:     channelType,
+		ChannelScopeKey: surfaceKey + ":notice",
+		State:           "open",
 	}, nil
 }
 func (r *appRepoStub) SwitchActiveSession(context.Context, string, string, string, string, string) (domain.Session, error) {
@@ -2863,6 +2873,134 @@ func TestHandleListSurfaceSessions(t *testing.T) {
 	}
 	if payload.Meta.ChannelType != "telegram" || payload.Meta.SurfaceKey != "123" || payload.Meta.OwnerUserID != "user1" || payload.Meta.Limit != 50 || payload.Meta.Count != 1 {
 		t.Fatalf("unexpected surface session meta: %+v", payload.Meta)
+	}
+}
+
+func TestHandlePushOutboundBySessionID(t *testing.T) {
+	repo := &appRepoStub{
+		sessions: map[string]domain.Session{
+			"session_push_1": {
+				ID:              "session_push_1",
+				TenantID:        "tenant_default",
+				OwnerUserID:     "user1",
+				ChannelType:     "telegram",
+				ChannelScopeKey: "12345",
+				State:           "open",
+			},
+		},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+		"session_id":"session_push_1",
+		"message_id":"reminder_1",
+		"text":"Time for your reminder"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutbound(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.deliveries) != 1 {
+		t.Fatalf("expected one delivery, got %+v", repo.deliveries)
+	}
+	delivery := repo.deliveries[0]
+	if delivery.SessionID != "session_push_1" || delivery.ChannelType != "telegram" || delivery.Status != "queued" {
+		t.Fatalf("unexpected delivery: %+v", delivery)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(delivery.PayloadJSON, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload["chat_id"] != "12345" || !strings.Contains(fmt.Sprint(payload["text"]), "Time for your reminder") {
+		t.Fatalf("unexpected telegram payload: %+v", payload)
+	}
+}
+
+func TestHandlePushOutboundBulkByIdentity(t *testing.T) {
+	repo := &appRepoStub{
+		linkedIdentities: []domain.LinkedIdentity{{
+			ID:            "identity_1",
+			TenantID:      "tenant_default",
+			UserID:        "user1",
+			ChannelType:   "telegram",
+			ChannelUserID: "67890",
+			Status:        "linked",
+		}},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push/bulk", strings.NewReader(`{
+		"items":[
+			{"user_id":"user1","channel_type":"telegram","message_id":"broadcast_1","text":"First broadcast"},
+			{"channel_type":"telegram","channel_user_id":"999","message_id":"broadcast_2","text":"Second broadcast"}
+		]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutboundBulk(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.deliveries) != 2 {
+		t.Fatalf("expected two deliveries, got %+v", repo.deliveries)
+	}
+	for _, delivery := range repo.deliveries {
+		if delivery.ChannelType != "telegram" || delivery.SessionID == "" {
+			t.Fatalf("unexpected delivery: %+v", delivery)
+		}
+	}
+}
+
+func TestHandlePushOutboundBulkAcceptsDuraclawOutboxEnvelope(t *testing.T) {
+	repo := &appRepoStub{
+		sessions: map[string]domain.Session{
+			"session_duraclaw_1": {
+				ID:              "session_duraclaw_1",
+				TenantID:        "tenant_default",
+				OwnerUserID:     "user1",
+				ChannelType:     "telegram",
+				ChannelScopeKey: "444",
+				State:           "open",
+			},
+		},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push/bulk", strings.NewReader(`{
+		"topic":"nexus.outbound_intent",
+		"items":[{
+			"outbox_id":1,
+			"topic":"nexus.outbound_intent",
+			"payload":{
+				"outbound_intent_id":"intent_1",
+				"customer_id":"tenant_default",
+				"user_id":"user1",
+				"session_id":"session_duraclaw_1",
+				"intent_type":"reminder",
+				"payload":{"text":"Nested reminder text"}
+			}
+		}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutboundBulk(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.deliveries) != 1 {
+		t.Fatalf("expected one delivery, got %+v", repo.deliveries)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(repo.deliveries[0].PayloadJSON, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if !strings.Contains(fmt.Sprint(payload["text"]), "Nested reminder text") {
+		t.Fatalf("unexpected telegram payload: %+v", payload)
 	}
 }
 

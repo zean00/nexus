@@ -585,6 +585,8 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/messages", a.handleListMessages)
 	mux.HandleFunc("/admin/artifacts", a.handleListArtifacts)
 	mux.HandleFunc("/admin/deliveries", a.handleListDeliveries)
+	mux.HandleFunc("/admin/outbound/push", a.handlePushOutbound)
+	mux.HandleFunc("/admin/outbound/push/bulk", a.handlePushOutboundBulk)
 	mux.HandleFunc("/admin/runs/cancel", a.handleCancelRun)
 	mux.HandleFunc("/admin/deliveries/retry", a.handleRetryDelivery)
 	mux.HandleFunc("/admin/whatsapp-web/session", a.handleWhatsAppWebSessionStatus)

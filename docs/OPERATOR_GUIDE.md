@@ -136,6 +136,57 @@ Interpretation:
 - they can mean the server completed the task without issuing client callback requests to Nexus
 - non-zero counters are still useful when debugging future ACP server behavior changes
 
+## Outbound Push Endpoints
+
+Duraclaw or an operator can enqueue reminder, broadcast, or notification messages through the admin API. These endpoints only enqueue durable Nexus deliveries; the worker still performs the actual channel send.
+
+- `POST /admin/outbound/push`
+- `POST /admin/outbound/push/bulk`
+
+Both endpoints require the normal admin bearer token when `ADMIN_BEARER_TOKEN` is configured.
+
+Targets can be resolved by:
+
+- `session_id`
+- `channel_type`, `surface_key`, and `user_id` or `account_id`
+- `channel_type` and `channel_user_id`
+- `user_id` or `account_id`, optionally with `channel_type`, using linked identities
+
+Single push example:
+
+```json
+{
+  "session_id": "session_123",
+  "message_id": "reminder_2026_04_29",
+  "text": "Time for your reminder"
+}
+```
+
+Bulk push example:
+
+```json
+{
+  "items": [
+    {
+      "user_id": "user_1",
+      "channel_type": "telegram",
+      "message_id": "broadcast_1",
+      "text": "First broadcast"
+    },
+    {
+      "channel_type": "telegram",
+      "channel_user_id": "123456",
+      "message_id": "broadcast_2",
+      "text": "Second broadcast"
+    }
+  ]
+}
+```
+
+For channel-specific payloads, send `raw_channel_payload`; Nexus will enqueue it directly for the resolved channel.
+
+The bulk endpoint also accepts Duraclaw outbox batches where each item has `outbox_id`, `topic`, and `payload`. If `payload` is an outbound-intent envelope with `customer_id`, `user_id`, `session_id`, `intent_type`, and nested `payload.text`, Nexus lifts those fields before target resolution.
+
 ## Telegram Trust Endpoints
 
 Primary Telegram trust endpoints:
