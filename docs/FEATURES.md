@@ -161,6 +161,7 @@ Implemented trust features:
 - trust policy persistence
 - approval channel restrictions
 - required linked identity / recent step-up enforcement
+- official WhatsApp 24-hour customer service window tracking, template fallback, and STOP-style opt-out handling
 
 ## Developer Tooling
 

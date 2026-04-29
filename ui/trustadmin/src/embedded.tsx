@@ -19,6 +19,9 @@ function App() {
   const [policies, setPolicies] = React.useState<any[]>([]);
   const [users, setUsers] = React.useState<any[]>([]);
   const [events, setEvents] = React.useState<any[]>([]);
+  const [whatsAppSummary, setWhatsAppSummary] = React.useState<any>(null);
+  const [whatsAppContacts, setWhatsAppContacts] = React.useState<any[]>([]);
+  const [whatsAppEvents, setWhatsAppEvents] = React.useState<any[]>([]);
   const [draft, setDraft] = React.useState({
     agent_profile_id: "",
     require_linked_identity_for_execution: false,
@@ -31,16 +34,22 @@ function App() {
     if (!token) {
       return;
     }
-    const [s, p, u, e] = await Promise.all([
+    const [s, p, u, e, ws, wc, we] = await Promise.all([
       getJSON(`${baseUrl}/summary`, token, handleUnauthorized),
       getJSON(`${baseUrl}/policies`, token, handleUnauthorized),
       getJSON(`${baseUrl}/users`, token, handleUnauthorized),
-      getJSON(`${baseUrl}/events`, token, handleUnauthorized)
+      getJSON(`${baseUrl}/events`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/whatsapp/summary`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/whatsapp/contacts`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/whatsapp/events`, token, handleUnauthorized)
     ]);
     setSummary(s.data);
     setPolicies(p.data.items ?? []);
     setUsers(u.data.items ?? []);
     setEvents(e.data.items ?? []);
+    setWhatsAppSummary(ws.data);
+    setWhatsAppContacts(wc.data.items ?? []);
+    setWhatsAppEvents(we.data.items ?? []);
     setAuthError("");
   }, [token]);
 
@@ -95,6 +104,15 @@ function App() {
     await load();
   }
 
+  async function updateWhatsAppConsent(channelUserID: string, consentStatus: string) {
+    await apiFetch(`${baseUrl}/whatsapp/consent/update`, token, handleUnauthorized, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel_user_id: channelUserID, consent_status: consentStatus })
+    });
+    await load();
+  }
+
   return (
     <main className="trust-admin">
       <section className="hero">
@@ -120,6 +138,49 @@ function App() {
       <section className="panel">
         <h2>Summary</h2>
         <pre>{JSON.stringify(summary, null, 2)}</pre>
+      </section>
+      <section className="panel">
+        <h2>WhatsApp policy</h2>
+        <div className="metric-grid">
+          <Metric label="Total contacts" value={whatsAppSummary?.total_contacts ?? 0} />
+          <Metric label="Open windows" value={whatsAppSummary?.open_windows ?? 0} />
+          <Metric label="Closed windows" value={whatsAppSummary?.closed_windows ?? 0} />
+          <Metric label="Opted out" value={whatsAppSummary?.opted_out_contacts ?? 0} />
+          <Metric label="Template fallbacks" value={whatsAppSummary?.template_fallbacks_total ?? 0} />
+          <Metric label="Policy blocks" value={whatsAppSummary?.policy_blocks_total ?? 0} />
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Contact</th>
+                <th>Window</th>
+                <th>Expires</th>
+                <th>Consent</th>
+                <th>Last block</th>
+              </tr>
+            </thead>
+            <tbody>
+              {whatsAppContacts.map((contact) => (
+                <tr key={contact.channel_user_id}>
+                  <td>{contact.channel_user_id}</td>
+                  <td><span className={contact.window_open ? "badge ok" : "badge"}>{contact.window_open ? "open" : "closed"}</span></td>
+                  <td>{formatDate(contact.window_expires_at)}</td>
+                  <td>
+                    <select value={contact.consent_status ?? "unknown"} onChange={(e) => updateWhatsAppConsent(contact.channel_user_id, e.target.value)}>
+                      <option value="unknown">unknown</option>
+                      <option value="opted_in">opted in</option>
+                      <option value="opted_out">opted out</option>
+                    </select>
+                  </td>
+                  <td>{formatDate(contact.last_policy_blocked_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <h3>Recent WhatsApp policy events</h3>
+        <pre>{JSON.stringify(whatsAppEvents, null, 2)}</pre>
       </section>
       <section className="grid">
         <section className="panel">
@@ -159,6 +220,22 @@ function App() {
       </section>
     </main>
   );
+}
+
+function Metric({ label, value }: { label: string; value: any }) {
+  return (
+    <div className="metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function formatDate(value?: string) {
+  if (!value || value.startsWith("0001-")) {
+    return "";
+  }
+  return new Date(value).toLocaleString();
 }
 
 async function getJSON(url: string, token: string, onUnauthorized: () => void) {

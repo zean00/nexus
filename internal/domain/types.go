@@ -242,6 +242,27 @@ type TrustPolicy struct {
 	UpdatedAt                         time.Time `json:"updated_at,omitempty"`
 }
 
+type WhatsAppContactPolicy struct {
+	TenantID            string    `json:"tenant_id"`
+	ChannelUserID       string    `json:"channel_user_id"`
+	LastInboundAt       time.Time `json:"last_inbound_at,omitempty"`
+	WindowExpiresAt     time.Time `json:"window_expires_at,omitempty"`
+	ConsentStatus       string    `json:"consent_status"`
+	ConsentUpdatedAt    time.Time `json:"consent_updated_at,omitempty"`
+	LastTemplateSentAt  time.Time `json:"last_template_sent_at,omitempty"`
+	LastPolicyBlockedAt time.Time `json:"last_policy_blocked_at,omitempty"`
+	CreatedAt           time.Time `json:"created_at,omitempty"`
+	UpdatedAt           time.Time `json:"updated_at,omitempty"`
+}
+
+type WhatsAppPolicyListQuery struct {
+	CursorPage
+	TenantID      string
+	ConsentStatus string
+	WindowState   string
+	Contains      string
+}
+
 type WebChatItem struct {
 	ID        string            `json:"id"`
 	Type      string            `json:"type"`

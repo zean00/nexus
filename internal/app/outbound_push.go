@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -34,6 +35,7 @@ type outboundPushRequest struct {
 	Metadata          map[string]any         `json:"metadata"`
 	IdempotencyKey    string                 `json:"idempotency_key"`
 	RawChannelPayload map[string]any         `json:"raw_channel_payload"`
+	WhatsAppTemplate  map[string]any         `json:"whatsapp_template"`
 }
 
 type outboundPushArtifact struct {
@@ -254,6 +256,13 @@ func (a *App) renderOutboundPush(ctx context.Context, session domain.Session, ru
 		return nil, err
 	}
 	for i := range deliveries {
+		if session.ChannelType == "whatsapp" && len(req.WhatsAppTemplate) > 0 {
+			var payload map[string]any
+			if err := json.Unmarshal(deliveries[i].PayloadJSON, &payload); err == nil {
+				payload["whatsapp_template"] = req.WhatsAppTemplate
+				deliveries[i].PayloadJSON = mustJSON(payload)
+			}
+		}
 		if req.DeliveryKind != "" {
 			deliveries[i].DeliveryKind = req.DeliveryKind
 		}
@@ -370,6 +379,11 @@ func normalizeOutboundPushRequest(req outboundPushRequest) outboundPushRequest {
 		req = mergeOutboundIntentEnvelope(req, req.Payload)
 	}
 	req.Text = firstNonEmptyString(req.Text, stringFromMap(req.Payload, "text"), stringFromMap(req.Payload, "message"))
+	if req.WhatsAppTemplate == nil {
+		if template, ok := mapFromMap(req.Payload, "whatsapp_template"); ok {
+			req.WhatsAppTemplate = template
+		}
+	}
 	if req.Text == "" {
 		if nested, ok := mapFromMap(req.Payload, "payload"); ok {
 			req.Text = firstNonEmptyString(stringFromMap(nested, "text"), stringFromMap(nested, "message"), stringFromMap(req.Payload, "title"))

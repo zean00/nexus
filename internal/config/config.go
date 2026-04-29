@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -38,6 +39,9 @@ type Config struct {
 	WhatsAppAppSecret                     string
 	WhatsAppPhoneNumberID                 string
 	WhatsAppAPIBaseURL                    string
+	WhatsAppEnforce24HWindow              bool
+	WhatsAppCustomerServiceWindowHours    int
+	WhatsAppClosedWindowTemplateJSON      []byte
 	WhatsAppWebEnabled                    bool
 	WhatsAppWebBaseURL                    string
 	WhatsAppWebAPIKey                     string
@@ -128,6 +132,9 @@ func Load() (Config, error) {
 		WhatsAppAppSecret:                     os.Getenv("WHATSAPP_APP_SECRET"),
 		WhatsAppPhoneNumberID:                 os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
 		WhatsAppAPIBaseURL:                    env("WHATSAPP_API_BASE_URL", "https://graph.facebook.com/v20.0"),
+		WhatsAppEnforce24HWindow:              envBool("WHATSAPP_ENFORCE_24H_WINDOW", true),
+		WhatsAppCustomerServiceWindowHours:    mustEnvIntDefault("WHATSAPP_CUSTOMER_SERVICE_WINDOW_HOURS", 24),
+		WhatsAppClosedWindowTemplateJSON:      []byte(strings.TrimSpace(os.Getenv("WHATSAPP_CLOSED_WINDOW_TEMPLATE_JSON"))),
 		WhatsAppWebEnabled:                    envBool("WHATSAPP_WEB_ENABLED", false),
 		WhatsAppWebBaseURL:                    env("WHATSAPP_WEB_BASE_URL", "http://localhost:3000"),
 		WhatsAppWebAPIKey:                     strings.TrimSpace(os.Getenv("WHATSAPP_WEB_API_KEY")),
@@ -218,6 +225,12 @@ func Load() (Config, error) {
 	}
 	if cfg.WhatsAppMediaMaxBytes, err = envInt64("WHATSAPP_MEDIA_MAX_BYTES", cfg.WhatsAppMediaMaxBytes); err != nil {
 		return Config{}, fmt.Errorf("parse WHATSAPP_MEDIA_MAX_BYTES: %w", err)
+	}
+	if cfg.WhatsAppCustomerServiceWindowHours, err = envInt("WHATSAPP_CUSTOMER_SERVICE_WINDOW_HOURS", cfg.WhatsAppCustomerServiceWindowHours); err != nil {
+		return Config{}, fmt.Errorf("parse WHATSAPP_CUSTOMER_SERVICE_WINDOW_HOURS: %w", err)
+	}
+	if len(cfg.WhatsAppClosedWindowTemplateJSON) > 0 && !json.Valid(cfg.WhatsAppClosedWindowTemplateJSON) {
+		return Config{}, fmt.Errorf("parse WHATSAPP_CLOSED_WINDOW_TEMPLATE_JSON: invalid JSON")
 	}
 	if cfg.EmailWebhookMaxSkewSeconds, err = envInt("EMAIL_WEBHOOK_MAX_SKEW_SECONDS", cfg.EmailWebhookMaxSkewSeconds); err != nil {
 		return Config{}, fmt.Errorf("parse EMAIL_WEBHOOK_MAX_SKEW_SECONDS: %w", err)

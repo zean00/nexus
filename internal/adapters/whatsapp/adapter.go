@@ -20,24 +20,33 @@ import (
 )
 
 type Adapter struct {
-	VerifyToken   string
-	AccessToken   string
-	AppSecret     string
-	PhoneNumberID string
-	APIBaseURL    string
-	HTTP          *http.Client
-	MaxMediaBytes int64
+	VerifyToken         string
+	AccessToken         string
+	AppSecret           string
+	PhoneNumberID       string
+	APIBaseURL          string
+	HTTP                *http.Client
+	MaxMediaBytes       int64
+	Enforce24HWindow    bool
+	WindowDuration      time.Duration
+	DefaultTemplate     []byte
+	GetContactPolicy    func(context.Context, string, string) (domain.WhatsAppContactPolicy, error)
+	RecordTemplateSent  func(context.Context, string, string, time.Time) error
+	RecordPolicyBlocked func(context.Context, string, string, time.Time) error
+	Audit               func(context.Context, domain.AuditEvent) error
 }
 
 func New(verifyToken, accessToken, appSecret, phoneNumberID, apiBaseURL string) Adapter {
 	return Adapter{
-		VerifyToken:   verifyToken,
-		AccessToken:   accessToken,
-		AppSecret:     appSecret,
-		PhoneNumberID: phoneNumberID,
-		APIBaseURL:    strings.TrimRight(apiBaseURL, "/"),
-		HTTP:          &http.Client{Timeout: 10 * time.Second},
-		MaxMediaBytes: 10 << 20,
+		VerifyToken:      verifyToken,
+		AccessToken:      accessToken,
+		AppSecret:        appSecret,
+		PhoneNumberID:    phoneNumberID,
+		APIBaseURL:       strings.TrimRight(apiBaseURL, "/"),
+		HTTP:             &http.Client{Timeout: 10 * time.Second},
+		MaxMediaBytes:    10 << 20,
+		Enforce24HWindow: true,
+		WindowDuration:   24 * time.Hour,
 	}
 }
 
@@ -435,6 +444,150 @@ func (a Adapter) SendMessage(ctx context.Context, delivery domain.OutboundDelive
 
 func (a Adapter) SendAwaitPrompt(ctx context.Context, delivery domain.OutboundDelivery) (domain.DeliveryResult, error) {
 	return a.send(ctx, delivery.PayloadJSON)
+}
+
+func (a Adapter) PrepareDelivery(ctx context.Context, delivery domain.OutboundDelivery) (domain.OutboundDelivery, error) {
+	if !a.Enforce24HWindow {
+		return delivery, nil
+	}
+	var body map[string]any
+	if err := json.Unmarshal(delivery.PayloadJSON, &body); err != nil {
+		return domain.OutboundDelivery{}, err
+	}
+	recipient := asString(body["to"])
+	if recipient == "" {
+		return delivery, nil
+	}
+	policy, err := a.contactPolicy(ctx, delivery.TenantID, recipient)
+	if err != nil {
+		return domain.OutboundDelivery{}, err
+	}
+	if policy.ConsentStatus == "opted_out" {
+		a.recordPolicyBlocked(ctx, delivery.TenantID, recipient)
+		a.auditPolicy(ctx, delivery, recipient, "whatsapp.policy_blocked", map[string]any{"reason": "opted_out"})
+		return domain.OutboundDelivery{}, domain.ErrWhatsAppPolicyOptedOut
+	}
+	if whatsappPayloadIsTemplate(body) {
+		delivery.PayloadJSON = marshalWithoutInternalWhatsAppFields(body)
+		a.recordTemplateSent(ctx, delivery.TenantID, recipient)
+		return delivery, nil
+	}
+	if policy.WindowExpiresAt.After(time.Now().UTC()) {
+		delivery.PayloadJSON = marshalWithoutInternalWhatsAppFields(body)
+		return delivery, nil
+	}
+	templatePayload, ok, err := a.closedWindowTemplatePayload(body)
+	if err != nil {
+		a.recordPolicyBlocked(ctx, delivery.TenantID, recipient)
+		a.auditPolicy(ctx, delivery, recipient, "whatsapp.policy_blocked", map[string]any{"reason": "template_invalid"})
+		return domain.OutboundDelivery{}, err
+	}
+	if !ok {
+		a.recordPolicyBlocked(ctx, delivery.TenantID, recipient)
+		a.auditPolicy(ctx, delivery, recipient, "whatsapp.policy_blocked", map[string]any{"reason": "window_closed_no_template"})
+		return domain.OutboundDelivery{}, domain.ErrWhatsAppPolicyWindowClosedNoTemplate
+	}
+	templatePayload["messaging_product"] = "whatsapp"
+	templatePayload["to"] = recipient
+	templatePayload["type"] = "template"
+	raw, err := json.Marshal(templatePayload)
+	if err != nil {
+		return domain.OutboundDelivery{}, err
+	}
+	delivery.PayloadJSON = raw
+	a.recordTemplateSent(ctx, delivery.TenantID, recipient)
+	a.auditPolicy(ctx, delivery, recipient, "whatsapp.template_fallback_sent", map[string]any{"delivery_id": delivery.ID})
+	return delivery, nil
+}
+
+func (a Adapter) contactPolicy(ctx context.Context, tenantID, recipient string) (domain.WhatsAppContactPolicy, error) {
+	if a.GetContactPolicy == nil {
+		return domain.WhatsAppContactPolicy{TenantID: tenantID, ChannelUserID: recipient, ConsentStatus: "unknown"}, nil
+	}
+	policy, err := a.GetContactPolicy(ctx, tenantID, recipient)
+	if errors.Is(err, domain.ErrWhatsAppContactPolicyNotFound) {
+		return domain.WhatsAppContactPolicy{TenantID: tenantID, ChannelUserID: recipient, ConsentStatus: "unknown"}, nil
+	}
+	if policy.ConsentStatus == "" {
+		policy.ConsentStatus = "unknown"
+	}
+	return policy, err
+}
+
+func (a Adapter) closedWindowTemplatePayload(body map[string]any) (map[string]any, bool, error) {
+	if template, ok := body["whatsapp_template"].(map[string]any); ok && len(template) > 0 {
+		return map[string]any{"template": template}, true, nil
+	}
+	if len(a.DefaultTemplate) == 0 {
+		return nil, false, nil
+	}
+	var template map[string]any
+	if err := json.Unmarshal(a.DefaultTemplate, &template); err != nil {
+		return nil, false, err
+	}
+	if _, hasTemplate := template["template"]; hasTemplate {
+		return template, true, nil
+	}
+	return map[string]any{"template": template}, true, nil
+}
+
+func whatsappPayloadIsTemplate(body map[string]any) bool {
+	typ, _ := body["type"].(string)
+	if typ == "template" {
+		_, ok := body["template"]
+		return ok
+	}
+	return false
+}
+
+func marshalWithoutInternalWhatsAppFields(body map[string]any) []byte {
+	delete(body, "whatsapp_template")
+	raw, _ := json.Marshal(body)
+	return raw
+}
+
+func asString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return ""
+	}
+}
+
+func mustJSON(value any) []byte {
+	raw, _ := json.Marshal(value)
+	return raw
+}
+
+func (a Adapter) recordTemplateSent(ctx context.Context, tenantID, recipient string) {
+	if a.RecordTemplateSent != nil {
+		_ = a.RecordTemplateSent(ctx, tenantID, recipient, time.Now().UTC())
+	}
+}
+
+func (a Adapter) recordPolicyBlocked(ctx context.Context, tenantID, recipient string) {
+	if a.RecordPolicyBlocked != nil {
+		_ = a.RecordPolicyBlocked(ctx, tenantID, recipient, time.Now().UTC())
+	}
+}
+
+func (a Adapter) auditPolicy(ctx context.Context, delivery domain.OutboundDelivery, recipient, eventType string, payload map[string]any) {
+	if a.Audit == nil {
+		return
+	}
+	payload["recipient"] = recipient
+	_ = a.Audit(ctx, domain.AuditEvent{
+		ID:            "audit_" + eventType + "_" + delivery.ID + "_" + fmt.Sprint(time.Now().UTC().UnixNano()),
+		TenantID:      delivery.TenantID,
+		SessionID:     delivery.SessionID,
+		RunID:         delivery.RunID,
+		AggregateType: "whatsapp_contact",
+		AggregateID:   recipient,
+		EventType:     eventType,
+		PayloadJSON:   mustJSON(payload),
+		CreatedAt:     time.Now().UTC(),
+	})
 }
 
 func (a Adapter) send(ctx context.Context, payload []byte) (domain.DeliveryResult, error) {

@@ -324,9 +324,31 @@ func (r *fakeRepo) ResolveTelegramAccessRequest(context.Context, string, string,
 func (r *fakeRepo) CountAuditEvents(context.Context, domain.AuditEventListQuery) (int, error) {
 	return 0, nil
 }
-func (r *fakeRepo) Audit(context.Context, domain.AuditEvent) error { return nil }
-func (r *fakeRepo) ForceCancelRun(context.Context, string) error   { return nil }
-func (r *fakeRepo) RetryDelivery(context.Context, string) error    { return nil }
+func (r *fakeRepo) Audit(context.Context, domain.AuditEvent) error              { return nil }
+func (r *fakeRepo) UpdateDeliveryPayload(context.Context, string, []byte) error { return nil }
+func (r *fakeRepo) RecordWhatsAppInbound(context.Context, string, string, time.Time, time.Duration) error {
+	return nil
+}
+func (r *fakeRepo) GetWhatsAppContactPolicy(context.Context, string, string) (domain.WhatsAppContactPolicy, error) {
+	return domain.WhatsAppContactPolicy{}, domain.ErrWhatsAppContactPolicyNotFound
+}
+func (r *fakeRepo) SetWhatsAppConsentStatus(context.Context, string, string, string, time.Time) error {
+	return nil
+}
+func (r *fakeRepo) RecordWhatsAppTemplateSent(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (r *fakeRepo) RecordWhatsAppPolicyBlocked(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (r *fakeRepo) CountWhatsAppContacts(context.Context, domain.WhatsAppPolicyListQuery) (int, error) {
+	return 0, nil
+}
+func (r *fakeRepo) ListWhatsAppContacts(context.Context, domain.WhatsAppPolicyListQuery) (domain.PagedResult[domain.WhatsAppContactPolicy], error) {
+	return domain.PagedResult[domain.WhatsAppContactPolicy]{}, nil
+}
+func (r *fakeRepo) ForceCancelRun(context.Context, string) error { return nil }
+func (r *fakeRepo) RetryDelivery(context.Context, string) error  { return nil }
 
 func TestInboundServiceQueuesMessage(t *testing.T) {
 	repo := &fakeRepo{

@@ -306,6 +306,13 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	whatsappWebAdapter.HTTP = policy.HTTPClient("waha.api", 15*time.Second)
 	emailAdapter.RetryDo = policy.Do
 	whatsappAdapter.MaxMediaBytes = cfg.WhatsAppMediaMaxBytes
+	whatsappAdapter.Enforce24HWindow = cfg.WhatsAppEnforce24HWindow
+	whatsappAdapter.WindowDuration = time.Duration(cfg.WhatsAppCustomerServiceWindowHours) * time.Hour
+	whatsappAdapter.DefaultTemplate = append([]byte(nil), cfg.WhatsAppClosedWindowTemplateJSON...)
+	whatsappAdapter.GetContactPolicy = repo.GetWhatsAppContactPolicy
+	whatsappAdapter.RecordTemplateSent = repo.RecordWhatsAppTemplateSent
+	whatsappAdapter.RecordPolicyBlocked = repo.RecordWhatsAppPolicyBlocked
+	whatsappAdapter.Audit = repo.Audit
 	whatsappWebAdapter.EnableAntiBlock = cfg.WhatsAppWebEnableAntiBlock
 	whatsappWebAdapter.EnableSeen = cfg.WhatsAppWebEnableSeen
 	whatsappWebAdapter.EnableTyping = cfg.WhatsAppWebEnableTyping
@@ -578,6 +585,10 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/trust/users/detail", a.handleTrustUserDetail)
 	mux.HandleFunc("/admin/trust/links/revoke", a.handleTrustRevokeLink)
 	mux.HandleFunc("/admin/trust/events", a.handleTrustEvents)
+	mux.HandleFunc("/admin/trust/whatsapp/summary", a.handleWhatsAppPolicySummary)
+	mux.HandleFunc("/admin/trust/whatsapp/contacts", a.handleWhatsAppPolicyContacts)
+	mux.HandleFunc("/admin/trust/whatsapp/events", a.handleWhatsAppPolicyEvents)
+	mux.HandleFunc("/admin/trust/whatsapp/consent/update", a.handleWhatsAppConsentUpdate)
 	mux.HandleFunc("/admin/retention", a.handleRetentionStatus)
 	mux.HandleFunc("/admin/retention/run", a.handleRunRetention)
 	mux.HandleFunc("/admin/retention/policy/upsert", a.handleUpsertRetentionPolicy)

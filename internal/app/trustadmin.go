@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -210,6 +211,101 @@ func (a *App) handleTrustEvents(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]any{"items": items}, nil)
 }
 
+func (a *App) handleWhatsAppPolicySummary(w http.ResponseWriter, r *http.Request) {
+	tenantID := a.Config.DefaultTenantID
+	total, err := a.Repo.CountWhatsAppContacts(r.Context(), domain.WhatsAppPolicyListQuery{TenantID: tenantID})
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	openCount, _ := a.Repo.CountWhatsAppContacts(r.Context(), domain.WhatsAppPolicyListQuery{TenantID: tenantID, WindowState: "open"})
+	closedCount, _ := a.Repo.CountWhatsAppContacts(r.Context(), domain.WhatsAppPolicyListQuery{TenantID: tenantID, WindowState: "closed"})
+	optedOut, _ := a.Repo.CountWhatsAppContacts(r.Context(), domain.WhatsAppPolicyListQuery{TenantID: tenantID, ConsentStatus: "opted_out"})
+	templateFallbacks, _ := a.Repo.CountAuditEvents(r.Context(), domain.AuditEventListQuery{TenantID: tenantID, EventType: "whatsapp.template_fallback_sent"})
+	policyBlocks, _ := a.Repo.CountAuditEvents(r.Context(), domain.AuditEventListQuery{TenantID: tenantID, EventType: "whatsapp.policy_blocked"})
+	httpx.OK(w, map[string]any{
+		"total_contacts":              total,
+		"open_windows":                openCount,
+		"closed_windows":              closedCount,
+		"opted_out_contacts":          optedOut,
+		"template_fallbacks_total":    templateFallbacks,
+		"policy_blocks_total":         policyBlocks,
+		"enforce_24h_window":          a.Config.WhatsAppEnforce24HWindow,
+		"window_hours":                a.Config.WhatsAppCustomerServiceWindowHours,
+		"default_template_configured": len(a.Config.WhatsAppClosedWindowTemplateJSON) > 0,
+	}, nil)
+}
+
+func (a *App) handleWhatsAppPolicyContacts(w http.ResponseWriter, r *http.Request) {
+	page, err := parsePage(r, 100, 200)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	query := domain.WhatsAppPolicyListQuery{
+		TenantID:      a.Config.DefaultTenantID,
+		ConsentStatus: queryString(r, "consent_status"),
+		WindowState:   queryString(r, "window_state"),
+		Contains:      queryString(r, "contains"),
+		CursorPage:    page,
+	}
+	items, err := a.Repo.ListWhatsAppContacts(r.Context(), query)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	total, err := a.Repo.CountWhatsAppContacts(r.Context(), query)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.Page(w, http.StatusOK, decorateWhatsAppContacts(items.Items), items.NextCursor, total)
+}
+
+func (a *App) handleWhatsAppPolicyEvents(w http.ResponseWriter, r *http.Request) {
+	items, err := a.listWhatsAppPolicyEvents(r.Context(), domain.CursorPage{Limit: 100})
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{"items": items}, nil)
+}
+
+func (a *App) handleWhatsAppConsentUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		ChannelUserID string `json:"channel_user_id"`
+		ConsentStatus string `json:"consent_status"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	body.ChannelUserID = strings.TrimSpace(body.ChannelUserID)
+	body.ConsentStatus = strings.TrimSpace(body.ConsentStatus)
+	if body.ChannelUserID == "" || !slices.Contains([]string{"unknown", "opted_in", "opted_out"}, body.ConsentStatus) {
+		httpx.Error(w, http.StatusBadRequest, "channel_user_id and consent_status=unknown|opted_in|opted_out required")
+		return
+	}
+	now := time.Now().UTC()
+	if err := a.Repo.SetWhatsAppConsentStatus(r.Context(), a.Config.DefaultTenantID, body.ChannelUserID, body.ConsentStatus, now); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
+		ID:            trustAdminAuditID("whatsapp_consent", a.Config.DefaultTenantID, body.ChannelUserID, body.ConsentStatus, now.Format(time.RFC3339Nano)),
+		TenantID:      a.Config.DefaultTenantID,
+		AggregateType: "whatsapp_contact",
+		AggregateID:   body.ChannelUserID,
+		EventType:     "admin.whatsapp_consent_updated",
+		PayloadJSON:   mustJSON(body),
+		CreatedAt:     now,
+	})
+	httpx.OK(w, body, actionMeta("whatsapp_consent_updated"))
+}
+
 func (a *App) trustSummary(ctx context.Context) (map[string]any, error) {
 	users, err := a.Repo.ListUsers(ctx, a.Config.DefaultTenantID, 500)
 	if err != nil {
@@ -272,6 +368,63 @@ func (a *App) listTrustEvents(ctx context.Context, base domain.AuditEventListQue
 		items = items[:base.Limit]
 	}
 	return items, nil
+}
+
+func (a *App) listWhatsAppPolicyEvents(ctx context.Context, page domain.CursorPage) ([]domain.AuditEvent, error) {
+	eventTypes := []string{
+		"whatsapp.consent_opted_out",
+		"whatsapp.consent_opted_in",
+		"whatsapp.template_fallback_sent",
+		"whatsapp.policy_blocked",
+		"admin.whatsapp_consent_updated",
+	}
+	seen := map[string]struct{}{}
+	items := make([]domain.AuditEvent, 0, page.Limit)
+	for _, eventType := range eventTypes {
+		result, err := a.Repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
+			TenantID:      a.Config.DefaultTenantID,
+			AggregateType: "whatsapp_contact",
+			EventType:     eventType,
+			CursorPage:    page,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range result.Items {
+			if _, ok := seen[item.ID]; ok {
+				continue
+			}
+			seen[item.ID] = struct{}{}
+			items = append(items, item)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	if page.Limit > 0 && len(items) > page.Limit {
+		items = items[:page.Limit]
+	}
+	return items, nil
+}
+
+func decorateWhatsAppContacts(items []domain.WhatsAppContactPolicy) []map[string]any {
+	now := time.Now().UTC()
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"tenant_id":              item.TenantID,
+			"channel_user_id":        item.ChannelUserID,
+			"last_inbound_at":        item.LastInboundAt,
+			"window_expires_at":      item.WindowExpiresAt,
+			"window_open":            !item.WindowExpiresAt.IsZero() && item.WindowExpiresAt.After(now),
+			"consent_status":         item.ConsentStatus,
+			"consent_updated_at":     item.ConsentUpdatedAt,
+			"last_template_sent_at":  item.LastTemplateSentAt,
+			"last_policy_blocked_at": item.LastPolicyBlockedAt,
+			"updated_at":             item.UpdatedAt,
+		})
+	}
+	return out
 }
 
 func trustAdminAuditID(parts ...string) string {

@@ -585,6 +585,180 @@ func (r *PostgresRepository) CountLinkedIdentitiesByChannel(ctx context.Context,
 	return out, rows.Err()
 }
 
+func (r *PostgresRepository) RecordWhatsAppInbound(ctx context.Context, tenantID, channelUserID string, inboundAt time.Time, window time.Duration) error {
+	if inboundAt.IsZero() {
+		inboundAt = time.Now().UTC()
+	}
+	if window <= 0 {
+		window = 24 * time.Hour
+	}
+	_, err := r.exec(ctx, `
+		insert into whatsapp_contact_policies (
+			tenant_id, channel_user_id, last_inbound_at, window_expires_at, consent_status, created_at, updated_at
+		) values ($1,$2,$3,$4,'unknown',now(),now())
+		on conflict (tenant_id, channel_user_id) do update
+		set last_inbound_at=greatest(coalesce(whatsapp_contact_policies.last_inbound_at, '-infinity'::timestamptz), excluded.last_inbound_at),
+		    window_expires_at=greatest(coalesce(whatsapp_contact_policies.window_expires_at, '-infinity'::timestamptz), excluded.window_expires_at),
+		    updated_at=now()
+	`, tenantID, channelUserID, inboundAt, inboundAt.Add(window))
+	return err
+}
+
+func (r *PostgresRepository) GetWhatsAppContactPolicy(ctx context.Context, tenantID, channelUserID string) (domain.WhatsAppContactPolicy, error) {
+	var item domain.WhatsAppContactPolicy
+	var lastInbound, expires, consentAt, templateAt, blockedAt sql.NullTime
+	err := r.queryRow(ctx, `
+		select tenant_id, channel_user_id, last_inbound_at, window_expires_at, consent_status,
+		       consent_updated_at, last_template_sent_at, last_policy_blocked_at, created_at, updated_at
+		from whatsapp_contact_policies
+		where tenant_id=$1 and channel_user_id=$2
+	`, tenantID, channelUserID).Scan(&item.TenantID, &item.ChannelUserID, &lastInbound, &expires, &item.ConsentStatus, &consentAt, &templateAt, &blockedAt, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.WhatsAppContactPolicy{}, domain.ErrWhatsAppContactPolicyNotFound
+	}
+	if err != nil {
+		return domain.WhatsAppContactPolicy{}, err
+	}
+	item.LastInboundAt = lastInbound.Time
+	item.WindowExpiresAt = expires.Time
+	item.ConsentUpdatedAt = consentAt.Time
+	item.LastTemplateSentAt = templateAt.Time
+	item.LastPolicyBlockedAt = blockedAt.Time
+	return item, nil
+}
+
+func (r *PostgresRepository) SetWhatsAppConsentStatus(ctx context.Context, tenantID, channelUserID, status string, at time.Time) error {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	if status == "" {
+		status = "unknown"
+	}
+	_, err := r.exec(ctx, `
+		insert into whatsapp_contact_policies (
+			tenant_id, channel_user_id, consent_status, consent_updated_at, created_at, updated_at
+		) values ($1,$2,$3,$4,now(),now())
+		on conflict (tenant_id, channel_user_id) do update
+		set consent_status=excluded.consent_status,
+		    consent_updated_at=excluded.consent_updated_at,
+		    updated_at=now()
+	`, tenantID, channelUserID, status, at)
+	return err
+}
+
+func (r *PostgresRepository) RecordWhatsAppTemplateSent(ctx context.Context, tenantID, channelUserID string, at time.Time) error {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	_, err := r.exec(ctx, `
+		insert into whatsapp_contact_policies (
+			tenant_id, channel_user_id, last_template_sent_at, created_at, updated_at
+		) values ($1,$2,$3,now(),now())
+		on conflict (tenant_id, channel_user_id) do update
+		set last_template_sent_at=excluded.last_template_sent_at,
+		    updated_at=now()
+	`, tenantID, channelUserID, at)
+	return err
+}
+
+func (r *PostgresRepository) RecordWhatsAppPolicyBlocked(ctx context.Context, tenantID, channelUserID string, at time.Time) error {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	_, err := r.exec(ctx, `
+		insert into whatsapp_contact_policies (
+			tenant_id, channel_user_id, last_policy_blocked_at, created_at, updated_at
+		) values ($1,$2,$3,now(),now())
+		on conflict (tenant_id, channel_user_id) do update
+		set last_policy_blocked_at=excluded.last_policy_blocked_at,
+		    updated_at=now()
+	`, tenantID, channelUserID, at)
+	return err
+}
+
+func (r *PostgresRepository) CountWhatsAppContacts(ctx context.Context, query domain.WhatsAppPolicyListQuery) (int, error) {
+	clauses, args, err := whatsappPolicyClauses(query)
+	if err != nil {
+		return 0, err
+	}
+	var count int
+	err = r.queryRow(ctx, `select count(*) from whatsapp_contact_policies where `+strings.Join(clauses, " and "), args...).Scan(&count)
+	return count, err
+}
+
+func (r *PostgresRepository) ListWhatsAppContacts(ctx context.Context, query domain.WhatsAppPolicyListQuery) (domain.PagedResult[domain.WhatsAppContactPolicy], error) {
+	limit := normalizeLimit(query.Limit)
+	clauses, args, err := whatsappPolicyClauses(query)
+	if err != nil {
+		return domain.PagedResult[domain.WhatsAppContactPolicy]{}, err
+	}
+	if cursorTime, cursorID, ok, err := parseCursor(query.After); err != nil {
+		return domain.PagedResult[domain.WhatsAppContactPolicy]{}, err
+	} else if ok {
+		args = append(args, cursorTime, cursorID)
+		clauses = append(clauses, fmt.Sprintf("(updated_at, channel_user_id) < ($%d, $%d)", len(args)-1, len(args)))
+	}
+	args = append(args, limit+1)
+	rows, err := r.query(ctx, `
+		select tenant_id, channel_user_id, last_inbound_at, window_expires_at, consent_status,
+		       consent_updated_at, last_template_sent_at, last_policy_blocked_at, created_at, updated_at
+		from whatsapp_contact_policies
+		where `+strings.Join(clauses, " and ")+`
+		order by updated_at desc, channel_user_id desc
+		limit $`+strconv.Itoa(len(args)), args...)
+	if err != nil {
+		return domain.PagedResult[domain.WhatsAppContactPolicy]{}, err
+	}
+	defer rows.Close()
+	items := []domain.WhatsAppContactPolicy{}
+	cursors := []cursorValue{}
+	for rows.Next() {
+		var item domain.WhatsAppContactPolicy
+		var lastInbound, expires, consentAt, templateAt, blockedAt sql.NullTime
+		if err := rows.Scan(&item.TenantID, &item.ChannelUserID, &lastInbound, &expires, &item.ConsentStatus, &consentAt, &templateAt, &blockedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return domain.PagedResult[domain.WhatsAppContactPolicy]{}, err
+		}
+		item.LastInboundAt = lastInbound.Time
+		item.WindowExpiresAt = expires.Time
+		item.ConsentUpdatedAt = consentAt.Time
+		item.LastTemplateSentAt = templateAt.Time
+		item.LastPolicyBlockedAt = blockedAt.Time
+		items = append(items, item)
+		cursors = append(cursors, cursorValue{Time: item.UpdatedAt, ID: item.ChannelUserID})
+	}
+	if err := rows.Err(); err != nil {
+		return domain.PagedResult[domain.WhatsAppContactPolicy]{}, err
+	}
+	return finalizePage(items, cursors, limit), nil
+}
+
+func whatsappPolicyClauses(query domain.WhatsAppPolicyListQuery) ([]string, []any, error) {
+	tenantID := strings.TrimSpace(query.TenantID)
+	if tenantID == "" {
+		return nil, nil, fmt.Errorf("tenant_id required")
+	}
+	clauses := []string{"tenant_id=$1"}
+	args := []any{tenantID}
+	if query.ConsentStatus != "" {
+		args = append(args, query.ConsentStatus)
+		clauses = append(clauses, fmt.Sprintf("consent_status=$%d", len(args)))
+	}
+	switch query.WindowState {
+	case "open":
+		clauses = append(clauses, "window_expires_at > now()")
+	case "closed":
+		clauses = append(clauses, "(window_expires_at is null or window_expires_at <= now())")
+	case "":
+	default:
+		return nil, nil, fmt.Errorf("invalid window_state")
+	}
+	if query.Contains != "" {
+		args = append(args, "%"+query.Contains+"%")
+		clauses = append(clauses, fmt.Sprintf("channel_user_id ilike $%d", len(args)))
+	}
+	return clauses, args, nil
+}
+
 func (r *PostgresRepository) HasActiveRun(ctx context.Context, sessionID string) (bool, error) {
 	row := r.queryRow(ctx, `select exists(select 1 from runs where session_id=$1 and status in ('starting','running','awaiting'))`, sessionID)
 	var exists bool
@@ -1288,6 +1462,15 @@ func (r *PostgresRepository) GetLatestDeliveryByLogicalMessage(ctx context.Conte
 		return nil, err
 	}
 	return &delivery, nil
+}
+
+func (r *PostgresRepository) UpdateDeliveryPayload(ctx context.Context, deliveryID string, payload []byte) error {
+	_, err := r.exec(ctx, `
+		update outbound_deliveries
+		set payload_json=$2, updated_at=now()
+		where id=$1
+	`, deliveryID, payload)
+	return err
 }
 
 func (r *PostgresRepository) CountSentDeliveriesSince(ctx context.Context, sessionID string, since time.Time) (int, error) {
@@ -2105,11 +2288,11 @@ func (r *PostgresRepository) RepairRunFromSnapshot(ctx context.Context, queueIte
 		return domain.Run{}, err
 	}
 	run = domain.Run{
-		ID:        "run_" + snapshot.ACPRunID,
-		SessionID: queueItem.SessionID,
-		ACPRunID:  snapshot.ACPRunID,
-		Status:    snapshot.Status,
-		StartedAt: time.Now().UTC(),
+		ID:          "run_" + snapshot.ACPRunID,
+		SessionID:   queueItem.SessionID,
+		ACPRunID:    snapshot.ACPRunID,
+		Status:      snapshot.Status,
+		StartedAt:   time.Now().UTC(),
 		LastEventAt: time.Now().UTC(),
 	}
 	if route, routeErr := r.GetRouteDecision(ctx, queueItem.ID); routeErr == nil {

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -21,6 +22,10 @@ type WorkerService struct {
 	Renderers           map[string]ports.Renderer
 	Channels            map[string]ports.ChannelAdapter
 	NotifySessionUpdate func(sessionID string)
+}
+
+type deliveryPreparer interface {
+	PrepareDelivery(ctx context.Context, delivery domain.OutboundDelivery) (domain.OutboundDelivery, error)
 }
 
 func (s WorkerService) ProcessOnce(ctx context.Context, limit int) (err error) {
@@ -276,6 +281,22 @@ func (s WorkerService) processDelivery(ctx context.Context, evt domain.OutboxEve
 	if adapter == nil {
 		return fmt.Errorf("no channel adapter for %s", delivery.ChannelType)
 	}
+	if preparer, ok := adapter.(deliveryPreparer); ok {
+		prepared, err := preparer.PrepareDelivery(ctx, delivery)
+		if err != nil {
+			if isPermanentDeliveryPreparationError(err) {
+				_ = s.Repo.MarkDeliveryFailed(ctx, delivery.ID, err)
+				return nil
+			}
+			return err
+		}
+		if string(prepared.PayloadJSON) != string(delivery.PayloadJSON) {
+			if err := s.Repo.UpdateDeliveryPayload(ctx, delivery.ID, prepared.PayloadJSON); err != nil {
+				return err
+			}
+		}
+		delivery = prepared
+	}
 	if err := s.Repo.MarkDeliverySending(ctx, delivery.ID); err != nil {
 		return err
 	}
@@ -298,6 +319,10 @@ func (s WorkerService) processDelivery(ctx context.Context, evt domain.OutboxEve
 	}
 	tracex.Logger(ctx).Info("worker.delivery.sent", "delivery_id", delivery.ID, "channel_type", delivery.ChannelType, "provider_message_id", result.ProviderMessageID)
 	return sendErr
+}
+
+func isPermanentDeliveryPreparationError(err error) bool {
+	return errors.Is(err, domain.ErrWhatsAppPolicyOptedOut) || errors.Is(err, domain.ErrWhatsAppPolicyWindowClosedNoTemplate)
 }
 
 func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.OutboxEvent) error {

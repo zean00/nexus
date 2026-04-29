@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"nexus/internal/domain"
 	"nexus/internal/services"
@@ -45,6 +46,96 @@ func TestParseInboundInteractive(t *testing.T) {
 	if evt.Metadata.AwaitID != "await_run_1" || evt.Message.Text != "yes" {
 		t.Fatalf("unexpected await payload %+v", evt)
 	}
+}
+
+func TestPrepareDeliveryAllowsFreeFormInsideWindow(t *testing.T) {
+	adapter := New("verify", "token", "", "12345", "https://graph.example.com")
+	adapter.GetContactPolicy = func(context.Context, string, string) (domain.WhatsAppContactPolicy, error) {
+		return domain.WhatsAppContactPolicy{ConsentStatus: "unknown", WindowExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
+	}
+	payload := mustTestJSON(t, map[string]any{
+		"messaging_product": "whatsapp",
+		"to":                "15551234567",
+		"type":              "text",
+		"text":              map[string]any{"body": "hello"},
+	})
+	prepared, err := adapter.PrepareDelivery(context.Background(), domain.OutboundDelivery{TenantID: "tenant", PayloadJSON: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(prepared.PayloadJSON) != string(payload) {
+		t.Fatalf("expected unchanged payload, got %s", prepared.PayloadJSON)
+	}
+}
+
+func TestPrepareDeliveryConvertsClosedWindowToExplicitTemplate(t *testing.T) {
+	adapter := New("verify", "token", "", "12345", "https://graph.example.com")
+	adapter.GetContactPolicy = func(context.Context, string, string) (domain.WhatsAppContactPolicy, error) {
+		return domain.WhatsAppContactPolicy{ConsentStatus: "unknown", WindowExpiresAt: time.Now().UTC().Add(-time.Hour)}, nil
+	}
+	payload := mustTestJSON(t, map[string]any{
+		"messaging_product": "whatsapp",
+		"to":                "15551234567",
+		"type":              "text",
+		"text":              map[string]any{"body": "hello"},
+		"whatsapp_template": map[string]any{
+			"name":     "follow_up",
+			"language": map[string]any{"code": "en_US"},
+		},
+	})
+	prepared, err := adapter.PrepareDelivery(context.Background(), domain.OutboundDelivery{TenantID: "tenant", PayloadJSON: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(prepared.PayloadJSON, &out); err != nil {
+		t.Fatal(err)
+	}
+	template := out["template"].(map[string]any)
+	if out["type"] != "template" || template["name"] != "follow_up" {
+		t.Fatalf("unexpected template payload: %+v", out)
+	}
+}
+
+func TestPrepareDeliveryBlocksClosedWindowWithoutTemplate(t *testing.T) {
+	adapter := New("verify", "token", "", "12345", "https://graph.example.com")
+	adapter.GetContactPolicy = func(context.Context, string, string) (domain.WhatsAppContactPolicy, error) {
+		return domain.WhatsAppContactPolicy{ConsentStatus: "unknown"}, nil
+	}
+	payload := mustTestJSON(t, map[string]any{
+		"messaging_product": "whatsapp",
+		"to":                "15551234567",
+		"type":              "text",
+		"text":              map[string]any{"body": "hello"},
+	})
+	if _, err := adapter.PrepareDelivery(context.Background(), domain.OutboundDelivery{TenantID: "tenant", PayloadJSON: payload}); err == nil || err.Error() != "whatsapp_policy_window_closed_no_template" {
+		t.Fatalf("expected closed-window policy error, got %v", err)
+	}
+}
+
+func TestPrepareDeliveryBlocksOptedOutContact(t *testing.T) {
+	adapter := New("verify", "token", "", "12345", "https://graph.example.com")
+	adapter.GetContactPolicy = func(context.Context, string, string) (domain.WhatsAppContactPolicy, error) {
+		return domain.WhatsAppContactPolicy{ConsentStatus: "opted_out", WindowExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
+	}
+	payload := mustTestJSON(t, map[string]any{
+		"messaging_product": "whatsapp",
+		"to":                "15551234567",
+		"type":              "template",
+		"template":          map[string]any{"name": "follow_up", "language": map[string]any{"code": "en_US"}},
+	})
+	if _, err := adapter.PrepareDelivery(context.Background(), domain.OutboundDelivery{TenantID: "tenant", PayloadJSON: payload}); err == nil || err.Error() != "whatsapp_policy_opted_out" {
+		t.Fatalf("expected opted-out policy error, got %v", err)
+	}
+}
+
+func mustTestJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func TestVerifyInboundValidatesSignature(t *testing.T) {

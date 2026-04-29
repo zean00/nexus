@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -33,6 +34,7 @@ type workerRepo struct {
 	markedSending       []string
 	markedSent          []string
 	markedFailed        []string
+	markedOutboxFailed  []string
 }
 
 func (r *workerRepo) InTx(ctx context.Context, fn func(context.Context, ports.Repository) error) error {
@@ -99,8 +101,11 @@ func (r *workerRepo) EnqueueDelivery(context.Context, domain.OutboundDelivery) e
 func (r *workerRepo) ClaimOutbox(context.Context, time.Time, int) ([]domain.OutboxEvent, error) {
 	return r.outboxEvents, nil
 }
-func (r *workerRepo) MarkOutboxDone(context.Context, string) error                     { return nil }
-func (r *workerRepo) MarkOutboxFailed(context.Context, string, error, time.Time) error { return nil }
+func (r *workerRepo) MarkOutboxDone(context.Context, string) error { return nil }
+func (r *workerRepo) MarkOutboxFailed(_ context.Context, outboxID string, _ error, _ time.Time) error {
+	r.markedOutboxFailed = append(r.markedOutboxFailed, outboxID)
+	return nil
+}
 func (r *workerRepo) GetQueueItem(context.Context, string) (domain.QueueItem, error) {
 	return r.queueItem, nil
 }
@@ -284,6 +289,33 @@ func (r *workerRepo) CountAuditEvents(context.Context, domain.AuditEventListQuer
 func (r *workerRepo) Audit(_ context.Context, event domain.AuditEvent) error {
 	r.auditEvents = append(r.auditEvents, event)
 	return nil
+}
+func (r *workerRepo) UpdateDeliveryPayload(_ context.Context, deliveryID string, payload []byte) error {
+	if r.delivery.ID == deliveryID {
+		r.delivery.PayloadJSON = payload
+	}
+	return nil
+}
+func (r *workerRepo) RecordWhatsAppInbound(context.Context, string, string, time.Time, time.Duration) error {
+	return nil
+}
+func (r *workerRepo) GetWhatsAppContactPolicy(context.Context, string, string) (domain.WhatsAppContactPolicy, error) {
+	return domain.WhatsAppContactPolicy{}, domain.ErrWhatsAppContactPolicyNotFound
+}
+func (r *workerRepo) SetWhatsAppConsentStatus(context.Context, string, string, string, time.Time) error {
+	return nil
+}
+func (r *workerRepo) RecordWhatsAppTemplateSent(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (r *workerRepo) RecordWhatsAppPolicyBlocked(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (r *workerRepo) CountWhatsAppContacts(context.Context, domain.WhatsAppPolicyListQuery) (int, error) {
+	return 0, nil
+}
+func (r *workerRepo) ListWhatsAppContacts(context.Context, domain.WhatsAppPolicyListQuery) (domain.PagedResult[domain.WhatsAppContactPolicy], error) {
+	return domain.PagedResult[domain.WhatsAppContactPolicy]{}, nil
 }
 func (r *workerRepo) ForceCancelRun(context.Context, string) error { return nil }
 func (r *workerRepo) RetryDelivery(context.Context, string) error  { return nil }
@@ -469,6 +501,62 @@ func (noopChannel) SendMessage(context.Context, domain.OutboundDelivery) (domain
 }
 func (noopChannel) SendAwaitPrompt(context.Context, domain.OutboundDelivery) (domain.DeliveryResult, error) {
 	return domain.DeliveryResult{}, nil
+}
+
+type prepareErrorChannel struct {
+	err error
+}
+
+func (c prepareErrorChannel) Channel() string                                            { return "whatsapp" }
+func (c prepareErrorChannel) VerifyInbound(context.Context, *http.Request, []byte) error { return nil }
+func (c prepareErrorChannel) ParseInbound(context.Context, *http.Request, []byte, string) (domain.CanonicalInboundEvent, error) {
+	return domain.CanonicalInboundEvent{}, nil
+}
+func (c prepareErrorChannel) PrepareDelivery(context.Context, domain.OutboundDelivery) (domain.OutboundDelivery, error) {
+	return domain.OutboundDelivery{}, c.err
+}
+func (c prepareErrorChannel) SendMessage(context.Context, domain.OutboundDelivery) (domain.DeliveryResult, error) {
+	return domain.DeliveryResult{}, nil
+}
+func (c prepareErrorChannel) SendAwaitPrompt(context.Context, domain.OutboundDelivery) (domain.DeliveryResult, error) {
+	return domain.DeliveryResult{}, nil
+}
+
+func TestWorkerRetriesTransientDeliveryPreparationError(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{ID: "outbox_delivery_1", EventType: "delivery.send", AggregateID: "delivery_1"}},
+		delivery:     domain.OutboundDelivery{ID: "delivery_1", TenantID: "tenant_default", ChannelType: "whatsapp", PayloadJSON: []byte(`{"to":"15551234567"}`)},
+	}
+	worker := WorkerService{
+		Repo:    repo,
+		Channel: prepareErrorChannel{err: errors.New("db unavailable")},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.markedFailed) != 0 {
+		t.Fatalf("transient preparation errors must not mark delivery failed: %+v", repo.markedFailed)
+	}
+	if len(repo.markedOutboxFailed) != 1 || repo.markedOutboxFailed[0] != "outbox_delivery_1" {
+		t.Fatalf("expected transient preparation error to leave outbox retryable, got %+v", repo.markedOutboxFailed)
+	}
+}
+
+func TestWorkerConsumesPermanentDeliveryPreparationError(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{ID: "outbox_delivery_1", EventType: "delivery.send", AggregateID: "delivery_1"}},
+		delivery:     domain.OutboundDelivery{ID: "delivery_1", TenantID: "tenant_default", ChannelType: "whatsapp", PayloadJSON: []byte(`{"to":"15551234567"}`)},
+	}
+	worker := WorkerService{
+		Repo:    repo,
+		Channel: prepareErrorChannel{err: domain.ErrWhatsAppPolicyWindowClosedNoTemplate},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.markedFailed) != 1 || repo.markedFailed[0] != "delivery_1" {
+		t.Fatalf("expected permanent preparation error to fail delivery, got %+v", repo.markedFailed)
+	}
 }
 
 type telegramChannel struct {

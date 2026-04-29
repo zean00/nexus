@@ -110,11 +110,17 @@ Behavior notes:
 | `WHATSAPP_PHONE_NUMBER_ID` | empty | Expected phone number ID | Used for outbound path and inbound filtering |
 | `WHATSAPP_API_BASE_URL` | `https://graph.facebook.com/v20.0` | WhatsApp Graph API base URL | Override only for testing |
 | `WHATSAPP_MEDIA_MAX_BYTES` | `10485760` | Maximum inbound media size | 10 MiB default |
+| `WHATSAPP_ENFORCE_24H_WINDOW` | `true` | Enforce official WhatsApp customer service window before free-form sends | Applies only to `whatsapp`, not `whatsapp_web` |
+| `WHATSAPP_CUSTOMER_SERVICE_WINDOW_HOURS` | `24` | Free-form reply window after each inbound WhatsApp message | Set only if Meta policy changes or for tests |
+| `WHATSAPP_CLOSED_WINDOW_TEMPLATE_JSON` | empty | Default approved template object for closed-window fallback | Optional; explicit outbound template payloads take precedence |
 
 Behavior notes:
 
 - inbound media hydration supports image, document, and audio
 - outbound artifact delivery requires a reachable `http(s)` artifact URL
+- every inbound official WhatsApp message resets the customer service window
+- free-form official WhatsApp sends outside the window are converted to an explicit/default template when available, otherwise blocked
+- `STOP`, `UNSUBSCRIBE`, `CANCEL`, and `END` mark a contact opted out; `START`, `UNSTOP`, and `RESUME` restore opt-in state
 
 ## WhatsApp Web
 

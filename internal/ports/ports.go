@@ -113,6 +113,7 @@ type Repository interface {
 	UpsertTrustPolicy(ctx context.Context, policy domain.TrustPolicy) error
 	GetInboundMessage(ctx context.Context, messageID string) (domain.Message, error)
 	GetDelivery(ctx context.Context, deliveryID string) (domain.OutboundDelivery, error)
+	UpdateDeliveryPayload(ctx context.Context, deliveryID string, payload []byte) error
 	GetLatestDeliveryByLogicalMessage(ctx context.Context, logicalMessageID string) (*domain.OutboundDelivery, error)
 	CountSentDeliveriesSince(ctx context.Context, sessionID string, since time.Time) (int, error)
 	HasRecentInboundMessageSince(ctx context.Context, sessionID string, since time.Time) (bool, error)
@@ -165,6 +166,13 @@ type Repository interface {
 	UpdateUserPhone(ctx context.Context, tenantID, userID, rawPhone, normalizedPhone string, verified bool, addedAt time.Time) error
 	ClearUserPhone(ctx context.Context, tenantID, userID string) error
 	CountLinkedIdentitiesByChannel(ctx context.Context, tenantID string) (map[string]int, error)
+	RecordWhatsAppInbound(ctx context.Context, tenantID, channelUserID string, inboundAt time.Time, window time.Duration) error
+	GetWhatsAppContactPolicy(ctx context.Context, tenantID, channelUserID string) (domain.WhatsAppContactPolicy, error)
+	SetWhatsAppConsentStatus(ctx context.Context, tenantID, channelUserID, status string, at time.Time) error
+	RecordWhatsAppTemplateSent(ctx context.Context, tenantID, channelUserID string, at time.Time) error
+	RecordWhatsAppPolicyBlocked(ctx context.Context, tenantID, channelUserID string, at time.Time) error
+	CountWhatsAppContacts(ctx context.Context, query domain.WhatsAppPolicyListQuery) (int, error)
+	ListWhatsAppContacts(ctx context.Context, query domain.WhatsAppPolicyListQuery) (domain.PagedResult[domain.WhatsAppContactPolicy], error)
 	RequestTelegramAccess(ctx context.Context, entry domain.TelegramUserAccess) (domain.TelegramUserAccess, error)
 	ResolveTelegramAccessRequest(ctx context.Context, tenantID, telegramUserID, status, addedBy string) (domain.TelegramUserAccess, error)
 	ListLinkedIdentitiesForUser(ctx context.Context, tenantID, userID string) ([]domain.LinkedIdentity, error)

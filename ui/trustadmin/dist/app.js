@@ -7292,6 +7292,9 @@ function App() {
   const [policies, setPolicies] = import_react.default.useState([]);
   const [users, setUsers] = import_react.default.useState([]);
   const [events, setEvents] = import_react.default.useState([]);
+  const [whatsAppSummary, setWhatsAppSummary] = import_react.default.useState(null);
+  const [whatsAppContacts, setWhatsAppContacts] = import_react.default.useState([]);
+  const [whatsAppEvents, setWhatsAppEvents] = import_react.default.useState([]);
   const [draft, setDraft] = import_react.default.useState({
     agent_profile_id: "",
     require_linked_identity_for_execution: false,
@@ -7303,16 +7306,22 @@ function App() {
     if (!token) {
       return;
     }
-    const [s, p, u, e] = await Promise.all([
+    const [s, p, u, e, ws, wc, we] = await Promise.all([
       getJSON(`${baseUrl}/summary`, token, handleUnauthorized),
       getJSON(`${baseUrl}/policies`, token, handleUnauthorized),
       getJSON(`${baseUrl}/users`, token, handleUnauthorized),
-      getJSON(`${baseUrl}/events`, token, handleUnauthorized)
+      getJSON(`${baseUrl}/events`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/whatsapp/summary`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/whatsapp/contacts`, token, handleUnauthorized),
+      getJSON(`${baseUrl}/whatsapp/events`, token, handleUnauthorized)
     ]);
     setSummary(s.data);
     setPolicies(p.data.items ?? []);
     setUsers(u.data.items ?? []);
     setEvents(e.data.items ?? []);
+    setWhatsAppSummary(ws.data);
+    setWhatsAppContacts(wc.data.items ?? []);
+    setWhatsAppEvents(we.data.items ?? []);
     setAuthError("");
   }, [token]);
   import_react.default.useEffect(() => {
@@ -7361,6 +7370,14 @@ function App() {
     });
     await load();
   }
+  async function updateWhatsAppConsent(channelUserID, consentStatus) {
+    await apiFetch(`${baseUrl}/whatsapp/consent/update`, token, handleUnauthorized, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel_user_id: channelUserID, consent_status: consentStatus })
+    });
+    await load();
+  }
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("main", { className: "trust-admin", children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "hero", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "kicker", children: "Trust Admin" }),
@@ -7386,6 +7403,39 @@ function App() {
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "panel", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Summary" }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { children: JSON.stringify(summary, null, 2) })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "WhatsApp policy" }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "metric-grid", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Metric, { label: "Total contacts", value: whatsAppSummary?.total_contacts ?? 0 }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Metric, { label: "Open windows", value: whatsAppSummary?.open_windows ?? 0 }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Metric, { label: "Closed windows", value: whatsAppSummary?.closed_windows ?? 0 }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Metric, { label: "Opted out", value: whatsAppSummary?.opted_out_contacts ?? 0 }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Metric, { label: "Template fallbacks", value: whatsAppSummary?.template_fallbacks_total ?? 0 }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Metric, { label: "Policy blocks", value: whatsAppSummary?.policy_blocks_total ?? 0 })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("table", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("tr", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("th", { children: "Contact" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("th", { children: "Window" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("th", { children: "Expires" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("th", { children: "Consent" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("th", { children: "Last block" })
+        ] }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("tbody", { children: whatsAppContacts.map((contact) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("tr", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: contact.channel_user_id }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: contact.window_open ? "badge ok" : "badge", children: contact.window_open ? "open" : "closed" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: formatDate(contact.window_expires_at) }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("select", { value: contact.consent_status ?? "unknown", onChange: (e) => updateWhatsAppConsent(contact.channel_user_id, e.target.value), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "unknown", children: "unknown" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "opted_in", children: "opted in" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "opted_out", children: "opted out" })
+          ] }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: formatDate(contact.last_policy_blocked_at) })
+        ] }, contact.channel_user_id)) })
+      ] }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: "Recent WhatsApp policy events" }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { children: JSON.stringify(whatsAppEvents, null, 2) })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "grid", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "panel", children: [
@@ -7433,6 +7483,18 @@ function App() {
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { children: JSON.stringify(events, null, 2) })
     ] })
   ] });
+}
+function Metric({ label, value }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "metric", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: label }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: value })
+  ] });
+}
+function formatDate(value) {
+  if (!value || value.startsWith("0001-")) {
+    return "";
+  }
+  return new Date(value).toLocaleString();
 }
 async function getJSON(url, token, onUnauthorized) {
   const response = await apiFetch(url, token, onUnauthorized, { method: "GET" });

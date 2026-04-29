@@ -491,6 +491,28 @@ func (r *appRepoStub) Audit(_ context.Context, event domain.AuditEvent) error {
 	r.auditEvents = append(r.auditEvents, event)
 	return nil
 }
+func (r *appRepoStub) UpdateDeliveryPayload(context.Context, string, []byte) error { return nil }
+func (r *appRepoStub) RecordWhatsAppInbound(context.Context, string, string, time.Time, time.Duration) error {
+	return nil
+}
+func (r *appRepoStub) GetWhatsAppContactPolicy(context.Context, string, string) (domain.WhatsAppContactPolicy, error) {
+	return domain.WhatsAppContactPolicy{}, domain.ErrWhatsAppContactPolicyNotFound
+}
+func (r *appRepoStub) SetWhatsAppConsentStatus(context.Context, string, string, string, time.Time) error {
+	return nil
+}
+func (r *appRepoStub) RecordWhatsAppTemplateSent(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (r *appRepoStub) RecordWhatsAppPolicyBlocked(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (r *appRepoStub) CountWhatsAppContacts(context.Context, domain.WhatsAppPolicyListQuery) (int, error) {
+	return 0, nil
+}
+func (r *appRepoStub) ListWhatsAppContacts(context.Context, domain.WhatsAppPolicyListQuery) (domain.PagedResult[domain.WhatsAppContactPolicy], error) {
+	return domain.PagedResult[domain.WhatsAppContactPolicy]{}, nil
+}
 func (r *appRepoStub) ForceCancelRun(_ context.Context, runID string) error {
 	r.forcedCanceledRunID = runID
 	return nil

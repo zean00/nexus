@@ -82,6 +82,13 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if handled, err := a.handleWhatsAppContactPolicy(r.Context(), evt); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	} else if handled {
+		httpx.Accepted(w, map[string]any{"status": "whatsapp_consent_updated"}, webhookActorMeta(evt))
+		return
+	}
 	if evt.Channel == "telegram" && !a.telegramUserAllowed(r.Context(), evt.Sender.ChannelUserID) {
 		if existing, err := a.Repo.GetTelegramUserAccess(r.Context(), a.Config.DefaultTenantID, evt.Sender.ChannelUserID); err == nil {
 			switch existing.Status {
@@ -167,6 +174,9 @@ func (a *App) processBatchChannelEvent(ctx context.Context, adapter ports.Channe
 	if err := a.persistInboundArtifacts(ctx, adapter, &evt); err != nil {
 		return err
 	}
+	if handled, err := a.handleWhatsAppContactPolicy(ctx, evt); handled || err != nil {
+		return err
+	}
 	if evt.Interaction == "await_response" {
 		if _, err := a.authorizeAwaitResponse(ctx, &evt); err != nil {
 			return err
@@ -178,6 +188,60 @@ func (a *App) processBatchChannelEvent(ctx context.Context, adapter ports.Channe
 	}
 	_, err := a.Inbound.Handle(ctx, evt)
 	return err
+}
+
+func (a *App) handleWhatsAppContactPolicy(ctx context.Context, evt domain.CanonicalInboundEvent) (bool, error) {
+	if evt.Channel != "whatsapp" {
+		return false, nil
+	}
+	window := time.Duration(a.Config.WhatsAppCustomerServiceWindowHours) * time.Hour
+	if a.Config.WhatsAppCustomerServiceWindowHours <= 0 {
+		window = 24 * time.Hour
+	}
+	if err := a.Repo.RecordWhatsAppInbound(ctx, evt.TenantID, evt.Sender.ChannelUserID, evt.ReceivedAt, window); err != nil {
+		return false, err
+	}
+	switch whatsappConsentCommand(evt.Message.Text) {
+	case "opted_out":
+		if err := a.Repo.SetWhatsAppConsentStatus(ctx, evt.TenantID, evt.Sender.ChannelUserID, "opted_out", time.Now().UTC()); err != nil {
+			return false, err
+		}
+		_ = a.Repo.Audit(ctx, domain.AuditEvent{
+			ID:            "audit_whatsapp_opt_out_" + evt.EventID,
+			TenantID:      evt.TenantID,
+			AggregateType: "whatsapp_contact",
+			AggregateID:   evt.Sender.ChannelUserID,
+			EventType:     "whatsapp.consent_opted_out",
+			PayloadJSON:   mustJSON(map[string]any{"provider_event_id": evt.ProviderEventID}),
+			CreatedAt:     time.Now().UTC(),
+		})
+		return true, nil
+	case "opted_in":
+		if err := a.Repo.SetWhatsAppConsentStatus(ctx, evt.TenantID, evt.Sender.ChannelUserID, "opted_in", time.Now().UTC()); err != nil {
+			return false, err
+		}
+		_ = a.Repo.Audit(ctx, domain.AuditEvent{
+			ID:            "audit_whatsapp_opt_in_" + evt.EventID,
+			TenantID:      evt.TenantID,
+			AggregateType: "whatsapp_contact",
+			AggregateID:   evt.Sender.ChannelUserID,
+			EventType:     "whatsapp.consent_opted_in",
+			PayloadJSON:   mustJSON(map[string]any{"provider_event_id": evt.ProviderEventID}),
+			CreatedAt:     time.Now().UTC(),
+		})
+	}
+	return false, nil
+}
+
+func whatsappConsentCommand(text string) string {
+	switch strings.ToUpper(strings.TrimSpace(text)) {
+	case "STOP", "UNSUBSCRIBE", "CANCEL", "END":
+		return "opted_out"
+	case "START", "UNSTOP", "RESUME":
+		return "opted_in"
+	default:
+		return ""
+	}
 }
 
 func (a *App) authorizeAwaitResponse(ctx context.Context, evt *domain.CanonicalInboundEvent) (domain.User, error) {

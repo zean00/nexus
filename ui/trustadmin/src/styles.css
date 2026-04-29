@@ -56,10 +56,11 @@ input, button {
   font: inherit;
 }
 
-input {
+input, select {
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid #cbbca1;
+  background: white;
 }
 
 button {
@@ -79,4 +80,57 @@ pre {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.metric {
+  border: 1px solid #e2d8c6;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fffaf0;
+}
+
+.metric span {
+  display: block;
+  font-size: 0.8rem;
+  color: #6f6352;
+}
+
+.metric strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 1.5rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  margin-top: 18px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  border-bottom: 1px solid #e2d8c6;
+  padding: 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #eee4d2;
+}
+
+.badge.ok {
+  background: #dff1df;
 }
