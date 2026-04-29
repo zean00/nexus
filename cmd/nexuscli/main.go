@@ -39,6 +39,8 @@ func run(args []string) error {
 	switch args[0] {
 	case "dev-login":
 		return devLogin(args[1:])
+	case "chat", "tui":
+		return chat(args[1:])
 	case "send":
 		return sendMessage(args[1:])
 	case "history":
@@ -54,6 +56,7 @@ func run(args []string) error {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   nexuscli dev-login --base-url http://localhost:8080 --email dev@example.com
+  nexuscli chat
   nexuscli send "hello"
   nexuscli history --limit 20
   nexuscli respond --await-id await_123 --reply "approve"`)

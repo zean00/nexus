@@ -143,6 +143,7 @@ To use the stdio ACP bridge with local `opencode`:
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/nexus?sslmode=disable \
 ACP_IMPLEMENTATION=stdio \
 ACP_COMMAND=opencode \
+ACP_ARGS="acp,--pure,--cwd,$PWD" \
 ACP_WORKDIR="$PWD" \
 DEFAULT_ACP_AGENT_NAME=build \
 go run ./cmd/gateway
@@ -156,6 +157,24 @@ go test ./internal/adapters/acp -run 'TestStdioClientOpenCode(FileRead|FileWrite
 ```
 
 This is the best local path when you want to test real agent execution without standing up an HTTP ACP service.
+
+To validate the full gateway and CLI path against real OpenCode ACP:
+
+```bash
+export NEXUSCLI_STATE=/tmp/nexuscli-opencode-e2e.json
+
+go run ./cmd/nexuscli dev-login \
+  --base-url http://localhost:8080 \
+  --email opencode-e2e@example.com
+
+go run ./cmd/nexuscli send \
+  "Reply with exactly: nexus console opencode e2e ok"
+
+go run ./cmd/nexuscli history --limit 20
+```
+
+The returned history should include an assistant message with
+`nexus console opencode e2e ok`.
 
 ## Health and Runtime Checks
 

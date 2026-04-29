@@ -2,14 +2,14 @@
 
 The Nexus CLI is a dev-only wrapper around the existing webchat HTTP API. It is intended for local testing of the full Nexus path:
 
-1. CLI command
+1. CLI command or rich console
 2. webchat API
 3. DB and outbox queue
 4. worker
 5. ACP or OpenCode bridge
 6. webchat history
 
-It is not a standalone ACP client and does not add a separate `cli` channel.
+It is not a standalone ACP client and does not add a separate backend `cli` channel.
 
 ## Start The Gateway
 
@@ -26,6 +26,7 @@ DATABASE_URL='postgres://midas:midas@localhost:5432/nexus?sslmode=disable' \
 WEBCHAT_DEV_AUTH=true \
 ACP_IMPLEMENTATION=stdio \
 ACP_COMMAND=opencode \
+ACP_ARGS="acp,--pure,--cwd,$PWD" \
 ACP_WORKDIR="$PWD" \
 DEFAULT_ACP_AGENT_NAME=build \
 go run ./cmd/gateway
@@ -78,6 +79,62 @@ The command sends a multipart `POST /webchat/messages` request with the stored s
     "queue_id": "queue_..."
   }
 }
+```
+
+## Open The Rich Console
+
+```bash
+go run ./cmd/nexuscli chat
+```
+
+The console uses the same stored session as `send`, `history`, and `respond`.
+It shows webchat history, listens to `/webchat/events`, and posts messages back
+through `/webchat/messages`.
+
+For a one-step local dev login plus console launch:
+
+```bash
+go run ./cmd/nexuscli chat \
+  --dev-login \
+  --base-url http://localhost:8080 \
+  --email dev@example.com
+```
+
+Console commands:
+
+- `/new` starts a new webchat session.
+- `/respond await_123 approve` answers an await.
+- `/quit` or `/exit` exits the console.
+- `Esc` blurs the focused input.
+
+## Validate With Real OpenCode ACP
+
+With the gateway running in stdio mode, use an isolated CLI state file:
+
+```bash
+export NEXUSCLI_STATE=/tmp/nexuscli-opencode-e2e.json
+
+go run ./cmd/nexuscli dev-login \
+  --base-url http://localhost:8080 \
+  --email opencode-e2e@example.com
+
+go run ./cmd/nexuscli send \
+  "Reply with exactly: nexus console opencode e2e ok"
+
+go run ./cmd/nexuscli history --limit 20
+```
+
+The history response should include a user message and an assistant message with
+the exact text:
+
+```text
+nexus console opencode e2e ok
+```
+
+The rich console uses the same path:
+
+```bash
+go run ./cmd/nexuscli chat
 ```
 
 ## Read History
