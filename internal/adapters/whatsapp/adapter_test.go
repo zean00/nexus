@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +46,44 @@ func TestParseInboundInteractive(t *testing.T) {
 	}
 	if evt.Metadata.AwaitID != "await_run_1" || evt.Message.Text != "yes" {
 		t.Fatalf("unexpected await payload %+v", evt)
+	}
+}
+
+func TestParseInboundLocation(t *testing.T) {
+	adapter := New("verify", "", "", "", "https://graph.example.com")
+	body := `{
+		"entry":[{
+			"changes":[{
+				"field":"messages",
+				"value":{
+					"contacts":[{"wa_id":"15551234567","profile":{"name":"Ava"}}],
+					"messages":[{
+						"id":"wamid.location",
+						"from":"15551234567",
+						"timestamp":"1710000000",
+						"type":"location",
+						"location":{
+							"latitude":-6.2,
+							"longitude":106.816666,
+							"name":"Jakarta",
+							"address":"Central Jakarta"
+						}
+					}]
+				}
+			}]
+		}]
+	}`
+
+	evt, err := adapter.ParseInbound(context.Background(), httptest.NewRequest(http.MethodPost, "/webhooks/whatsapp", nil), []byte(body), "tenant_default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	locations := domain.ExtractLocations(evt.Message)
+	if len(locations) != 1 || locations[0].Name != "Jakarta" || locations[0].Address != "Central Jakarta" {
+		t.Fatalf("unexpected location parts %+v in message %+v", locations, evt.Message)
+	}
+	if evt.Message.MessageType != "text" || !strings.Contains(evt.Message.Text, "https://maps.google.com") {
+		t.Fatalf("unexpected location text fallback: %+v", evt.Message)
 	}
 }
 

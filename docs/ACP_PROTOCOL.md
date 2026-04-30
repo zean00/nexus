@@ -115,6 +115,7 @@ Key behavior:
 Current practical notes:
 
 - input artifact mapping is implemented for ACP content blocks such as `resource_link`, `image`, `audio`, and generic `resource`
+- canonical location message parts are rendered into prompt text with coordinates and a maps link
 - output artifacts depend on what the underlying ACP server actually emits for a given run
 - replay and latest-run lookup are backed by local stdio client state
 

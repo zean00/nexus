@@ -99,6 +99,8 @@ Behavior notes:
 - Telegram is the only channel with built-in session commands in the current codebase
 - Telegram outbound artifacts are file-backed uploads routed by MIME type to native photo, audio, video, or document sends
 - inbound Telegram file/media messages are hydrated through the Bot API `getFile` flow
+- inbound Telegram `location` and `venue` messages are normalized into canonical location parts with a maps-link text fallback
+- raw outbound Telegram payloads containing `latitude` and `longitude` are sent through `sendLocation`
 
 ## WhatsApp
 
@@ -117,7 +119,9 @@ Behavior notes:
 Behavior notes:
 
 - inbound media hydration supports image, document, and audio
+- inbound location messages are normalized into canonical location parts with a maps-link text fallback
 - outbound artifact delivery requires a reachable `http(s)` artifact URL
+- raw outbound payloads can use the WhatsApp Cloud `location` message shape for native location sends
 - every inbound official WhatsApp message resets the customer service window
 - free-form official WhatsApp sends outside the window are converted to an explicit/default template when available, otherwise blocked
 - `STOP`, `UNSUBSCRIBE`, `CANCEL`, and `END` mark a contact opted out; `START`, `UNSTOP`, and `RESUME` restore opt-in state
@@ -149,6 +153,7 @@ Behavior notes:
 
 - `whatsapp_web` is a separate channel from `whatsapp`
 - outbound artifacts are sent through WAHA directly and do not require public URLs
+- inbound WAHA location payloads are normalized into canonical location parts with a maps-link text fallback
 - Nexus exposes admin session lifecycle endpoints for the configured WAHA session
 - phone-based identity linking is shared with the official WhatsApp channel
 

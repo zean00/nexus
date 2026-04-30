@@ -96,6 +96,38 @@ func TestPrepareReplacementDeliveryFallsBackToSendWithoutPreviousMessage(t *test
 	}
 }
 
+func TestNormalizedMessagePayloadRoundTripsLocationParts(t *testing.T) {
+	message := domain.Message{
+		MessageID:   "msg_location",
+		MessageType: "text",
+		Text:        "Location: -6.200000, 106.816666",
+		Parts: []domain.Part{
+			domain.NewLocationPart(domain.Location{Latitude: -6.2, Longitude: 106.816666, Name: "Jakarta"}),
+		},
+	}
+	raw := normalizedMessagePayload(message, []byte(`{"provider":"payload"}`))
+	restored := restoreNormalizedMessage(domain.Message{
+		MessageID:   "msg_location",
+		SessionID:   "session_1",
+		MessageType: "text",
+		Text:        message.Text,
+		Role:        "user",
+		Direction:   "inbound",
+		Parts:       []domain.Part{{ContentType: "text/plain", Content: message.Text}},
+		RawPayload:  raw,
+	})
+	locations := domain.ExtractLocations(restored)
+	if len(locations) != 1 || locations[0].Name != "Jakarta" {
+		t.Fatalf("expected restored location part, got %+v in %+v", locations, restored)
+	}
+	if restored.SessionID != "session_1" || restored.Role != "user" || restored.Direction != "inbound" {
+		t.Fatalf("expected fallback db fields to be preserved, got %+v", restored)
+	}
+	if string(restored.RawPayload) != `{"provider":"payload"}` {
+		t.Fatalf("expected original provider raw payload, got %s", restored.RawPayload)
+	}
+}
+
 func TestValidateTelegramAccessResolution(t *testing.T) {
 	if err := validateTelegramAccessResolution(domain.TelegramUserAccess{Status: "pending"}); err != nil {
 		t.Fatalf("expected pending request to be resolvable, got %v", err)

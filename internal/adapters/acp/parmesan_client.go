@@ -541,7 +541,14 @@ func joinMessageText(message domain.Message) string {
 	parts := make([]string, 0, len(message.Parts))
 	for _, part := range message.Parts {
 		if strings.TrimSpace(part.Content) != "" {
-			parts = append(parts, strings.TrimSpace(part.Content))
+			text := part.Content
+			if part.ContentType == domain.LocationContentType {
+				var location domain.Location
+				if err := json.Unmarshal([]byte(part.Content), &location); err == nil {
+					text = domain.LocationText(location)
+				}
+			}
+			parts = append(parts, strings.TrimSpace(text))
 		}
 	}
 	if len(parts) == 0 {

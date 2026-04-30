@@ -767,7 +767,7 @@ func (r *PostgresRepository) HasActiveRun(ctx context.Context, sessionID string)
 
 func (r *PostgresRepository) StoreInboundMessage(ctx context.Context, evt domain.CanonicalInboundEvent, sessionID string) (string, error) {
 	id := evt.Message.MessageID
-	raw := evt.Metadata.RawPayload
+	raw := normalizedMessagePayload(evt.Message, evt.Metadata.RawPayload)
 	_, err := r.exec(ctx, `
 		insert into messages (
 			id, tenant_id, session_id, direction, channel_type, channel_message_id, role, text_preview, raw_payload_json, created_at
@@ -794,6 +794,60 @@ func (r *PostgresRepository) StoreOutboundMessage(ctx context.Context, session d
 		    raw_payload_json=excluded.raw_payload_json
 	`, id, session.TenantID, session.ID, session.ChannelType, id, text, rawPayload)
 	return id, err
+}
+
+type storedMessagePayload struct {
+	NexusMessage    *domain.Message `json:"nexus_message,omitempty"`
+	ProviderPayload json.RawMessage `json:"provider_payload,omitempty"`
+}
+
+func normalizedMessagePayload(message domain.Message, providerPayload []byte) []byte {
+	if len(message.Parts) == 0 && len(message.Artifacts) == 0 {
+		return providerPayload
+	}
+	envelope := storedMessagePayload{
+		NexusMessage:    &message,
+		ProviderPayload: json.RawMessage(providerPayload),
+	}
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return providerPayload
+	}
+	return raw
+}
+
+func restoreNormalizedMessage(fallback domain.Message) domain.Message {
+	if len(fallback.RawPayload) == 0 {
+		return fallback
+	}
+	var envelope storedMessagePayload
+	if err := json.Unmarshal(fallback.RawPayload, &envelope); err != nil || envelope.NexusMessage == nil {
+		return fallback
+	}
+	message := *envelope.NexusMessage
+	message.MessageID = firstNonEmptyDB(message.MessageID, fallback.MessageID)
+	message.SessionID = firstNonEmptyDB(message.SessionID, fallback.SessionID)
+	message.Role = firstNonEmptyDB(message.Role, fallback.Role)
+	message.Direction = firstNonEmptyDB(message.Direction, fallback.Direction)
+	message.MessageType = firstNonEmptyDB(message.MessageType, fallback.MessageType)
+	message.Text = firstNonEmptyDB(message.Text, fallback.Text)
+	message.RawPayload = fallback.RawPayload
+	if len(envelope.ProviderPayload) > 0 {
+		message.RawPayload = []byte(envelope.ProviderPayload)
+	}
+	if len(message.Parts) == 0 && strings.TrimSpace(message.Text) != "" {
+		message.Parts = []domain.Part{{ContentType: "text/plain", Content: message.Text}}
+	}
+	return message
+}
+
+func firstNonEmptyDB(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (r *PostgresRepository) StoreArtifacts(ctx context.Context, messageID string, direction string, artifacts []domain.Artifact) error {
@@ -1165,9 +1219,12 @@ func (r *PostgresRepository) GetInboundMessage(ctx context.Context, messageID st
 	row := r.queryRow(ctx, `select id, session_id, text_preview, role, direction, raw_payload_json from messages where id=$1`, messageID)
 	var msg domain.Message
 	err := row.Scan(&msg.MessageID, &msg.SessionID, &msg.Text, &msg.Role, &msg.Direction, &msg.RawPayload)
+	if err != nil {
+		return domain.Message{}, err
+	}
 	msg.MessageType = "text"
 	msg.Parts = []domain.Part{{ContentType: "text/plain", Content: msg.Text}}
-	return msg, err
+	return restoreNormalizedMessage(msg), nil
 }
 
 func (r *PostgresRepository) ListMessages(ctx context.Context, query domain.MessageListQuery) (domain.PagedResult[domain.Message], error) {
@@ -1216,6 +1273,7 @@ func (r *PostgresRepository) ListMessages(ctx context.Context, query domain.Mess
 		}
 		msg.MessageType = msg.Role
 		msg.Parts = []domain.Part{{ContentType: "text/plain", Content: msg.Text}}
+		msg = restoreNormalizedMessage(msg)
 		out = append(out, msg)
 		cursor = append(cursor, cursorValue{Time: createdAt, ID: msg.MessageID})
 	}

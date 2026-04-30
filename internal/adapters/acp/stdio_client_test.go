@@ -283,6 +283,26 @@ func TestBuildStdioPromptPartsMapsArtifactsToACPContentBlocks(t *testing.T) {
 	}
 }
 
+func TestBuildStdioPromptPartsRendersLocationParts(t *testing.T) {
+	parts := buildStdioPromptParts(domain.Message{
+		Parts: []domain.Part{
+			domain.NewLocationPart(domain.Location{
+				Latitude:  -6.2,
+				Longitude: 106.816666,
+				Name:      "Jakarta",
+				Address:   "Central Jakarta",
+			}),
+		},
+	})
+	if len(parts) != 1 {
+		t.Fatalf("expected one prompt part, got %+v", parts)
+	}
+	text, _ := parts[0]["text"].(string)
+	if !strings.Contains(text, "Jakarta") || !strings.Contains(text, "https://maps.google.com") {
+		t.Fatalf("unexpected location prompt text: %q", text)
+	}
+}
+
 func TestCollectReplayCapturesResourceLinkArtifacts(t *testing.T) {
 	ch := make(chan stdioSessionUpdate, 3)
 	ch <- stdioSessionUpdate{

@@ -1443,9 +1443,16 @@ func buildStdioPromptParts(message domain.Message) []map[string]any {
 		if strings.TrimSpace(part.Content) == "" {
 			continue
 		}
+		text := part.Content
+		if part.ContentType == domain.LocationContentType {
+			var location domain.Location
+			if err := json.Unmarshal([]byte(part.Content), &location); err == nil {
+				text = domain.LocationText(location)
+			}
+		}
 		parts = append(parts, map[string]any{
 			"type": "text",
-			"text": part.Content,
+			"text": text,
 		})
 	}
 	if len(parts) == 0 && strings.TrimSpace(message.Text) != "" {

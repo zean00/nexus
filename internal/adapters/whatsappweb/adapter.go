@@ -130,6 +130,8 @@ type messagePayload struct {
 	Location *struct {
 		Latitude  float64 `json:"latitude"`
 		Longitude float64 `json:"longitude"`
+		Name      string  `json:"name"`
+		Address   string  `json:"address"`
 	} `json:"location"`
 }
 
@@ -176,6 +178,22 @@ func (a Adapter) ParseInboundBatch(_ context.Context, _ *http.Request, body []by
 		receivedAt = time.Unix(payload.Timestamp, 0).UTC()
 	}
 	text := strings.TrimSpace(payload.Body)
+	parts := []domain.Part{}
+	if text != "" {
+		parts = append(parts, domain.Part{ContentType: "text/plain", Content: text})
+	}
+	if payload.Location != nil {
+		location := domain.Location{
+			Latitude:  payload.Location.Latitude,
+			Longitude: payload.Location.Longitude,
+			Name:      strings.TrimSpace(payload.Location.Name),
+			Address:   strings.TrimSpace(payload.Location.Address),
+		}
+		parts = append(parts, domain.NewLocationPart(location))
+		if text == "" {
+			text = domain.LocationText(location)
+		}
+	}
 	artifacts := wahaArtifacts(payload)
 	evt := domain.CanonicalInboundEvent{
 		EventID:         "waha_" + firstNonEmpty(env.ID, payload.ID),
@@ -224,7 +242,7 @@ func (a Adapter) ParseInboundBatch(_ context.Context, _ *http.Request, body []by
 		MessageID:   "waha_msg_" + payload.ID,
 		MessageType: messageType(text, artifacts),
 		Text:        text,
-		Parts:       []domain.Part{{ContentType: "text/plain", Content: text}},
+		Parts:       parts,
 		Artifacts:   artifacts,
 	}
 	return []domain.CanonicalInboundEvent{evt}, nil

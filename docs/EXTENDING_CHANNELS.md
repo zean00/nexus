@@ -94,6 +94,23 @@ Your adapter should populate:
 - `Message`
 - `Metadata.RawPayload`
 
+For native coordinate payloads, add a `Message.Parts` entry with content type
+`application/vnd.nexus.location+json`. The JSON body should match the canonical
+location shape:
+
+```json
+{
+  "latitude": -6.2,
+  "longitude": 106.816666,
+  "name": "Optional place name",
+  "address": "Optional address"
+}
+```
+
+When the provider payload has no user-entered text, set `Message.Text` to a
+short coordinate summary and maps link so ACP runtimes and text-only channels
+still receive a useful fallback.
+
 ### Session resolution depends on conversation fields
 
 These are the most important fields to get right:

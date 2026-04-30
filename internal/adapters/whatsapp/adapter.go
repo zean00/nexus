@@ -144,6 +144,12 @@ func (a Adapter) ParseInboundBatch(_ context.Context, _ *http.Request, body []by
 							MimeType string `json:"mime_type"`
 							SHA256   string `json:"sha256"`
 						} `json:"audio"`
+						Location *struct {
+							Latitude  float64 `json:"latitude"`
+							Longitude float64 `json:"longitude"`
+							Name      string  `json:"name"`
+							Address   string  `json:"address"`
+						} `json:"location"`
 					} `json:"messages"`
 				} `json:"value"`
 			} `json:"changes"`
@@ -215,6 +221,12 @@ func parseMessage(raw []byte, tenantID, displayName, phoneNumberID string, msg s
 		MimeType string `json:"mime_type"`
 		SHA256   string `json:"sha256"`
 	} `json:"audio"`
+	Location *struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+		Name      string  `json:"name"`
+		Address   string  `json:"address"`
+	} `json:"location"`
 }) (domain.CanonicalInboundEvent, error) {
 	receivedAt := time.Now().UTC()
 	if ts, err := strconvParseInt(msg.Timestamp); err == nil && ts > 0 {
@@ -321,12 +333,28 @@ func parseMessage(raw []byte, tenantID, displayName, phoneNumberID string, msg s
 			break
 		}
 		text := strings.TrimSpace(msg.Text.Body)
+		parts := []domain.Part{}
+		if text != "" {
+			parts = append(parts, domain.Part{ContentType: "text/plain", Content: text})
+		}
+		if msg.Location != nil {
+			location := domain.Location{
+				Latitude:  msg.Location.Latitude,
+				Longitude: msg.Location.Longitude,
+				Name:      strings.TrimSpace(msg.Location.Name),
+				Address:   strings.TrimSpace(msg.Location.Address),
+			}
+			parts = append(parts, domain.NewLocationPart(location))
+			if text == "" {
+				text = domain.LocationText(location)
+			}
+		}
 		artifacts := whatsappArtifacts(msg)
 		evt.Message = domain.Message{
 			MessageID:   "wa_msg_" + msg.ID,
 			MessageType: messageType(text, artifacts),
 			Text:        text,
-			Parts:       []domain.Part{{ContentType: "text/plain", Content: text}},
+			Parts:       parts,
 			Artifacts:   artifacts,
 		}
 	}
@@ -413,6 +441,12 @@ func whatsappArtifacts(msg struct {
 		MimeType string `json:"mime_type"`
 		SHA256   string `json:"sha256"`
 	} `json:"audio"`
+	Location *struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+		Name      string  `json:"name"`
+		Address   string  `json:"address"`
+	} `json:"location"`
 }) []domain.Artifact {
 	var artifacts []domain.Artifact
 	if msg.Image != nil {

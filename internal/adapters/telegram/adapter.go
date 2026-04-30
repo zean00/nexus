@@ -89,6 +89,18 @@ func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, t
 				MimeType string `json:"mime_type"`
 				FileSize int64  `json:"file_size"`
 			} `json:"voice"`
+			Location *struct {
+				Latitude  float64 `json:"latitude"`
+				Longitude float64 `json:"longitude"`
+			} `json:"location"`
+			Venue *struct {
+				Location struct {
+					Latitude  float64 `json:"latitude"`
+					Longitude float64 `json:"longitude"`
+				} `json:"location"`
+				Title   string `json:"title"`
+				Address string `json:"address"`
+			} `json:"venue"`
 		} `json:"message"`
 		CallbackQuery *struct {
 			ID   string `json:"id"`
@@ -118,6 +130,16 @@ func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, t
 		if strings.HasPrefix(text, "/") {
 			command = strings.Fields(text)[0]
 		}
+		parts := []domain.Part{}
+		if text != "" {
+			parts = append(parts, domain.Part{ContentType: "text/plain", Content: text})
+		}
+		if location, ok := telegramLocationPart(*update.Message); ok {
+			parts = append(parts, domain.NewLocationPart(location))
+			if text == "" {
+				text = domain.LocationText(location)
+			}
+		}
 		artifacts := telegramArtifacts(*update.Message)
 		return domain.CanonicalInboundEvent{
 			EventID:         fmt.Sprintf("tg_%d", update.UpdateID),
@@ -141,7 +163,7 @@ func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, t
 				MessageID:   "tg_msg_" + msgID,
 				MessageType: telegramMessageType(text, artifacts),
 				Text:        text,
-				Parts:       []domain.Part{{ContentType: "text/plain", Content: text}},
+				Parts:       parts,
 				Artifacts:   artifacts,
 			},
 			Metadata: domain.Metadata{RawPayload: body, Command: command},
@@ -236,6 +258,18 @@ func telegramArtifacts(message struct {
 		MimeType string `json:"mime_type"`
 		FileSize int64  `json:"file_size"`
 	} `json:"voice"`
+	Location *struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	} `json:"location"`
+	Venue *struct {
+		Location struct {
+			Latitude  float64 `json:"latitude"`
+			Longitude float64 `json:"longitude"`
+		} `json:"location"`
+		Title   string `json:"title"`
+		Address string `json:"address"`
+	} `json:"venue"`
 }) []domain.Artifact {
 	artifacts := make([]domain.Artifact, 0, 4)
 	if message.Document != nil && strings.TrimSpace(message.Document.FileID) != "" {
@@ -290,6 +324,77 @@ func telegramArtifacts(message struct {
 	return artifacts
 }
 
+func telegramLocationPart(message struct {
+	MessageID int64  `json:"message_id"`
+	Date      int64  `json:"date"`
+	Text      string `json:"text"`
+	Caption   string `json:"caption"`
+	Chat      struct {
+		ID   int64  `json:"id"`
+		Type string `json:"type"`
+	} `json:"chat"`
+	From struct {
+		ID int64 `json:"id"`
+	} `json:"from"`
+	Document *struct {
+		FileID   string `json:"file_id"`
+		FileName string `json:"file_name"`
+		MimeType string `json:"mime_type"`
+		FileSize int64  `json:"file_size"`
+	} `json:"document"`
+	Photo []struct {
+		FileID   string `json:"file_id"`
+		Width    int    `json:"width"`
+		Height   int    `json:"height"`
+		FileSize int64  `json:"file_size"`
+	} `json:"photo"`
+	Audio *struct {
+		FileID   string `json:"file_id"`
+		FileName string `json:"file_name"`
+		MimeType string `json:"mime_type"`
+		FileSize int64  `json:"file_size"`
+	} `json:"audio"`
+	Video *struct {
+		FileID   string `json:"file_id"`
+		FileName string `json:"file_name"`
+		MimeType string `json:"mime_type"`
+		FileSize int64  `json:"file_size"`
+	} `json:"video"`
+	Voice *struct {
+		FileID   string `json:"file_id"`
+		MimeType string `json:"mime_type"`
+		FileSize int64  `json:"file_size"`
+	} `json:"voice"`
+	Location *struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	} `json:"location"`
+	Venue *struct {
+		Location struct {
+			Latitude  float64 `json:"latitude"`
+			Longitude float64 `json:"longitude"`
+		} `json:"location"`
+		Title   string `json:"title"`
+		Address string `json:"address"`
+	} `json:"venue"`
+}) (domain.Location, bool) {
+	if message.Venue != nil {
+		return domain.Location{
+			Latitude:  message.Venue.Location.Latitude,
+			Longitude: message.Venue.Location.Longitude,
+			Name:      strings.TrimSpace(message.Venue.Title),
+			Address:   strings.TrimSpace(message.Venue.Address),
+		}, true
+	}
+	if message.Location != nil {
+		return domain.Location{
+			Latitude:  message.Location.Latitude,
+			Longitude: message.Location.Longitude,
+		}, true
+	}
+	return domain.Location{}, false
+}
+
 func telegramMessageType(text string, artifacts []domain.Artifact) string {
 	switch {
 	case len(artifacts) > 0 && strings.TrimSpace(text) != "":
@@ -341,6 +446,11 @@ func (a Adapter) send(payload []byte) (domain.DeliveryResult, error) {
 	}
 	if kind, _ := body["kind"].(string); kind == "artifact_upload" {
 		return a.uploadArtifact(body)
+	}
+	if _, ok := body["latitude"]; ok {
+		if _, ok := body["longitude"]; ok {
+			return a.postJSON("sendLocation", body)
+		}
 	}
 	method := "sendMessage"
 	if _, ok := body["message_id"]; ok {

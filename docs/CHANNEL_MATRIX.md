@@ -32,6 +32,7 @@ If you are evaluating the project for the first time, start with Webchat. It exp
 | Inbound text | Yes | Yes | Yes | Yes | Yes | Yes |
 | Inbound interactive await response | Yes | Yes | Yes | Text fallback in v1 | Yes | Yes |
 | Inbound artifacts | Yes | Yes | Yes | Yes | Yes | Yes |
+| Inbound location coordinates | No | Native location / venue to canonical location part | Native location to canonical location part | WAHA location to canonical location part | No | No |
 | Outbound status message | Yes | Yes | Yes | Yes | Yes | Persisted state + webchat adapter delivery |
 | Outbound await prompt | Buttons | Inline keyboard | Buttons or text fallback | Text fallback | Email instructions | Native UI/API |
 | Outbound artifacts | Yes | Yes, native media/document by MIME | Yes, only public `http(s)` URLs | Yes, direct file/media send | Yes | Yes |
@@ -145,6 +146,15 @@ Current notes:
 | Inbound artifact hydration | Provider download | Telegram `getFile` download | Provider media download | WAHA media download | Base64 decode | Direct save to object store |
 | Outbound artifact delivery | Upload send | Document send | Media send from public URL | Direct WAHA file/media send | Email attachment | Authenticated web delivery |
 | Inline artifact preview | Provider-dependent | Provider-dependent | Provider-dependent | Provider-dependent | Client-dependent | Yes |
+
+## Location Matrix
+
+| Location Behavior | Slack | Telegram | WhatsApp | WhatsApp Web | Email | Webchat |
+| --- | --- | --- | --- | --- | --- | --- |
+| Inbound native coordinate parsing | No | Yes | Yes | Yes | No | No |
+| Canonical representation | N/A | `application/vnd.nexus.location+json` message part | `application/vnd.nexus.location+json` message part | `application/vnd.nexus.location+json` message part | N/A | N/A |
+| ACP prompt fallback | N/A | Text summary with coordinates and maps link | Text summary with coordinates and maps link | Text summary with coordinates and maps link | N/A | N/A |
+| Native outbound location send | No | Raw channel payload can call `sendLocation` | Raw channel payload can use WhatsApp Cloud `location` payload | No | No | No |
 
 ## Await / Approval Matrix
 

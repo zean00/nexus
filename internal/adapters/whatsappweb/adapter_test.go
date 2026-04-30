@@ -83,6 +83,37 @@ func TestParseInboundBatchMessage(t *testing.T) {
 	}
 }
 
+func TestParseInboundBatchLocationMessage(t *testing.T) {
+	adapter := New("http://waha.example", "", "default", "", "secret", "https://nexus.example")
+	body := []byte(`{
+		"id":"evt_location",
+		"event":"message",
+		"session":"default",
+		"payload":{
+			"id":"msg_location",
+			"timestamp":1710000000,
+			"from":"628123456789@c.us",
+			"location":{
+				"latitude":-6.2,
+				"longitude":106.816666,
+				"name":"Jakarta",
+				"address":"Central Jakarta"
+			}
+		}
+	}`)
+	events, err := adapter.ParseInboundBatch(context.Background(), httptest.NewRequest(http.MethodPost, "/webhooks/whatsapp-web", nil), body, "tenant_default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	locations := domain.ExtractLocations(events[0].Message)
+	if len(locations) != 1 || locations[0].Name != "Jakarta" || locations[0].Address != "Central Jakarta" {
+		t.Fatalf("unexpected location parts %+v in message %+v", locations, events[0].Message)
+	}
+	if !strings.Contains(events[0].Message.Text, "https://maps.google.com") {
+		t.Fatalf("expected text fallback with maps link, got %q", events[0].Message.Text)
+	}
+}
+
 func TestHydrateInboundArtifactsDownloadsMedia(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "image-body")

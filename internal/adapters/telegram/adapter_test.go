@@ -70,6 +70,35 @@ func TestParseInboundDocumentMessageIncludesArtifact(t *testing.T) {
 	}
 }
 
+func TestParseInboundLocationMessageIncludesLocationPart(t *testing.T) {
+	adapter := New("token", "")
+	body := []byte(`{
+		"update_id": 124,
+		"message": {
+			"message_id": 78,
+			"date": 1710000000,
+			"chat": {"id": 12345, "type": "private"},
+			"from": {"id": 999},
+			"venue": {
+				"location": {"latitude": -6.2, "longitude": 106.816666},
+				"title": "Jakarta",
+				"address": "Central Jakarta"
+			}
+		}
+	}`)
+	evt, err := adapter.ParseInbound(context.Background(), nil, body, "tenant_default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	locations := domain.ExtractLocations(evt.Message)
+	if len(locations) != 1 || locations[0].Name != "Jakarta" || locations[0].Address != "Central Jakarta" {
+		t.Fatalf("unexpected location parts %+v in message %+v", locations, evt.Message)
+	}
+	if !strings.Contains(evt.Message.Text, "https://maps.google.com") {
+		t.Fatalf("expected text fallback with maps link, got %q", evt.Message.Text)
+	}
+}
+
 func TestHydrateInboundArtifactsDownloadsTelegramFile(t *testing.T) {
 	var serverURL string
 	adapter := New("token", "")

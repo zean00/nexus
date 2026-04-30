@@ -101,8 +101,27 @@ Current state by area:
 - inbound artifacts: webchat, Slack, Telegram, WhatsApp, WhatsApp Web, email
 - outbound artifact delivery: Slack, Telegram, WhatsApp, WhatsApp Web, email, webchat
 - webchat rendering: inline image/audio/video, file rows for other artifact types
-
 Artifact support is broad, but it is not uniform. The exact behavior depends on both the channel and the ACP bridge in use.
+
+## Location Handling
+
+Nexus supports inbound coordinate normalization for channels that expose native
+location payloads.
+
+Implemented location features:
+
+- Telegram `location` and `venue` payloads become canonical location message parts
+- official WhatsApp Cloud `location` payloads become canonical location message parts
+- WhatsApp Web/WAHA `location` payloads become canonical location message parts
+- canonical location parts use `application/vnd.nexus.location+json`
+- when no user-entered text is present, Nexus adds a text fallback with coordinates and a maps link
+- ACP prompt builders render location parts as readable text instead of raw JSON
+
+Current limits:
+
+- Slack, email, and webchat do not currently parse native coordinate payloads
+- generic rendered assistant output does not automatically become a native outbound location send
+- Telegram and official WhatsApp can still send native outbound locations through raw channel payloads
 
 ## Webchat
 

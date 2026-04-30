@@ -42,6 +42,7 @@ If you are new to the project, start with:
 - ACP routing and compatibility validation
 - await/resume handling across channels
 - artifact ingest, persistence, and outbound delivery
+- inbound location normalization for Telegram, WhatsApp, and WhatsApp Web
 - webchat UI with SSE updates and configurable interaction visibility
 - admin and runtime inspection endpoints
 - reconciler and retention background jobs
