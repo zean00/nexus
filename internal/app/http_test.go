@@ -3092,6 +3092,58 @@ func TestHandlePushOutboundStoresWebChatMessage(t *testing.T) {
 	}
 }
 
+func TestHandlePushOutboundPreservesNestedArtifactMetadata(t *testing.T) {
+	repo := &appRepoStub{
+		sessions: map[string]domain.Session{
+			"session_webchat_1": {
+				ID:              "session_webchat_1",
+				TenantID:        "tenant_default",
+				OwnerUserID:     "user1@example.com",
+				ChannelType:     "webchat",
+				ChannelScopeKey: "websess_1:session_webchat_1",
+				State:           "open",
+			},
+		},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+		"payload":{
+			"outbound_intent_id":"intent_webchat_1",
+			"customer_id":"tenant_default",
+			"session_id":"session_webchat_1",
+			"payload":{
+				"text":"report ready",
+				"artifacts":[{
+					"id":"artifact_1",
+					"name":"report.pdf",
+					"mime_type":"application/pdf",
+					"size_bytes":12345,
+					"sha256":"abc123",
+					"storage_uri":"file:///tmp/report.pdf"
+				}]
+			}
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutbound(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.storedArtifacts) != 1 {
+		t.Fatalf("expected one stored artifact, got %+v", repo.storedArtifacts)
+	}
+	artifact := repo.storedArtifacts[0]
+	if artifact.SizeBytes != 12345 || artifact.SHA256 != "abc123" {
+		t.Fatalf("expected nested artifact metadata to be preserved, got %+v", artifact)
+	}
+	if len(repo.outboundMessages) != 1 || !strings.Contains(string(repo.outboundMessages[0].RawPayload), `"sha256":"abc123"`) {
+		t.Fatalf("expected raw webchat payload to include nested artifact metadata, got %+v", repo.outboundMessages)
+	}
+}
+
 func TestHandleListACPAgents(t *testing.T) {
 	app := &App{
 		Config: config.Config{DefaultTenantID: "tenant_default", DefaultACPAgentName: "agent_a"},

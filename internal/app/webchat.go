@@ -1353,13 +1353,15 @@ func buildWebChatItems(detail domain.SessionDetail, activeSessionID string) []do
 				role = "assistant"
 			}
 		}
+		artifacts := mergeWebChatArtifacts(msg.Artifacts, artifactByMessage[msg.MessageID])
 		items = append(items, domain.WebChatItem{
 			ID:        msg.MessageID,
 			Type:      "message",
 			Role:      role,
 			Text:      msg.Text,
 			Partial:   webChatMessagePartial(msg),
-			Artifacts: artifactByMessage[msg.MessageID],
+			Artifacts: artifacts,
+			CreatedAt: msg.CreatedAt,
 			Meta:      webChatItemMeta(msg.SessionID, msg.ChannelType, activeSessionID),
 		})
 	}
@@ -1394,6 +1396,36 @@ func buildWebChatItems(detail domain.SessionDetail, activeSessionID string) []do
 		})
 	}
 	return items
+}
+
+func mergeWebChatArtifacts(groups ...[]domain.Artifact) []domain.Artifact {
+	var out []domain.Artifact
+	seen := map[string]struct{}{}
+	for _, artifacts := range groups {
+		for _, artifact := range artifacts {
+			key := webChatArtifactDedupeKey(artifact)
+			if key != "" {
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+			}
+			out = append(out, artifact)
+		}
+	}
+	return out
+}
+
+func webChatArtifactDedupeKey(artifact domain.Artifact) string {
+	for _, value := range []string{artifact.ID, artifact.StorageURI, artifact.SourceURL, artifact.SHA256} {
+		if clean := strings.TrimSpace(value); clean != "" {
+			return clean
+		}
+	}
+	if artifact.Name != "" || artifact.MIMEType != "" || artifact.SizeBytes > 0 {
+		return strings.TrimSpace(artifact.Name) + "|" + strings.TrimSpace(artifact.MIMEType) + "|" + strconv.FormatInt(artifact.SizeBytes, 10)
+	}
+	return ""
 }
 
 func webChatItemMeta(sessionID, channelType, activeSessionID string) map[string]string {

@@ -826,6 +826,18 @@ func restoreNormalizedMessage(fallback domain.Message) domain.Message {
 	if len(fallback.RawPayload) == 0 {
 		return fallback
 	}
+	var direct struct {
+		Text      string            `json:"text"`
+		Artifacts []domain.Artifact `json:"artifacts"`
+	}
+	if err := json.Unmarshal(fallback.RawPayload, &direct); err == nil {
+		if strings.TrimSpace(direct.Text) != "" {
+			fallback.Text = direct.Text
+		}
+		if len(direct.Artifacts) > 0 {
+			fallback.Artifacts = direct.Artifacts
+		}
+	}
 	var envelope storedMessagePayload
 	if err := json.Unmarshal(fallback.RawPayload, &envelope); err != nil || envelope.NexusMessage == nil {
 		return fallback
@@ -838,6 +850,7 @@ func restoreNormalizedMessage(fallback domain.Message) domain.Message {
 	message.Direction = firstNonEmptyDB(message.Direction, fallback.Direction)
 	message.MessageType = firstNonEmptyDB(message.MessageType, fallback.MessageType)
 	message.Text = firstNonEmptyDB(message.Text, fallback.Text)
+	message.CreatedAt = fallback.CreatedAt
 	message.RawPayload = fallback.RawPayload
 	if len(envelope.ProviderPayload) > 0 {
 		message.RawPayload = []byte(envelope.ProviderPayload)
@@ -1275,6 +1288,7 @@ func (r *PostgresRepository) ListMessages(ctx context.Context, query domain.Mess
 		if err := rows.Scan(&msg.MessageID, &msg.SessionID, &msg.ChannelType, &msg.Text, &msg.Role, &msg.Direction, &msg.RawPayload, &createdAt); err != nil {
 			return domain.PagedResult[domain.Message]{}, err
 		}
+		msg.CreatedAt = createdAt
 		msg.MessageType = msg.Role
 		msg.Parts = []domain.Part{{ContentType: "text/plain", Content: msg.Text}}
 		msg = restoreNormalizedMessage(msg)
@@ -2286,7 +2300,7 @@ func (r *PostgresRepository) ListStaleRuns(ctx context.Context, before time.Time
 	rows, err := r.query(ctx, `
 		select id, session_id, agent_name, acp_run_id, status, started_at, last_event_at
 		from runs
-		where status in ('starting','running','awaiting') and last_event_at < $1
+		where status in ('queued','starting','running','awaiting') and last_event_at < $1
 		order by last_event_at asc
 		limit $2
 	`, before, normalizeLimit(limit))

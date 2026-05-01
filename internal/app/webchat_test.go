@@ -951,6 +951,35 @@ func TestBuildWebChatItemsMarksPartialAssistantMessages(t *testing.T) {
 	}
 }
 
+func TestBuildWebChatItemsDeduplicatesPayloadAndPersistedArtifacts(t *testing.T) {
+	artifact := domain.Artifact{
+		ID:         "artifact_1",
+		MessageID:  "msg_1",
+		Name:       "report.txt",
+		MIMEType:   "text/plain",
+		SizeBytes:  42,
+		SHA256:     "sha256_1",
+		StorageURI: "file:///tmp/report.txt",
+	}
+	items := buildWebChatItems(domain.SessionDetail{
+		Messages: []domain.Message{{
+			MessageID: "msg_1",
+			SessionID: "session_web",
+			Direction: "outbound",
+			Role:      "assistant",
+			Text:      "see attached",
+			Artifacts: []domain.Artifact{artifact},
+		}},
+		Artifacts: []domain.Artifact{artifact},
+	}, "session_web")
+	if len(items) != 1 {
+		t.Fatalf("expected one item, got %+v", items)
+	}
+	if len(items[0].Artifacts) != 1 {
+		t.Fatalf("expected duplicate artifacts to be collapsed, got %+v", items[0].Artifacts)
+	}
+}
+
 func TestLoadWebChatStateLinkedChannelsIncludesExternalMessagesReadOnly(t *testing.T) {
 	authSession := domain.WebAuthSession{
 		ID:        "websess_1",

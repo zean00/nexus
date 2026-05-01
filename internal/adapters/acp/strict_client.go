@@ -214,12 +214,20 @@ func (c StrictClient) GetRun(ctx context.Context, acpRunID string) (domain.RunSt
 	return c.mapSnapshot(response)
 }
 
+func (c StrictClient) GetRunForSession(ctx context.Context, session domain.Session, acpRunID string) (domain.RunStatusSnapshot, error) {
+	var response strictRun
+	if err := c.getJSON(ctx, "/runs/"+url.PathEscape(acpRunID), nil, &response, sessionHeaders(session, "", "run_"+acpRunID)); err != nil {
+		return domain.RunStatusSnapshot{}, err
+	}
+	return c.mapSnapshot(response)
+}
+
 func (c StrictClient) FindRunByIdempotencyKey(ctx context.Context, session domain.Session, idempotencyKey string) (domain.RunStatusSnapshot, bool, error) {
 	if session.ACPSessionID == "" || strings.TrimSpace(idempotencyKey) == "" {
 		return domain.RunStatusSnapshot{}, false, nil
 	}
 	var runs []strictRun
-	if err := c.getJSON(ctx, "/sessions/"+url.PathEscape(session.ACPSessionID)+"/runs", map[string]string{"limit": "50"}, &runs); err != nil {
+	if err := c.getJSON(ctx, "/sessions/"+url.PathEscape(session.ACPSessionID)+"/runs", map[string]string{"limit": "50"}, &runs, sessionHeaders(session, idempotencyKey, "")); err != nil {
 		return domain.RunStatusSnapshot{}, false, err
 	}
 	for _, run := range runs {
@@ -242,7 +250,7 @@ func (c StrictClient) FindLatestRunForSession(ctx context.Context, session domai
 		return domain.RunStatusSnapshot{}, false, nil
 	}
 	var runs []strictRun
-	if err := c.getJSON(ctx, "/sessions/"+url.PathEscape(session.ACPSessionID)+"/runs", map[string]string{"limit": "20"}, &runs); err != nil {
+	if err := c.getJSON(ctx, "/sessions/"+url.PathEscape(session.ACPSessionID)+"/runs", map[string]string{"limit": "20"}, &runs, sessionHeaders(session, "", "")); err != nil {
 		return domain.RunStatusSnapshot{}, false, err
 	}
 	if len(runs) == 0 {
@@ -325,10 +333,17 @@ func mapStrictArtifacts(in []strictAsset) []domain.Artifact {
 	return out
 }
 
-func (c StrictClient) getJSON(ctx context.Context, path string, query map[string]string, out any) error {
+func (c StrictClient) getJSON(ctx context.Context, path string, query map[string]string, out any, headers ...map[string]string) error {
 	req, err := c.newRequest(ctx, http.MethodGet, path, query, nil)
 	if err != nil {
 		return err
+	}
+	for _, headerSet := range headers {
+		for key, value := range headerSet {
+			if strings.TrimSpace(value) != "" {
+				req.Header.Set(key, value)
+			}
+		}
 	}
 	return c.do(req, out)
 }

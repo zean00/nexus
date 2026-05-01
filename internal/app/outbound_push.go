@@ -39,13 +39,15 @@ type outboundPushRequest struct {
 }
 
 type outboundPushArtifact struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	MIMEType   string `json:"mime_type"`
-	SizeBytes  int64  `json:"size_bytes"`
-	SHA256     string `json:"sha256"`
-	StorageURI string `json:"storage_uri"`
-	SourceURL  string `json:"source_url"`
+	ID         string         `json:"id"`
+	Type       string         `json:"type"`
+	Name       string         `json:"name"`
+	MIMEType   string         `json:"mime_type"`
+	SizeBytes  int64          `json:"size_bytes"`
+	SHA256     string         `json:"sha256"`
+	StorageURI string         `json:"storage_uri"`
+	SourceURL  string         `json:"source_url"`
+	Data       map[string]any `json:"data"`
 }
 
 type outboundPushBulkRequest struct {
@@ -348,12 +350,14 @@ func outboundPushArtifacts(in []outboundPushArtifact) []domain.Artifact {
 	for _, item := range in {
 		out = append(out, domain.Artifact{
 			ID:         strings.TrimSpace(item.ID),
+			Type:       strings.TrimSpace(item.Type),
 			Name:       strings.TrimSpace(item.Name),
 			MIMEType:   strings.TrimSpace(item.MIMEType),
 			SizeBytes:  item.SizeBytes,
 			SHA256:     strings.TrimSpace(item.SHA256),
 			StorageURI: strings.TrimSpace(item.StorageURI),
 			SourceURL:  strings.TrimSpace(item.SourceURL),
+			Data:       item.Data,
 		})
 	}
 	return out
@@ -423,6 +427,9 @@ func normalizeOutboundPushRequest(req outboundPushRequest) outboundPushRequest {
 			req.WhatsAppTemplate = template
 		}
 	}
+	if len(req.Artifacts) == 0 {
+		req.Artifacts = artifactsFromMap(req.Payload, "artifacts")
+	}
 	if req.Text == "" {
 		if nested, ok := mapFromMap(req.Payload, "payload"); ok {
 			req.Text = firstNonEmptyString(stringFromMap(nested, "text"), stringFromMap(nested, "message"), stringFromMap(req.Payload, "title"))
@@ -483,4 +490,71 @@ func mapFromMap(values map[string]any, key string) (map[string]any, bool) {
 	}
 	typed, ok := value.(map[string]any)
 	return typed, ok
+}
+
+func mapValueFromMap(values map[string]any, key string) map[string]any {
+	typed, ok := mapFromMap(values, key)
+	if !ok {
+		return nil
+	}
+	return typed
+}
+
+func artifactsFromMap(values map[string]any, key string) []outboundPushArtifact {
+	if values == nil {
+		return nil
+	}
+	raw, ok := values[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]outboundPushArtifact, 0, len(items))
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, outboundPushArtifact{
+			ID:         stringFromMap(m, "id"),
+			Type:       stringFromMap(m, "type"),
+			Name:       stringFromMap(m, "name"),
+			MIMEType:   stringFromMap(m, "mime_type"),
+			SizeBytes:  int64FromMap(m, "size_bytes"),
+			SHA256:     stringFromMap(m, "sha256"),
+			StorageURI: stringFromMap(m, "storage_uri"),
+			SourceURL:  stringFromMap(m, "source_url"),
+			Data:       mapValueFromMap(m, "data"),
+		})
+	}
+	return out
+}
+
+func int64FromMap(values map[string]any, key string) int64 {
+	if values == nil {
+		return 0
+	}
+	value, ok := values[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return int64(typed)
+	case int64:
+		return typed
+	case float64:
+		return int64(typed)
+	case json.Number:
+		n, _ := typed.Int64()
+		return n
+	case string:
+		n, _ := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		return n
+	default:
+		return 0
+	}
 }

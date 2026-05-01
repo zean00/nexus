@@ -40,6 +40,7 @@ type Message struct {
 	Parts       []Part
 	Artifacts   []Artifact
 	RawPayload  []byte
+	CreatedAt   time.Time
 }
 
 type Part struct {
@@ -48,14 +49,16 @@ type Part struct {
 }
 
 type Artifact struct {
-	ID         string
-	MessageID  string
-	Name       string
-	MIMEType   string
-	SizeBytes  int64
-	SHA256     string
-	StorageURI string
-	SourceURL  string
+	ID         string         `json:"id"`
+	Type       string         `json:"type,omitempty"`
+	MessageID  string         `json:"message_id,omitempty"`
+	Name       string         `json:"name,omitempty"`
+	MIMEType   string         `json:"mime_type,omitempty"`
+	SizeBytes  int64          `json:"size_bytes,omitempty"`
+	SHA256     string         `json:"sha256,omitempty"`
+	StorageURI string         `json:"storage_uri,omitempty"`
+	SourceURL  string         `json:"source_url,omitempty"`
+	Data       map[string]any `json:"data,omitempty"`
 }
 
 type Metadata struct {
@@ -274,6 +277,7 @@ type WebChatItem struct {
 	AwaitID   string            `json:"await_id,omitempty"`
 	Choices   []RenderChoice    `json:"choices,omitempty"`
 	Artifacts []Artifact        `json:"artifacts,omitempty"`
+	CreatedAt time.Time         `json:"created_at,omitempty"`
 	Meta      map[string]string `json:"meta,omitempty"`
 }
 
