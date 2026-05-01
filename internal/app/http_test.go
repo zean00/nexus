@@ -118,6 +118,9 @@ type appRepoStub struct {
 	lastAuditQuery        domain.AuditEventListQuery
 	auditQueries          []domain.AuditEventListQuery
 	sessionDetail         domain.SessionDetail
+	lastMessageQuery      domain.MessageListQuery
+	lastArtifactQuery     domain.ArtifactListQuery
+	lastAwaitQuery        domain.AwaitListQuery
 	runDetail             domain.RunDetail
 	awaitDetail           domain.AwaitDetail
 	upsertErr             error
@@ -234,14 +237,16 @@ func (r *appRepoStub) MarkDeliverySent(context.Context, string, domain.DeliveryR
 }
 func (r *appRepoStub) MarkDeliverySending(context.Context, string) error       { return nil }
 func (r *appRepoStub) MarkDeliveryFailed(context.Context, string, error) error { return nil }
-func (r *appRepoStub) ListMessages(context.Context, domain.MessageListQuery) (domain.PagedResult[domain.Message], error) {
-	return domain.PagedResult[domain.Message]{}, nil
+func (r *appRepoStub) ListMessages(_ context.Context, query domain.MessageListQuery) (domain.PagedResult[domain.Message], error) {
+	r.lastMessageQuery = query
+	return domain.PagedResult[domain.Message]{Items: r.sessionDetail.Messages}, nil
 }
 func (r *appRepoStub) CountMessages(context.Context, domain.MessageListQuery) (int, error) {
 	return 1, nil
 }
-func (r *appRepoStub) ListArtifacts(context.Context, domain.ArtifactListQuery) (domain.PagedResult[domain.Artifact], error) {
-	return domain.PagedResult[domain.Artifact]{}, nil
+func (r *appRepoStub) ListArtifacts(_ context.Context, query domain.ArtifactListQuery) (domain.PagedResult[domain.Artifact], error) {
+	r.lastArtifactQuery = query
+	return domain.PagedResult[domain.Artifact]{Items: r.sessionDetail.Artifacts}, nil
 }
 func (r *appRepoStub) CountArtifacts(context.Context, domain.ArtifactListQuery) (int, error) {
 	return 1, nil
@@ -298,8 +303,9 @@ func (r *appRepoStub) CountAwaits(_ context.Context, query domain.AwaitListQuery
 	}
 	return 1, nil
 }
-func (r *appRepoStub) ListAwaits(context.Context, domain.AwaitListQuery) (domain.PagedResult[domain.Await], error) {
-	return domain.PagedResult[domain.Await]{}, nil
+func (r *appRepoStub) ListAwaits(_ context.Context, query domain.AwaitListQuery) (domain.PagedResult[domain.Await], error) {
+	r.lastAwaitQuery = query
+	return domain.PagedResult[domain.Await]{Items: r.sessionDetail.Awaits}, nil
 }
 func (r *appRepoStub) ListAuditEvents(_ context.Context, query domain.AuditEventListQuery) (domain.PagedResult[domain.AuditEvent], error) {
 	r.lastAuditQuery = query

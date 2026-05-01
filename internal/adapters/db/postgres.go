@@ -827,6 +827,7 @@ func restoreNormalizedMessage(fallback domain.Message) domain.Message {
 	message := *envelope.NexusMessage
 	message.MessageID = firstNonEmptyDB(message.MessageID, fallback.MessageID)
 	message.SessionID = firstNonEmptyDB(message.SessionID, fallback.SessionID)
+	message.ChannelType = firstNonEmptyDB(message.ChannelType, fallback.ChannelType)
 	message.Role = firstNonEmptyDB(message.Role, fallback.Role)
 	message.Direction = firstNonEmptyDB(message.Direction, fallback.Direction)
 	message.MessageType = firstNonEmptyDB(message.MessageType, fallback.MessageType)
@@ -1229,34 +1230,31 @@ func (r *PostgresRepository) GetInboundMessage(ctx context.Context, messageID st
 
 func (r *PostgresRepository) ListMessages(ctx context.Context, query domain.MessageListQuery) (domain.PagedResult[domain.Message], error) {
 	limit := normalizeLimit(query.Limit)
-	clauses := []string{"tenant_id=$1"}
+	clauses := []string{"m.tenant_id=$1"}
 	args := []any{query.TenantID}
 	if query.Type != "" {
 		args = append(args, query.Type)
-		clauses = append(clauses, fmt.Sprintf("role=$%d", len(args)))
+		clauses = append(clauses, fmt.Sprintf("m.role=$%d", len(args)))
 	}
 	if query.Contains != "" {
 		args = append(args, "%"+query.Contains+"%")
-		clauses = append(clauses, fmt.Sprintf("text_preview ilike $%d", len(args)))
+		clauses = append(clauses, fmt.Sprintf("m.text_preview ilike $%d", len(args)))
 	}
-	if query.SessionID != "" {
-		args = append(args, query.SessionID)
-		clauses = append(clauses, fmt.Sprintf("session_id=$%d", len(args)))
-	}
+	clauses, args = appendSessionScopeClauses(clauses, args, "m", "s", query.SessionID, query.SessionIDs, query.OwnerUserID, query.ChannelIdentities)
 	cursorTime, cursorID, hasCursor, err := parseCursor(query.After)
 	if err != nil {
 		return domain.PagedResult[domain.Message]{}, err
 	}
 	if hasCursor {
 		args = append(args, cursorTime, cursorID)
-		clauses = append(clauses, fmt.Sprintf("(created_at, id) < ($%d, $%d)", len(args)-1, len(args)))
+		clauses = append(clauses, fmt.Sprintf("(m.created_at, m.id) < ($%d, $%d)", len(args)-1, len(args)))
 	}
 	args = append(args, limit+1)
 	rows, err := r.query(ctx, fmt.Sprintf(`
-		select id, session_id, text_preview, role, direction, raw_payload_json, created_at
-		from messages
+		select m.id, m.session_id, m.channel_type, m.text_preview, m.role, m.direction, m.raw_payload_json, m.created_at
+		from messages m join sessions s on s.id = m.session_id
 		where %s
-		order by created_at desc, id desc
+		order by m.created_at desc, m.id desc
 		limit $%d
 	`, strings.Join(clauses, " and "), len(args)), args...)
 	if err != nil {
@@ -1268,7 +1266,7 @@ func (r *PostgresRepository) ListMessages(ctx context.Context, query domain.Mess
 	for rows.Next() {
 		var msg domain.Message
 		var createdAt time.Time
-		if err := rows.Scan(&msg.MessageID, &msg.SessionID, &msg.Text, &msg.Role, &msg.Direction, &msg.RawPayload, &createdAt); err != nil {
+		if err := rows.Scan(&msg.MessageID, &msg.SessionID, &msg.ChannelType, &msg.Text, &msg.Role, &msg.Direction, &msg.RawPayload, &createdAt); err != nil {
 			return domain.PagedResult[domain.Message]{}, err
 		}
 		msg.MessageType = msg.Role
@@ -1284,24 +1282,50 @@ func (r *PostgresRepository) ListMessages(ctx context.Context, query domain.Mess
 }
 
 func (r *PostgresRepository) CountMessages(ctx context.Context, query domain.MessageListQuery) (int, error) {
-	clauses := []string{"tenant_id=$1"}
+	clauses := []string{"m.tenant_id=$1"}
 	args := []any{query.TenantID}
 	if query.Type != "" {
 		args = append(args, query.Type)
-		clauses = append(clauses, fmt.Sprintf("role=$%d", len(args)))
+		clauses = append(clauses, fmt.Sprintf("m.role=$%d", len(args)))
 	}
 	if query.Contains != "" {
 		args = append(args, "%"+query.Contains+"%")
-		clauses = append(clauses, fmt.Sprintf("text_preview ilike $%d", len(args)))
+		clauses = append(clauses, fmt.Sprintf("m.text_preview ilike $%d", len(args)))
 	}
-	if query.SessionID != "" {
-		args = append(args, query.SessionID)
-		clauses = append(clauses, fmt.Sprintf("session_id=$%d", len(args)))
-	}
-	row := r.queryRow(ctx, `select count(*) from messages where `+strings.Join(clauses, " and "), args...)
+	clauses, args = appendSessionScopeClauses(clauses, args, "m", "s", query.SessionID, query.SessionIDs, query.OwnerUserID, query.ChannelIdentities)
+	row := r.queryRow(ctx, `select count(*) from messages m join sessions s on s.id = m.session_id where `+strings.Join(clauses, " and "), args...)
 	var count int
 	err := row.Scan(&count)
 	return count, err
+}
+
+func appendSessionScopeClauses(clauses []string, args []any, messageAlias, sessionAlias, sessionID string, sessionIDs []string, ownerUserID string, identities []domain.ChannelIdentity) ([]string, []any) {
+	if sessionID != "" {
+		args = append(args, sessionID)
+		clauses = append(clauses, fmt.Sprintf("%s.session_id=$%d", messageAlias, len(args)))
+	}
+	scopeClauses := []string{}
+	if len(sessionIDs) > 0 {
+		args = append(args, sessionIDs)
+		scopeClauses = append(scopeClauses, fmt.Sprintf("%s.session_id = any($%d)", messageAlias, len(args)))
+	}
+	if ownerUserID != "" {
+		args = append(args, ownerUserID)
+		scopeClauses = append(scopeClauses, fmt.Sprintf("%s.owner_user_id=$%d", sessionAlias, len(args)))
+	}
+	for _, identity := range identities {
+		channelType := strings.TrimSpace(identity.ChannelType)
+		channelUserID := strings.TrimSpace(identity.ChannelUserID)
+		if channelType == "" || channelUserID == "" {
+			continue
+		}
+		args = append(args, channelType, channelUserID)
+		scopeClauses = append(scopeClauses, fmt.Sprintf("(%s.channel_type=$%d and %s.owner_user_id=$%d)", sessionAlias, len(args)-1, sessionAlias, len(args)))
+	}
+	if len(scopeClauses) > 0 {
+		clauses = append(clauses, "("+strings.Join(scopeClauses, " or ")+")")
+	}
+	return clauses, args
 }
 
 func (r *PostgresRepository) ListArtifacts(ctx context.Context, query domain.ArtifactListQuery) (domain.PagedResult[domain.Artifact], error) {
@@ -1316,10 +1340,7 @@ func (r *PostgresRepository) ListArtifacts(ctx context.Context, query domain.Art
 		args = append(args, "%"+query.NameContains+"%")
 		clauses = append(clauses, fmt.Sprintf("a.name ilike $%d", len(args)))
 	}
-	if query.SessionID != "" {
-		args = append(args, query.SessionID)
-		clauses = append(clauses, fmt.Sprintf("m.session_id=$%d", len(args)))
-	}
+	clauses, args = appendSessionScopeClauses(clauses, args, "m", "s", query.SessionID, query.SessionIDs, query.OwnerUserID, query.ChannelIdentities)
 	if query.Direction != "" {
 		args = append(args, query.Direction)
 		clauses = append(clauses, fmt.Sprintf("a.direction=$%d", len(args)))
@@ -1341,6 +1362,7 @@ func (r *PostgresRepository) ListArtifacts(ctx context.Context, query domain.Art
 		select a.id, a.message_id, a.name, a.mime_type, a.size_bytes, a.sha256, a.storage_uri, a.created_at
 		from artifacts a
 		join messages m on m.id = a.message_id
+		join sessions s on s.id = m.session_id
 		where %s
 		order by a.created_at desc, a.id desc
 		limit $%d
@@ -1377,10 +1399,7 @@ func (r *PostgresRepository) CountArtifacts(ctx context.Context, query domain.Ar
 		args = append(args, "%"+query.NameContains+"%")
 		clauses = append(clauses, fmt.Sprintf("a.name ilike $%d", len(args)))
 	}
-	if query.SessionID != "" {
-		args = append(args, query.SessionID)
-		clauses = append(clauses, fmt.Sprintf("m.session_id=$%d", len(args)))
-	}
+	clauses, args = appendSessionScopeClauses(clauses, args, "m", "s", query.SessionID, query.SessionIDs, query.OwnerUserID, query.ChannelIdentities)
 	if query.Direction != "" {
 		args = append(args, query.Direction)
 		clauses = append(clauses, fmt.Sprintf("a.direction=$%d", len(args)))
@@ -1389,7 +1408,7 @@ func (r *PostgresRepository) CountArtifacts(ctx context.Context, query domain.Ar
 		args = append(args, query.StoragePrefix+"%")
 		clauses = append(clauses, fmt.Sprintf("a.storage_uri like $%d", len(args)))
 	}
-	row := r.queryRow(ctx, `select count(*) from artifacts a join messages m on m.id = a.message_id where `+strings.Join(clauses, " and "), args...)
+	row := r.queryRow(ctx, `select count(*) from artifacts a join messages m on m.id = a.message_id join sessions s on s.id = m.session_id where `+strings.Join(clauses, " and "), args...)
 	var count int
 	err := row.Scan(&count)
 	return count, err
@@ -1777,6 +1796,7 @@ func (r *PostgresRepository) ListRuns(ctx context.Context, query domain.RunListQ
 		args = append(args, query.SessionID)
 		clauses = append(clauses, fmt.Sprintf("r.session_id=$%d", len(args)))
 	}
+	clauses, args = appendSessionScopeClauses(clauses, args, "r", "s", "", query.SessionIDs, query.OwnerUserID, query.ChannelIdentities)
 	cursorTime, cursorID, hasCursor, err := parseCursor(query.After)
 	if err != nil {
 		return domain.PagedResult[domain.Run]{}, err
@@ -1822,6 +1842,7 @@ func (r *PostgresRepository) CountRuns(ctx context.Context, query domain.RunList
 		args = append(args, query.SessionID)
 		clauses = append(clauses, fmt.Sprintf("r.session_id=$%d", len(args)))
 	}
+	clauses, args = appendSessionScopeClauses(clauses, args, "r", "s", "", query.SessionIDs, query.OwnerUserID, query.ChannelIdentities)
 	row := r.queryRow(ctx, `select count(*) from runs r join sessions s on s.id = r.session_id where `+strings.Join(clauses, " and "), args...)
 	var count int
 	err := row.Scan(&count)
@@ -1839,6 +1860,7 @@ func (r *PostgresRepository) CountAwaits(ctx context.Context, query domain.Await
 		args = append(args, query.SessionID)
 		clauses = append(clauses, fmt.Sprintf("a.session_id=$%d", len(args)))
 	}
+	clauses, args = appendSessionScopeClauses(clauses, args, "a", "s", "", query.SessionIDs, query.OwnerUserID, query.ChannelIdentities)
 	if query.RunID != "" {
 		args = append(args, query.RunID)
 		clauses = append(clauses, fmt.Sprintf("a.run_id=$%d", len(args)))
@@ -1861,6 +1883,7 @@ func (r *PostgresRepository) ListAwaits(ctx context.Context, query domain.AwaitL
 		args = append(args, query.SessionID)
 		clauses = append(clauses, fmt.Sprintf("a.session_id=$%d", len(args)))
 	}
+	clauses, args = appendSessionScopeClauses(clauses, args, "a", "s", "", query.SessionIDs, query.OwnerUserID, query.ChannelIdentities)
 	if query.RunID != "" {
 		args = append(args, query.RunID)
 		clauses = append(clauses, fmt.Sprintf("a.run_id=$%d", len(args)))

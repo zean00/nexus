@@ -88,6 +88,35 @@ func TestLoadWebChatInteractionVisibilityDefault(t *testing.T) {
 	}
 }
 
+func TestLoadWebChatHistoryScopeDefault(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WebChatHistoryScope != "session" {
+		t.Fatalf("expected session history scope by default, got %q", cfg.WebChatHistoryScope)
+	}
+}
+
+func TestLoadWebChatHistoryScopeLinkedChannels(t *testing.T) {
+	t.Setenv("WEBCHAT_HISTORY_SCOPE", "linked_channels")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WebChatHistoryScope != "linked_channels" {
+		t.Fatalf("expected linked_channels scope, got %q", cfg.WebChatHistoryScope)
+	}
+}
+
+func TestLoadRejectsInvalidWebChatHistoryScope(t *testing.T) {
+	t.Setenv("WEBCHAT_HISTORY_SCOPE", "everything")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "WEBCHAT_HISTORY_SCOPE") {
+		t.Fatalf("expected history scope error, got %v", err)
+	}
+}
+
 func TestLoadRejectsInvalidWebChatInteractionVisibility(t *testing.T) {
 	t.Setenv("WEBCHAT_INTERACTION_VISIBILITY", "verbose")
 

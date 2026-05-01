@@ -32,6 +32,7 @@ type Conversation struct {
 type Message struct {
 	MessageID   string
 	SessionID   string
+	ChannelType string
 	MessageType string
 	Text        string
 	Role        string
@@ -369,27 +370,36 @@ type SessionListQuery struct {
 
 type RunListQuery struct {
 	CursorPage
-	TenantID  string
-	Status    string
-	SessionID string
+	TenantID          string
+	Status            string
+	SessionID         string
+	SessionIDs        []string
+	OwnerUserID       string
+	ChannelIdentities []ChannelIdentity
 }
 
 type MessageListQuery struct {
 	CursorPage
-	TenantID  string
-	Type      string
-	Contains  string
-	SessionID string
+	TenantID          string
+	Type              string
+	Contains          string
+	SessionID         string
+	SessionIDs        []string
+	OwnerUserID       string
+	ChannelIdentities []ChannelIdentity
 }
 
 type ArtifactListQuery struct {
 	CursorPage
-	TenantID      string
-	MIMEType      string
-	NameContains  string
-	SessionID     string
-	Direction     string
-	StoragePrefix string
+	TenantID          string
+	MIMEType          string
+	NameContains      string
+	SessionID         string
+	SessionIDs        []string
+	OwnerUserID       string
+	ChannelIdentities []ChannelIdentity
+	Direction         string
+	StoragePrefix     string
 }
 
 type DeliveryListQuery struct {
@@ -404,10 +414,18 @@ type DeliveryListQuery struct {
 
 type AwaitListQuery struct {
 	CursorPage
-	TenantID  string
-	Status    string
-	SessionID string
-	RunID     string
+	TenantID          string
+	Status            string
+	SessionID         string
+	SessionIDs        []string
+	OwnerUserID       string
+	ChannelIdentities []ChannelIdentity
+	RunID             string
+}
+
+type ChannelIdentity struct {
+	ChannelType   string
+	ChannelUserID string
 }
 
 type AuditEventListQuery struct {

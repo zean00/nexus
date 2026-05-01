@@ -183,6 +183,7 @@ Behavior notes:
 | `WEBCHAT_COOKIE_NAME` | `nexus_webchat_session` | Session cookie name | Shared by auth/bootstrap/message endpoints |
 | `WEBCHAT_DEV_AUTH` | `false` | Enables local dev login endpoint | Only works in local development |
 | `WEBCHAT_INTERACTION_VISIBILITY` | `full` | Webchat interaction presentation mode | `full`, `simple`, `minimal`, `off` |
+| `WEBCHAT_HISTORY_SCOPE` | `session` | Webchat timeline query scope | `session`, `user`, `linked_channels` |
 | `WEBCHAT_SESSION_HOURS` | `24` | Webchat auth session TTL | Controls cookie-backed session lifetime |
 | `WEBCHAT_OTP_MINUTES` | `10` | OTP challenge TTL | Email login code expiry |
 
@@ -198,6 +199,18 @@ Supported values:
 | `off` | Hide transient activity signals and partial assistant text until final output appears |
 
 This setting only changes presentation. It does not change the underlying worker, run persistence, or audit behavior.
+
+### `WEBCHAT_HISTORY_SCOPE`
+
+Supported values:
+
+| Mode | Behavior |
+| --- | --- |
+| `session` | Show only the active webchat session history |
+| `user` | Show the active webchat session plus sessions owned by the authenticated webchat user or one of their linked identities |
+| `linked_channels` | Show the active webchat session plus sessions for linked external channel identities |
+
+In `user` and `linked_channels` modes, external-channel items are read-only inside webchat. Sending from webchat still writes to the active webchat session only, while inbound messages and agent responses from linked external sessions can refresh the webchat SSE timeline.
 
 ### `WEBCHAT_DEV_AUTH`
 

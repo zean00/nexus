@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,6 +126,20 @@ func TestNormalizedMessagePayloadRoundTripsLocationParts(t *testing.T) {
 	}
 	if string(restored.RawPayload) != `{"provider":"payload"}` {
 		t.Fatalf("expected original provider raw payload, got %s", restored.RawPayload)
+	}
+}
+
+func TestAppendSessionScopeClausesCombinesSessionIDsAndLinkedIdentitiesWithOr(t *testing.T) {
+	clauses, args := appendSessionScopeClauses([]string{"m.tenant_id=$1"}, []any{"tenant_default"}, "m", "s", "", []string{"session_web"}, "", []domain.ChannelIdentity{{
+		ChannelType:   "whatsapp",
+		ChannelUserID: "15551234567",
+	}})
+	if len(args) != 4 {
+		t.Fatalf("unexpected args: %+v", args)
+	}
+	got := clauses[len(clauses)-1]
+	if !strings.Contains(got, "m.session_id = any($2)") || !strings.Contains(got, " or ") || !strings.Contains(got, "s.channel_type=$3") || !strings.Contains(got, "s.owner_user_id=$4") {
+		t.Fatalf("expected session IDs and linked identities to be OR-scoped, got %q", got)
 	}
 }
 

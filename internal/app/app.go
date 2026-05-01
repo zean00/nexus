@@ -405,7 +405,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 	}
 
-	return &App{
+	app := &App{
 		Config: cfg,
 		Repo:   repo,
 		DB:     repo,
@@ -432,14 +432,13 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		},
 		Catalog: catalog,
 		Worker: services.WorkerService{
-			Repo:                repo,
-			ACP:                 acpClient,
-			Catalog:             catalog,
-			Renderer:            renderers["slack"],
-			Channel:             slackAdapter,
-			Renderers:           renderers,
-			Channels:            channels,
-			NotifySessionUpdate: webchatHub.Notify,
+			Repo:      repo,
+			ACP:       acpClient,
+			Catalog:   catalog,
+			Renderer:  renderers["slack"],
+			Channel:   slackAdapter,
+			Renderers: renderers,
+			Channels:  channels,
 		},
 		Reconciler: services.Reconciler{
 			Repo: repo,
@@ -466,7 +465,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		Channels:           channels,
 		Runtime:            runtime,
 		WebChatHub:         webchatHub,
-	}, nil
+	}
+	app.Worker.NotifySessionUpdate = app.notifyWebChatSessionUpdate
+	return app, nil
 }
 
 func (a *App) Close() {

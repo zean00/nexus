@@ -68,6 +68,7 @@ type Config struct {
 	WebChatCookieName                     string
 	WebChatDevAuth                        bool
 	WebChatInteractionVisibility          string
+	WebChatHistoryScope                   string
 	WebChatSessionHours                   int
 	WebChatOTPMinutes                     int
 	IdentityLinkMinutes                   int
@@ -161,6 +162,7 @@ func Load() (Config, error) {
 		WebChatCookieName:                     env("WEBCHAT_COOKIE_NAME", "nexus_webchat_session"),
 		WebChatDevAuth:                        envBool("WEBCHAT_DEV_AUTH", false),
 		WebChatInteractionVisibility:          env("WEBCHAT_INTERACTION_VISIBILITY", "full"),
+		WebChatHistoryScope:                   env("WEBCHAT_HISTORY_SCOPE", "session"),
 		IdentityLinkMinutes:                   mustEnvIntDefault("IDENTITY_LINK_MINUTES", 10),
 		StepUpOTPMinutes:                      mustEnvIntDefault("STEP_UP_OTP_MINUTES", 10),
 		StepUpWindowMinutes:                   mustEnvIntDefault("STEP_UP_WINDOW_MINUTES", 15),
@@ -358,6 +360,11 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.WebChatInteractionVisibility = mode
+	scope, err := NormalizeWebChatHistoryScope(cfg.WebChatHistoryScope)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.WebChatHistoryScope = scope
 	return cfg, nil
 }
 
@@ -370,6 +377,18 @@ func NormalizeWebChatInteractionVisibility(value string) (string, error) {
 		return mode, nil
 	default:
 		return "", fmt.Errorf("invalid WEBCHAT_INTERACTION_VISIBILITY %q", value)
+	}
+}
+
+func NormalizeWebChatHistoryScope(value string) (string, error) {
+	scope := strings.ToLower(strings.TrimSpace(value))
+	switch scope {
+	case "", "session":
+		return "session", nil
+	case "user", "linked_channels":
+		return scope, nil
+	default:
+		return "", fmt.Errorf("invalid WEBCHAT_HISTORY_SCOPE %q", value)
 	}
 }
 

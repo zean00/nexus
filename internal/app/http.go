@@ -186,7 +186,10 @@ func (a *App) processBatchChannelEvent(ctx context.Context, adapter ports.Channe
 	if evt.Interaction == "challenge" {
 		return nil
 	}
-	_, err := a.Inbound.Handle(ctx, evt)
+	result, err := a.Inbound.Handle(ctx, evt)
+	if err == nil {
+		a.notifyWebChatSessionUpdate(result.SessionID)
+	}
 	return err
 }
 

@@ -856,6 +856,20 @@ func TestWebChatSessionHubNotifiesSubscribers(t *testing.T) {
 	}
 }
 
+func TestWebChatSessionHubNotifiesUserSubscribers(t *testing.T) {
+	hub := NewWebChatSessionHub()
+	sub := hub.SubscribeUser("tenant_default", "user_1")
+	defer hub.UnsubscribeUser("tenant_default", "user_1", sub)
+
+	hub.NotifyUser("tenant_default", "user_1")
+
+	select {
+	case <-sub:
+	case <-time.After(time.Second):
+		t.Fatal("expected user hub notification")
+	}
+}
+
 func TestWebChatMessageNotifiesSessionSubscribers(t *testing.T) {
 	auth := &webAuthStub{
 		sessions: map[string]domain.WebAuthSession{
@@ -931,9 +945,118 @@ func TestBuildWebChatItemsMarksPartialAssistantMessages(t *testing.T) {
 		Messages: []domain.Message{
 			{MessageID: "msg_partial", Direction: "outbound", Role: "assistant", Text: "hel", RawPayload: []byte(`{"is_partial":true}`)},
 		},
-	})
+	}, "session_web")
 	if len(items) != 1 || !items[0].Partial {
 		t.Fatalf("expected one partial item, got %+v", items)
+	}
+}
+
+func TestLoadWebChatStateLinkedChannelsIncludesExternalMessagesReadOnly(t *testing.T) {
+	authSession := domain.WebAuthSession{
+		ID:        "websess_1",
+		TenantID:  "tenant_default",
+		Email:     "user@example.com",
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	identity := &identityStub{}
+	user, err := identity.EnsureUserByEmail(context.Background(), "tenant_default", authSession.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.UpsertLinkedIdentity(context.Background(), domain.LinkedIdentity{
+		TenantID:      "tenant_default",
+		UserID:        user.ID,
+		ChannelType:   "whatsapp",
+		ChannelUserID: "15551234567",
+		Status:        "linked",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.UpsertLinkedIdentity(context.Background(), domain.LinkedIdentity{
+		TenantID:      "tenant_default",
+		UserID:        user.ID,
+		ChannelType:   "webchat",
+		ChannelUserID: authSession.Email,
+		Status:        "linked",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repo := &webchatRepoStub{
+		session: domain.Session{ID: "session_webchat_1", TenantID: "tenant_default", OwnerUserID: authSession.Email, ChannelType: "webchat", ChannelScopeKey: "websess_1:session_webchat_1", State: "open"},
+	}
+	repo.sessionDetail = domain.SessionDetail{
+		Messages: []domain.Message{
+			{MessageID: "msg_wa_1", SessionID: "session_wa_1", ChannelType: "whatsapp", Direction: "inbound", Role: "user", Text: "from whatsapp"},
+			{MessageID: "msg_web_1", SessionID: "session_webchat_1", ChannelType: "webchat", Direction: "inbound", Role: "user", Text: "from webchat"},
+		},
+	}
+	app := &App{
+		Config:   config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_profile_default", WebChatHistoryScope: "linked_channels"},
+		Repo:     repo,
+		Identity: identity,
+	}
+	_, items, err := app.loadWebChatState(context.Background(), authSession, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected two timeline items, got %+v", items)
+	}
+	var external domain.WebChatItem
+	for _, item := range items {
+		if item.ID == "msg_wa_1" {
+			external = item
+		}
+	}
+	if external.Meta["channel_type"] != "whatsapp" || external.Meta["read_only_external"] != "true" {
+		t.Fatalf("expected read-only whatsapp metadata, got %+v", external.Meta)
+	}
+	if len(repo.lastMessageQuery.SessionIDs) != 1 || repo.lastMessageQuery.SessionIDs[0] != "session_webchat_1" {
+		t.Fatalf("expected current webchat session in query, got %+v", repo.lastMessageQuery)
+	}
+	if len(repo.lastMessageQuery.ChannelIdentities) != 1 || repo.lastMessageQuery.ChannelIdentities[0].ChannelType != "whatsapp" {
+		t.Fatalf("expected linked whatsapp identity in query, got %+v", repo.lastMessageQuery)
+	}
+}
+
+func TestLoadWebChatStateUserScopeIncludesLinkedExternalIdentities(t *testing.T) {
+	authSession := domain.WebAuthSession{
+		ID:        "websess_1",
+		TenantID:  "tenant_default",
+		Email:     "user@example.com",
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	identity := &identityStub{}
+	user, err := identity.EnsureUserByEmail(context.Background(), "tenant_default", authSession.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.UpsertLinkedIdentity(context.Background(), domain.LinkedIdentity{
+		TenantID:      "tenant_default",
+		UserID:        user.ID,
+		ChannelType:   "telegram",
+		ChannelUserID: "12345",
+		Status:        "linked",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repo := &webchatRepoStub{
+		session: domain.Session{ID: "session_webchat_1", TenantID: "tenant_default", OwnerUserID: authSession.Email, ChannelType: "webchat", ChannelScopeKey: "websess_1:session_webchat_1", State: "open"},
+	}
+	app := &App{
+		Config:   config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_profile_default", WebChatHistoryScope: "user"},
+		Repo:     repo,
+		Identity: identity,
+	}
+	_, _, err = app.loadWebChatState(context.Background(), authSession, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.lastMessageQuery.OwnerUserID != user.ID {
+		t.Fatalf("expected canonical user owner filter, got %+v", repo.lastMessageQuery)
+	}
+	if len(repo.lastMessageQuery.ChannelIdentities) != 1 || repo.lastMessageQuery.ChannelIdentities[0].ChannelType != "telegram" {
+		t.Fatalf("expected linked telegram identity in user-scope query, got %+v", repo.lastMessageQuery)
 	}
 }
 

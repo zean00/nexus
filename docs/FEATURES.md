@@ -135,6 +135,7 @@ Implemented features:
 - chat history and SSE updates
 - artifact upload and rendering
 - identity profile and phone management
+- configurable session, user, or linked-channel history scope
 - link-code and unlink flows
 - step-up verification flow
 - configurable interaction visibility modes:

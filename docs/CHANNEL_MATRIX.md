@@ -136,7 +136,10 @@ Strengths:
 Current notes:
 
 - webchat is the most complete UX surface in the repository
+- webchat can optionally show user-scoped or linked-channel history as a read-only external timeline
 - artifacts render inline for image/audio/video and as downloadable rows otherwise
+
+Linked-channel history is a webchat-only read model. It does not merge WhatsApp, Telegram, Slack, or email sessions into the webchat session; webchat-originated messages continue to post only to the active webchat session.
 
 ## Artifact Matrix
 

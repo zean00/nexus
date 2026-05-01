@@ -171,7 +171,7 @@ func (a *App) handleWebChatDevSession(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	activity := buildWebChatActivity(a.Repo, r.Context(), a.Config.DefaultTenantID, session.ID, items)
+	activity := a.buildWebChatActivity(r.Context(), authSession, session, items)
 	user, identities, recentStepUp, err := a.currentWebChatIdentityState(r.Context(), authSession)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -299,7 +299,7 @@ func (a *App) handleWebChatBootstrap(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	activity := buildWebChatActivity(a.Repo, r.Context(), a.Config.DefaultTenantID, session.ID, items)
+	activity := a.buildWebChatActivity(r.Context(), authSession, session, items)
 	user, identities, recentStepUp, err := a.currentWebChatIdentityState(r.Context(), authSession)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -337,7 +337,7 @@ func (a *App) handleWebChatHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.OK(w, map[string]any{
 		"items":           items,
-		"activity":        buildWebChatActivity(a.Repo, r.Context(), a.Config.DefaultTenantID, session.ID, items),
+		"activity":        a.buildWebChatActivity(r.Context(), authSession, session, items),
 		"visibility_mode": a.webChatInteractionVisibilityMode(),
 	}, nil)
 }
@@ -368,6 +368,9 @@ func (a *App) handleWebChatArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	artifact, err := repo.GetArtifactForSession(r.Context(), a.Config.DefaultTenantID, session.ID, artifactID)
+	if errors.Is(err, domain.ErrArtifactNotFound) && a.webChatHistoryScope() != "session" {
+		artifact, err = a.findWebChatScopedArtifact(r.Context(), authSession, session, artifactID)
+	}
 	if err != nil {
 		if errors.Is(err, domain.ErrArtifactNotFound) {
 			http.NotFound(w, r)
@@ -383,6 +386,29 @@ func (a *App) handleWebChatArtifact(w http.ResponseWriter, r *http.Request) {
 	if err := a.serveWebChatArtifact(r.Context(), w, artifact); err != nil {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 	}
+}
+
+func (a *App) findWebChatScopedArtifact(ctx context.Context, authSession domain.WebAuthSession, session domain.Session, artifactID string) (domain.Artifact, error) {
+	filters, err := a.webChatHistoryFilters(ctx, authSession, session)
+	if err != nil {
+		return domain.Artifact{}, err
+	}
+	artifacts, err := a.Repo.ListArtifacts(ctx, domain.ArtifactListQuery{
+		TenantID:          a.Config.DefaultTenantID,
+		SessionIDs:        filters.SessionIDs,
+		OwnerUserID:       filters.OwnerUserID,
+		ChannelIdentities: filters.ChannelIdentities,
+		CursorPage:        domain.CursorPage{Limit: 1000},
+	})
+	if err != nil {
+		return domain.Artifact{}, err
+	}
+	for _, artifact := range artifacts.Items {
+		if artifact.ID == artifactID {
+			return artifact, nil
+		}
+	}
+	return domain.Artifact{}, domain.ErrArtifactNotFound
 }
 
 func (a *App) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
@@ -406,12 +432,22 @@ func (a *App) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	var notifyCh chan struct{}
 	if a.WebChatHub != nil && session.ID != "" {
-		notifyCh = a.WebChatHub.Subscribe(session.ID)
-		defer a.WebChatHub.Unsubscribe(session.ID, notifyCh)
+		if a.webChatHistoryScope() == "session" {
+			notifyCh = a.WebChatHub.Subscribe(session.ID)
+			defer a.WebChatHub.Unsubscribe(session.ID, notifyCh)
+		} else {
+			filters, err := a.webChatHistoryFilters(r.Context(), authSession, session)
+			if err != nil {
+				httpx.Error(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			notifyCh = a.WebChatHub.SubscribeUser(a.Config.DefaultTenantID, filters.UserID)
+			defer a.WebChatHub.UnsubscribeUser(a.Config.DefaultTenantID, filters.UserID, notifyCh)
+		}
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"items":           items,
-		"activity":        buildWebChatActivity(a.Repo, r.Context(), a.Config.DefaultTenantID, session.ID, items),
+		"activity":        a.buildWebChatActivity(r.Context(), authSession, session, items),
 		"visibility_mode": a.webChatInteractionVisibilityMode(),
 	})
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
@@ -432,13 +468,13 @@ func (a *App) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 			continue
 		}
-		_, items, err = a.loadWebChatState(r.Context(), authSession, 100)
+		session, items, err = a.loadWebChatState(r.Context(), authSession, 100)
 		if err != nil {
 			return
 		}
 		payload, _ = json.Marshal(map[string]any{
 			"items":           items,
-			"activity":        buildWebChatActivity(a.Repo, r.Context(), a.Config.DefaultTenantID, session.ID, items),
+			"activity":        a.buildWebChatActivity(r.Context(), authSession, session, items),
 			"visibility_mode": a.webChatInteractionVisibilityMode(),
 		})
 		if string(payload) == last {
@@ -1089,6 +1125,14 @@ func (a *App) webChatInteractionVisibilityMode() string {
 	return mode
 }
 
+func (a *App) webChatHistoryScope() string {
+	scope, err := config.NormalizeWebChatHistoryScope(a.Config.WebChatHistoryScope)
+	if err != nil {
+		return "session"
+	}
+	return scope
+}
+
 func (a *App) validateWebChatCSRF(r *http.Request, sessionID string) error {
 	if a.WebAuth == nil {
 		return domain.ErrWebAuthSessionNotFound
@@ -1112,11 +1156,136 @@ func (a *App) loadWebChatState(ctx context.Context, authSession domain.WebAuthSe
 	if err != nil {
 		return domain.Session{}, nil, err
 	}
-	detail, err := a.Repo.GetSessionDetail(ctx, session.ID, limit)
+	if a.webChatHistoryScope() == "session" {
+		detail, err := a.Repo.GetSessionDetail(ctx, session.ID, limit)
+		if err != nil {
+			return domain.Session{}, nil, err
+		}
+		return session, buildWebChatItems(detail, session.ID), nil
+	}
+	filters, err := a.webChatHistoryFilters(ctx, authSession, session)
 	if err != nil {
 		return domain.Session{}, nil, err
 	}
-	return session, buildWebChatItems(detail), nil
+	messages, err := a.Repo.ListMessages(ctx, domain.MessageListQuery{
+		TenantID:          a.Config.DefaultTenantID,
+		SessionIDs:        filters.SessionIDs,
+		OwnerUserID:       filters.OwnerUserID,
+		ChannelIdentities: filters.ChannelIdentities,
+		CursorPage:        domain.CursorPage{Limit: limit},
+	})
+	if err != nil {
+		return domain.Session{}, nil, err
+	}
+	artifacts, err := a.Repo.ListArtifacts(ctx, domain.ArtifactListQuery{
+		TenantID:          a.Config.DefaultTenantID,
+		SessionIDs:        filters.SessionIDs,
+		OwnerUserID:       filters.OwnerUserID,
+		ChannelIdentities: filters.ChannelIdentities,
+		CursorPage:        domain.CursorPage{Limit: limit},
+	})
+	if err != nil {
+		return domain.Session{}, nil, err
+	}
+	awaits, err := a.Repo.ListAwaits(ctx, domain.AwaitListQuery{
+		TenantID:          a.Config.DefaultTenantID,
+		Status:            "pending",
+		SessionIDs:        filters.SessionIDs,
+		OwnerUserID:       filters.OwnerUserID,
+		ChannelIdentities: filters.ChannelIdentities,
+		CursorPage:        domain.CursorPage{Limit: limit},
+	})
+	if err != nil {
+		return domain.Session{}, nil, err
+	}
+	return session, buildWebChatItems(domain.SessionDetail{
+		Session:   session,
+		Messages:  messages.Items,
+		Artifacts: artifacts.Items,
+		Awaits:    awaits.Items,
+	}, session.ID), nil
+}
+
+func (a *App) notifyWebChatSessionUpdate(sessionID string) {
+	if a.WebChatHub == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	a.WebChatHub.Notify(sessionID)
+	session, err := a.Repo.GetSession(context.Background(), sessionID)
+	if err != nil {
+		return
+	}
+	if session.ChannelType == "webchat" {
+		userID := strings.TrimSpace(session.OwnerUserID)
+		if a.Identity != nil {
+			if user, err := a.Identity.GetUserByEmail(context.Background(), session.TenantID, session.OwnerUserID); err == nil && strings.TrimSpace(user.ID) != "" {
+				userID = user.ID
+			}
+		}
+		a.WebChatHub.NotifyUser(session.TenantID, userID)
+		return
+	}
+	if a.Identity == nil {
+		return
+	}
+	identity, err := a.Identity.GetLinkedIdentity(context.Background(), session.TenantID, session.ChannelType, session.OwnerUserID)
+	if err != nil {
+		return
+	}
+	a.WebChatHub.NotifyUser(session.TenantID, identity.UserID)
+}
+
+type webChatHistoryFilters struct {
+	SessionIDs        []string
+	OwnerUserID       string
+	ChannelIdentities []domain.ChannelIdentity
+	UserID            string
+}
+
+func (a *App) webChatHistoryFilters(ctx context.Context, authSession domain.WebAuthSession, session domain.Session) (webChatHistoryFilters, error) {
+	filters := webChatHistoryFilters{SessionIDs: []string{session.ID}}
+	if a.webChatHistoryScope() == "session" {
+		return filters, nil
+	}
+	userID := strings.TrimSpace(authSession.Email)
+	if a.Identity != nil {
+		user, err := a.Identity.EnsureUserByEmail(ctx, a.Config.DefaultTenantID, authSession.Email)
+		if err != nil {
+			return filters, err
+		}
+		if strings.TrimSpace(user.ID) != "" {
+			userID = user.ID
+		}
+	}
+	filters.UserID = userID
+	if a.webChatHistoryScope() == "user" {
+		filters.OwnerUserID = userID
+	}
+	if a.Identity == nil {
+		return filters, nil
+	}
+	identities, err := a.Identity.ListLinkedIdentitiesForUser(ctx, a.Config.DefaultTenantID, userID)
+	if err != nil {
+		return filters, err
+	}
+	for _, identity := range identities {
+		if identity.Status != "" && identity.Status != "linked" {
+			continue
+		}
+		channelType := strings.TrimSpace(identity.ChannelType)
+		channelUserID := strings.TrimSpace(identity.ChannelUserID)
+		if channelType == "" || channelUserID == "" || channelType == "webchat" {
+			continue
+		}
+		filters.ChannelIdentities = append(filters.ChannelIdentities, domain.ChannelIdentity{
+			ChannelType:   channelType,
+			ChannelUserID: channelUserID,
+		})
+	}
+	if a.webChatHistoryScope() == "user" {
+		return filters, nil
+	}
+	return filters, nil
 }
 
 func (a *App) serveWebChatArtifact(ctx context.Context, w http.ResponseWriter, artifact domain.Artifact) error {
@@ -1168,7 +1337,7 @@ func isInlineArtifactMIME(mimeType string) bool {
 		strings.HasPrefix(mimeType, "video/")
 }
 
-func buildWebChatItems(detail domain.SessionDetail) []domain.WebChatItem {
+func buildWebChatItems(detail domain.SessionDetail, activeSessionID string) []domain.WebChatItem {
 	artifactByMessage := map[string][]domain.Artifact{}
 	for _, artifact := range detail.Artifacts {
 		artifactByMessage[artifact.MessageID] = append(artifactByMessage[artifact.MessageID], artifact)
@@ -1191,6 +1360,7 @@ func buildWebChatItems(detail domain.SessionDetail) []domain.WebChatItem {
 			Text:      msg.Text,
 			Partial:   webChatMessagePartial(msg),
 			Artifacts: artifactByMessage[msg.MessageID],
+			Meta:      webChatItemMeta(msg.SessionID, msg.ChannelType, activeSessionID),
 		})
 	}
 	for _, await := range detail.Awaits {
@@ -1207,17 +1377,51 @@ func buildWebChatItems(detail domain.SessionDetail) []domain.WebChatItem {
 		if text == "" {
 			text = "The agent needs your input to continue."
 		}
+		meta := webChatItemMeta(await.SessionID, await.ChannelType, activeSessionID)
+		choices := model.Choices
+		if meta["read_only_external"] == "true" {
+			choices = nil
+		}
 		items = append(items, domain.WebChatItem{
 			ID:      await.ID,
 			Type:    "await",
 			Role:    "assistant",
 			Text:    text,
 			AwaitID: await.ID,
-			Choices: model.Choices,
+			Choices: choices,
 			Status:  await.Status,
+			Meta:    meta,
 		})
 	}
 	return items
+}
+
+func webChatItemMeta(sessionID, channelType, activeSessionID string) map[string]string {
+	meta := map[string]string{}
+	if sessionID != "" {
+		meta["session_id"] = sessionID
+	}
+	if channelType != "" {
+		meta["channel_type"] = channelType
+	}
+	if activeSessionID != "" && sessionID != "" && sessionID != activeSessionID {
+		meta["read_only_external"] = "true"
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
+}
+
+func (a *App) buildWebChatActivity(ctx context.Context, authSession domain.WebAuthSession, session domain.Session, items []domain.WebChatItem) *domain.WebChatActivity {
+	if a.webChatHistoryScope() == "session" {
+		return buildWebChatActivity(a.Repo, ctx, a.Config.DefaultTenantID, session.ID, items)
+	}
+	filters, err := a.webChatHistoryFilters(ctx, authSession, session)
+	if err != nil {
+		return buildWebChatActivity(a.Repo, ctx, a.Config.DefaultTenantID, session.ID, items)
+	}
+	return buildScopedWebChatActivity(a.Repo, ctx, a.Config.DefaultTenantID, filters, items)
 }
 
 func buildWebChatActivity(repo ports.Repository, ctx context.Context, tenantID, sessionID string, items []domain.WebChatItem) *domain.WebChatActivity {
@@ -1244,6 +1448,47 @@ func buildWebChatActivity(repo ports.Repository, ctx context.Context, tenantID, 
 		Status:     "running",
 		CursorPage: domain.CursorPage{Limit: 1},
 	})
+	if err != nil || len(runningRuns.Items) == 0 {
+		return nil
+	}
+	updatedAt := webChatActivityTime(runningRuns.Items[0])
+	for _, item := range items {
+		if item.Type != "message" || item.Role != "assistant" {
+			continue
+		}
+		if item.Partial {
+			return &domain.WebChatActivity{Phase: "typing", UpdatedAt: updatedAt}
+		}
+		break
+	}
+	return &domain.WebChatActivity{Phase: "working", UpdatedAt: updatedAt}
+}
+
+func buildScopedWebChatActivity(repo ports.Repository, ctx context.Context, tenantID string, filters webChatHistoryFilters, items []domain.WebChatItem) *domain.WebChatActivity {
+	if tenantID == "" {
+		return nil
+	}
+	for _, item := range items {
+		if item.Type == "await" && item.Status == "pending" && item.Meta["read_only_external"] != "true" {
+			return nil
+		}
+	}
+	base := domain.RunListQuery{
+		TenantID:          tenantID,
+		SessionIDs:        filters.SessionIDs,
+		OwnerUserID:       filters.OwnerUserID,
+		ChannelIdentities: filters.ChannelIdentities,
+		CursorPage:        domain.CursorPage{Limit: 1},
+	}
+	starting := base
+	starting.Status = "starting"
+	startingRuns, err := repo.ListRuns(ctx, starting)
+	if err == nil && len(startingRuns.Items) > 0 {
+		return &domain.WebChatActivity{Phase: "thinking", UpdatedAt: webChatActivityTime(startingRuns.Items[0])}
+	}
+	running := base
+	running.Status = "running"
+	runningRuns, err := repo.ListRuns(ctx, running)
 	if err != nil || len(runningRuns.Items) == 0 {
 		return nil
 	}
