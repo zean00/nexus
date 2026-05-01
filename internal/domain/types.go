@@ -315,6 +315,12 @@ type StartRunRequest struct {
 	IdempotencyKey string
 }
 
+type SessionGreetingOptions struct {
+	SendGreeting     bool
+	GreetingChannels []string
+	Nickname         string
+}
+
 type RunEvent struct {
 	RunID       string
 	MessageKey  string

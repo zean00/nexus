@@ -389,6 +389,57 @@ func TestWebChatDevSessionCreatesSessionCookieAndCSRF(t *testing.T) {
 	}
 }
 
+type greetingTestACP struct {
+	testACPBridge
+	session domain.Session
+	options domain.SessionGreetingOptions
+}
+
+func (b *greetingTestACP) EnsureSessionWithGreeting(_ context.Context, session domain.Session, options domain.SessionGreetingOptions) (map[string]any, error) {
+	b.session = session
+	b.options = options
+	return map[string]any{"session_id": session.ID, "greeting_run_id": "run_greeting_1", "greeting_state": "queued"}, nil
+}
+
+func TestAdminWebChatSessionCanRequestGreeting(t *testing.T) {
+	acp := &greetingTestACP{}
+	app := &App{
+		Config: config.Config{
+			DefaultTenantID:       "tenant_default",
+			DefaultAgentProfileID: "agent_profile_default",
+			WebChatCookieName:     "nexus_webchat_session",
+			WebChatSessionHours:   24,
+		},
+		WebAuth:  &webAuthStub{},
+		Identity: &identityStub{},
+		Repo:     &webchatRepoStub{},
+		ACP:      acp,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/webchat/sessions", strings.NewReader(`{"email":"user@example.com","session_id":"websess_1","send_greeting":true,"greeting_channels":["webchat"],"nickname":"Sahal"}`))
+	rec := httptest.NewRecorder()
+
+	app.handleAdminWebChatSession(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data["session_id"] != "websess_1" || body.Data["acp_session_id"] != "session_webchat_1" || body.Data["greeting_run_id"] != "run_greeting_1" {
+		t.Fatalf("unexpected response %#v", body.Data)
+	}
+	if !acp.options.SendGreeting || acp.options.Nickname != "Sahal" || len(acp.options.GreetingChannels) != 1 || acp.options.GreetingChannels[0] != "webchat" {
+		t.Fatalf("unexpected greeting options %#v", acp.options)
+	}
+	if acp.session.ID != "session_webchat_1" || acp.session.ChannelType != "webchat" {
+		t.Fatalf("unexpected resolved session %#v", acp.session)
+	}
+}
+
 func TestWebChatArtifactRequiresAuth(t *testing.T) {
 	app := &App{
 		Config: config.Config{

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -19,10 +20,13 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		Email               string `json:"email"`
-		SessionID           string `json:"session_id"`
-		LinkedChannelType   string `json:"linked_channel_type"`
-		LinkedChannelUserID string `json:"linked_channel_user_id"`
+		Email               string   `json:"email"`
+		SessionID           string   `json:"session_id"`
+		LinkedChannelType   string   `json:"linked_channel_type"`
+		LinkedChannelUserID string   `json:"linked_channel_user_id"`
+		SendGreeting        bool     `json:"send_greeting"`
+		GreetingChannels    []string `json:"greeting_channels"`
+		Nickname            string   `json:"nickname"`
 	}
 	if !decodeJSONBody(w, r, &body) {
 		return
@@ -77,12 +81,49 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	httpx.OK(w, map[string]any{
+	out := map[string]any{
 		"session_id":  session.ID,
 		"expires_at":  session.ExpiresAt,
 		"cookie_name": a.Config.WebChatCookieName,
 		"user_id":     user.ID,
-	}, nil)
+	}
+	if body.SendGreeting {
+		greeting, err := a.ensureWebChatGreeting(r.Context(), session, domain.SessionGreetingOptions{SendGreeting: true, GreetingChannels: body.GreetingChannels, Nickname: body.Nickname})
+		if err != nil {
+			httpx.Error(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		for key, value := range greeting {
+			if key == "session_id" {
+				out["acp_session_id"] = value
+				continue
+			}
+			out[key] = value
+		}
+	}
+	httpx.OK(w, out, nil)
+}
+
+type acpGreetingEnsurer interface {
+	EnsureSessionWithGreeting(context.Context, domain.Session, domain.SessionGreetingOptions) (map[string]any, error)
+}
+
+func (a *App) ensureWebChatGreeting(ctx context.Context, authSession domain.WebAuthSession, options domain.SessionGreetingOptions) (map[string]any, error) {
+	if a.ACP == nil {
+		return map[string]any{"greeting_skipped": "acp_unavailable"}, nil
+	}
+	session, err := a.resolveWebChatSession(ctx, authSession)
+	if err != nil {
+		return nil, err
+	}
+	if greetingACP, ok := a.ACP.(acpGreetingEnsurer); ok {
+		return greetingACP.EnsureSessionWithGreeting(ctx, session, options)
+	}
+	sessionID, err := a.ACP.EnsureSession(ctx, session)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"session_id": sessionID, "greeting_skipped": "unsupported_acp_bridge"}, nil
 }
 
 func adminWebChatLinkedIdentities(channelType, channelUserID string) []domain.LinkedIdentity {

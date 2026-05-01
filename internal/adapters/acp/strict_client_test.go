@@ -103,6 +103,80 @@ func TestStrictStartRun(t *testing.T) {
 	}
 }
 
+func TestStrictEnsureSessionWithGreeting(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sessions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"session_id":"session_1","greeting_run_id":"run_1","greeting_state":"queued"}`)
+	}))
+	defer server.Close()
+
+	client := NewStrictClient(server.URL, "")
+	client.HTTP = server.Client()
+
+	out, err := client.EnsureSessionWithGreeting(context.Background(), domain.Session{ID: "session_1"}, domain.SessionGreetingOptions{
+		SendGreeting:     true,
+		GreetingChannels: []string{"webchat"},
+		Nickname:         "Sahal",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["session_id"] != "session_1" || out["greeting_run_id"] != "run_1" || out["greeting_state"] != "queued" {
+		t.Fatalf("unexpected response %#v", out)
+	}
+	if payload["gateway_session_id"] != "session_1" || payload["send_greeting"] != true || payload["nickname"] != "Sahal" {
+		t.Fatalf("unexpected payload %#v", payload)
+	}
+	channels, _ := payload["greeting_channels"].([]any)
+	if len(channels) != 1 || channels[0] != "webchat" {
+		t.Fatalf("unexpected channels %#v", payload["greeting_channels"])
+	}
+}
+
+func TestStrictEnsureSessionWithGreetingRequestsExistingACPSession(t *testing.T) {
+	var payload map[string]any
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/sessions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"greeting_run_id":"run_1","greeting_state":"queued"}`)
+	}))
+	defer server.Close()
+
+	client := NewStrictClient(server.URL, "")
+	client.HTTP = server.Client()
+
+	out, err := client.EnsureSessionWithGreeting(context.Background(), domain.Session{ID: "gateway_session_1", ACPSessionID: "acp_session_1"}, domain.SessionGreetingOptions{
+		SendGreeting:     true,
+		GreetingChannels: []string{"webchat"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected greeting session request, got %d requests", requests)
+	}
+	if out["session_id"] != "acp_session_1" || out["greeting_run_id"] != "run_1" {
+		t.Fatalf("unexpected response %#v", out)
+	}
+	if payload["gateway_session_id"] != "gateway_session_1" || payload["session_id"] != "acp_session_1" || payload["send_greeting"] != true {
+		t.Fatalf("unexpected payload %#v", payload)
+	}
+}
+
 func TestStrictResumeRun(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/runs/run_1/resume" {

@@ -34,8 +34,11 @@ type strictManifest struct {
 }
 
 type strictSession struct {
-	ID        string `json:"id"`
-	SessionID string `json:"session_id"`
+	ID              string `json:"id"`
+	SessionID       string `json:"session_id"`
+	GreetingRunID   string `json:"greeting_run_id"`
+	GreetingState   string `json:"greeting_state"`
+	GreetingSkipped string `json:"greeting_skipped"`
 }
 
 type strictRun struct {
@@ -124,23 +127,57 @@ func applyStrictCapabilities(manifest *strictManifest) {
 }
 
 func (c StrictClient) EnsureSession(ctx context.Context, session domain.Session) (string, error) {
-	if session.ACPSessionID != "" {
-		return session.ACPSessionID, nil
+	created, err := c.ensureSession(ctx, session, domain.SessionGreetingOptions{})
+	return created.ID, err
+}
+
+func (c StrictClient) EnsureSessionWithGreeting(ctx context.Context, session domain.Session, options domain.SessionGreetingOptions) (map[string]any, error) {
+	created, err := c.ensureSession(ctx, session, options)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"session_id": created.ID, "state": "ready"}
+	if created.GreetingRunID != "" {
+		out["greeting_run_id"] = created.GreetingRunID
+	}
+	if created.GreetingState != "" {
+		out["greeting_state"] = created.GreetingState
+	}
+	if created.GreetingSkipped != "" {
+		out["greeting_skipped"] = created.GreetingSkipped
+	}
+	return out, nil
+}
+
+func (c StrictClient) ensureSession(ctx context.Context, session domain.Session, options domain.SessionGreetingOptions) (strictSession, error) {
+	if session.ACPSessionID != "" && !options.SendGreeting {
+		return strictSession{ID: session.ACPSessionID}, nil
 	}
 	body := map[string]any{"gateway_session_id": session.ID}
+	if session.ACPSessionID != "" {
+		body["session_id"] = session.ACPSessionID
+	}
+	if options.SendGreeting {
+		body["send_greeting"] = true
+		body["greeting_channels"] = options.GreetingChannels
+		body["nickname"] = options.Nickname
+	}
 	var created strictSession
 	if err := c.postJSON(ctx, "/sessions", nil, body, &created, sessionHeaders(session, "", "")); err != nil {
 		if putErr := c.putJSON(ctx, "/sessions/"+url.PathEscape(session.ID), nil, body, &created, sessionHeaders(session, "", "")); putErr != nil {
-			return "", err
+			return strictSession{}, err
 		}
 	}
 	if created.ID == "" {
 		created.ID = created.SessionID
 	}
-	if created.ID == "" {
-		return "", fmt.Errorf("ensure session: missing session id")
+	if created.ID == "" && session.ACPSessionID != "" {
+		created.ID = session.ACPSessionID
 	}
-	return created.ID, nil
+	if created.ID == "" {
+		return strictSession{}, fmt.Errorf("ensure session: missing session id")
+	}
+	return created, nil
 }
 
 func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
