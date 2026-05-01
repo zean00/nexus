@@ -234,6 +234,12 @@ func (r *PostgresRepository) CreateWebAuthSession(ctx context.Context, session d
 		insert into webchat_auth_sessions (
 			id, tenant_id, email, csrf_token_hash, expires_at, last_seen_at, created_at
 		) values ($1,$2,$3,$4,$5,$6,$7)
+		on conflict (id) do update set
+			tenant_id=excluded.tenant_id,
+			email=excluded.email,
+			csrf_token_hash=excluded.csrf_token_hash,
+			expires_at=excluded.expires_at,
+			last_seen_at=excluded.last_seen_at
 	`, session.ID, session.TenantID, session.Email, session.CSRFTokenHash, session.ExpiresAt, session.LastSeenAt, session.CreatedAt)
 	return err
 }

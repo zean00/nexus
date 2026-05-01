@@ -34,6 +34,32 @@ func TestStrictDiscoverAgents(t *testing.T) {
 	}
 }
 
+func TestStrictDiscoverAgentsMergesCapabilitiesWithLegacyFlags(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agents" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[{"name":"strict-agent","healthy":true,"capabilities":["resume","events","artifacts"]}]`)
+	}))
+	defer server.Close()
+
+	client := NewStrictClient(server.URL, "")
+	client.HTTP = server.Client()
+
+	agents, err := client.DiscoverAgents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected one agent, got %+v", agents)
+	}
+	got := agents[0]
+	if !got.Healthy || !got.SupportsAwaitResume || !got.SupportsStructuredAwait || !got.SupportsStreaming || !got.SupportsArtifacts {
+		t.Fatalf("expected legacy flags and capabilities to be merged, got %+v", got)
+	}
+}
+
 func TestStrictStartRun(t *testing.T) {
 	var auth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

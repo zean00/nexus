@@ -93,8 +93,8 @@ func TestLoadWebChatHistoryScopeDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.WebChatHistoryScope != "session" {
-		t.Fatalf("expected session history scope by default, got %q", cfg.WebChatHistoryScope)
+	if cfg.WebChatHistoryScope != "linked_channels" {
+		t.Fatalf("expected linked_channels history scope by default, got %q", cfg.WebChatHistoryScope)
 	}
 }
 

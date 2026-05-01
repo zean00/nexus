@@ -496,6 +496,53 @@ func TestPostgresRepositoryIntegrationWebAuthChallengeReplacement(t *testing.T) 
 	}
 }
 
+func TestPostgresRepositoryIntegrationWebAuthSessionUpsertReplacesCSRFHash(t *testing.T) {
+	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
+		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")
+	}
+
+	ctx := context.Background()
+	dbURL := startPostgresContainer(t)
+
+	repo, err := New(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(repo.Close)
+
+	applyAllMigrations(t, ctx, repo)
+	now := time.Now().UTC()
+	if err := repo.CreateWebAuthSession(ctx, domain.WebAuthSession{
+		ID:            "websess_reused",
+		TenantID:      "tenant_default",
+		Email:         "first@example.com",
+		CSRFTokenHash: "old_hash",
+		ExpiresAt:     now.Add(time.Hour),
+		LastSeenAt:    now,
+		CreatedAt:     now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateWebAuthSession(ctx, domain.WebAuthSession{
+		ID:            "websess_reused",
+		TenantID:      "tenant_default",
+		Email:         "second@example.com",
+		CSRFTokenHash: "",
+		ExpiresAt:     now.Add(2 * time.Hour),
+		LastSeenAt:    now.Add(time.Minute),
+		CreatedAt:     now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetWebAuthSession(ctx, "websess_reused", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Email != "second@example.com" || got.CSRFTokenHash != "" {
+		t.Fatalf("expected reused auth session to clear stale csrf hash, got %+v", got)
+	}
+}
+
 func TestPostgresRepositoryIntegrationRetention(t *testing.T) {
 	if os.Getenv("NEXUS_INTEGRATION_DB") != "1" {
 		t.Skip("set NEXUS_INTEGRATION_DB=1 to run Postgres integration tests")

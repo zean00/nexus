@@ -183,7 +183,7 @@ Behavior notes:
 | `WEBCHAT_COOKIE_NAME` | `nexus_webchat_session` | Session cookie name | Shared by auth/bootstrap/message endpoints |
 | `WEBCHAT_DEV_AUTH` | `false` | Enables local dev login endpoint | Only works in local development |
 | `WEBCHAT_INTERACTION_VISIBILITY` | `full` | Webchat interaction presentation mode | `full`, `simple`, `minimal`, `off` |
-| `WEBCHAT_HISTORY_SCOPE` | `session` | Webchat timeline query scope | `session`, `user`, `linked_channels` |
+| `WEBCHAT_HISTORY_SCOPE` | `linked_channels` | Webchat timeline query scope | `session`, `user`, `linked_channels` |
 | `WEBCHAT_SESSION_HOURS` | `24` | Webchat auth session TTL | Controls cookie-backed session lifetime |
 | `WEBCHAT_OTP_MINUTES` | `10` | OTP challenge TTL | Email login code expiry |
 
@@ -211,6 +211,12 @@ Supported values:
 | `linked_channels` | Show the active webchat session plus sessions for linked external channel identities |
 
 In `user` and `linked_channels` modes, external-channel items are read-only inside webchat. Sending from webchat still writes to the active webchat session only, while inbound messages and agent responses from linked external sessions can refresh the webchat SSE timeline.
+
+### Trusted Webchat Session Provisioning
+
+Trusted admin callers can provision a webchat auth session with `POST /admin/webchat/sessions`. The endpoint is protected by the admin API bearer token when `ADMIN_BEARER_TOKEN` is configured.
+
+The request accepts an `email`, optional `session_id`, and optional `linked_channel_type` / `linked_channel_user_id`. It creates or refreshes the webchat auth session, ensures the Nexus user exists, links the email/webchat identities, and can link a trusted external channel identity. Reusing a `session_id` clears any previous CSRF hash so a caller must bootstrap the webchat session before making CSRF-protected requests.
 
 ### `WEBCHAT_DEV_AUTH`
 

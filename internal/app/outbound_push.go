@@ -149,6 +149,9 @@ func (a *App) enqueueOutboundPush(ctx context.Context, req outboundPushRequest, 
 		}
 		ids = append(ids, delivery.ID)
 	}
+	if err := a.persistWebChatOutboundPush(ctx, session, runID, req); err != nil {
+		return outboundPushResult{}, err
+	}
 	_ = a.Repo.Audit(ctx, domain.AuditEvent{
 		ID:            "audit_outbound_push_" + runID + "_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 		TenantID:      tenantID,
@@ -165,6 +168,42 @@ func (a *App) enqueueOutboundPush(ctx context.Context, req outboundPushRequest, 
 		CreatedAt: time.Now().UTC(),
 	})
 	return outboundPushResult{SessionID: session.ID, ChannelType: session.ChannelType, DeliveryIDs: ids}, nil
+}
+
+func (a *App) persistWebChatOutboundPush(ctx context.Context, session domain.Session, runID string, req outboundPushRequest) error {
+	if session.ChannelType != "webchat" {
+		return nil
+	}
+	text := strings.TrimSpace(req.Text)
+	if text == "" && len(req.Artifacts) == 0 {
+		return nil
+	}
+	rawPayload, err := json.Marshal(map[string]any{
+		"run_id":      runID,
+		"message_key": firstNonEmptyString(req.MessageID, req.LogicalMessageID, runID),
+		"status":      "completed",
+		"text":        text,
+		"is_partial":  false,
+		"artifacts":   outboundPushArtifacts(req.Artifacts),
+		"metadata":    req.Metadata,
+	})
+	if err != nil {
+		return err
+	}
+	messageKey := firstNonEmptyString(req.MessageID, req.LogicalMessageID, runID)
+	messageID, err := a.Repo.StoreOutboundMessage(ctx, session, runID, messageKey, text, rawPayload)
+	if err != nil {
+		return err
+	}
+	if len(req.Artifacts) > 0 {
+		if err := a.Repo.StoreArtifacts(ctx, messageID, "outbound", outboundPushArtifacts(req.Artifacts)); err != nil {
+			return err
+		}
+	}
+	if a.WebChatHub != nil {
+		a.WebChatHub.Notify(session.ID)
+	}
+	return nil
 }
 
 func (a *App) resolveOutboundPushSession(ctx context.Context, tenantID string, req outboundPushRequest) (domain.Session, error) {

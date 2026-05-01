@@ -110,6 +110,8 @@ type appRepoStub struct {
 	retriedDeliveryID     string
 	auditEvents           []domain.AuditEvent
 	deliveries            []domain.OutboundDelivery
+	outboundMessages      []domain.Message
+	storedArtifacts       []domain.Artifact
 	telegramAllowed       map[string]bool
 	telegramUsers         []domain.TelegramUserAccess
 	telegramAccessQueries []domain.TelegramUserAccessListQuery
@@ -145,10 +147,21 @@ func (r *appRepoStub) HasActiveRun(context.Context, string) (bool, error) { retu
 func (r *appRepoStub) StoreInboundMessage(context.Context, domain.CanonicalInboundEvent, string) (string, error) {
 	return "", nil
 }
-func (r *appRepoStub) StoreOutboundMessage(context.Context, domain.Session, string, string, string, []byte) (string, error) {
-	return "", nil
+func (r *appRepoStub) StoreOutboundMessage(_ context.Context, session domain.Session, runID string, messageKey string, text string, raw []byte) (string, error) {
+	id := "msg_out_" + firstNonEmptyString(messageKey, runID)
+	r.outboundMessages = append(r.outboundMessages, domain.Message{
+		MessageID:   id,
+		SessionID:   session.ID,
+		ChannelType: session.ChannelType,
+		Direction:   "outbound",
+		Role:        "assistant",
+		Text:        text,
+		RawPayload:  raw,
+	})
+	return id, nil
 }
-func (r *appRepoStub) StoreArtifacts(context.Context, string, string, []domain.Artifact) error {
+func (r *appRepoStub) StoreArtifacts(_ context.Context, _ string, _ string, artifacts []domain.Artifact) error {
+	r.storedArtifacts = append(r.storedArtifacts, artifacts...)
 	return nil
 }
 func (r *appRepoStub) EnqueueMessage(context.Context, domain.CanonicalInboundEvent, domain.Session, domain.RouteDecision, string, bool) (domain.QueueItem, *domain.OutboxEvent, error) {
@@ -3029,6 +3042,53 @@ func TestHandlePushOutboundBulkAcceptsDuraclawOutboxEnvelope(t *testing.T) {
 	}
 	if !strings.Contains(fmt.Sprint(payload["text"]), "Nested reminder text") {
 		t.Fatalf("unexpected telegram payload: %+v", payload)
+	}
+}
+
+func TestHandlePushOutboundStoresWebChatMessage(t *testing.T) {
+	repo := &appRepoStub{
+		sessions: map[string]domain.Session{
+			"session_webchat_1": {
+				ID:              "session_webchat_1",
+				TenantID:        "tenant_default",
+				OwnerUserID:     "user1@example.com",
+				ChannelType:     "webchat",
+				ChannelScopeKey: "websess_1:session_webchat_1",
+				State:           "open",
+			},
+		},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+		"payload":{
+			"outbound_intent_id":"intent_webchat_1",
+			"customer_id":"tenant_default",
+			"user_id":"user1@example.com",
+			"session_id":"session_webchat_1",
+			"intent_type":"message",
+			"payload":{"text":"Wa'alaikumussalam, siap!"}
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutbound(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.deliveries) != 1 || repo.deliveries[0].ChannelType != "webchat" {
+		t.Fatalf("expected one webchat delivery, got %+v", repo.deliveries)
+	}
+	if len(repo.outboundMessages) != 1 {
+		t.Fatalf("expected pushed webchat message to be stored, got %+v", repo.outboundMessages)
+	}
+	msg := repo.outboundMessages[0]
+	if msg.SessionID != "session_webchat_1" || msg.Role != "assistant" || msg.Text != "Wa'alaikumussalam, siap!" {
+		t.Fatalf("unexpected stored message: %+v", msg)
+	}
+	if !strings.Contains(string(msg.RawPayload), `"status":"completed"`) {
+		t.Fatalf("expected completed raw payload, got %s", string(msg.RawPayload))
 	}
 }
 

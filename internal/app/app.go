@@ -597,6 +597,7 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/messages", a.handleListMessages)
 	mux.HandleFunc("/admin/artifacts", a.handleListArtifacts)
 	mux.HandleFunc("/admin/deliveries", a.handleListDeliveries)
+	mux.HandleFunc("/admin/webchat/sessions", a.handleAdminWebChatSession)
 	mux.HandleFunc("/admin/outbound/push", a.handlePushOutbound)
 	mux.HandleFunc("/admin/outbound/push/bulk", a.handlePushOutboundBulk)
 	mux.HandleFunc("/admin/runs/cancel", a.handleCancelRun)

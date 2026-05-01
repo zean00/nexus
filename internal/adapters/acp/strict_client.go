@@ -22,6 +22,7 @@ type StrictClient struct {
 type strictManifest struct {
 	Name                    string   `json:"name"`
 	Description             string   `json:"description"`
+	Capabilities            []string `json:"capabilities"`
 	InputContentTypes       []string `json:"input_content_types"`
 	OutputContentTypes      []string `json:"output_content_types"`
 	SupportsAwaitResume     bool     `json:"supports_await_resume"`
@@ -33,12 +34,14 @@ type strictManifest struct {
 }
 
 type strictSession struct {
-	ID string `json:"id"`
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
 }
 
 type strictRun struct {
 	ID             string         `json:"id"`
 	SessionID      string         `json:"session_id"`
+	State          string         `json:"state"`
 	Status         string         `json:"status"`
 	Output         string         `json:"output"`
 	IdempotencyKey string         `json:"idempotency_key"`
@@ -73,13 +76,20 @@ func NewStrictClient(baseURL, token string) StrictClient {
 func (c StrictClient) DiscoverAgents(ctx context.Context) ([]domain.AgentManifest, error) {
 	var manifests []strictManifest
 	if err := c.getJSON(ctx, "/agents", nil, &manifests); err != nil {
-		return nil, err
+		var wrapped struct {
+			Agents []strictManifest `json:"agents"`
+		}
+		if wrappedErr := c.getJSON(ctx, "/agents", nil, &wrapped); wrappedErr != nil {
+			return nil, err
+		}
+		manifests = wrapped.Agents
 	}
 	out := make([]domain.AgentManifest, 0, len(manifests))
 	for _, manifest := range manifests {
 		if strings.TrimSpace(manifest.Name) == "" {
 			return nil, fmt.Errorf("discover agents: agent manifest missing name")
 		}
+		applyStrictCapabilities(&manifest)
 		out = append(out, domain.AgentManifest{
 			Name:                    manifest.Name,
 			Description:             manifest.Description,
@@ -96,14 +106,36 @@ func (c StrictClient) DiscoverAgents(ctx context.Context) ([]domain.AgentManifes
 	return out, nil
 }
 
+func applyStrictCapabilities(manifest *strictManifest) {
+	for _, capability := range manifest.Capabilities {
+		switch strings.TrimSpace(capability) {
+		case "runs":
+			manifest.Healthy = true
+			manifest.SupportsSessionReload = true
+		case "resume":
+			manifest.SupportsAwaitResume = true
+			manifest.SupportsStructuredAwait = true
+		case "events":
+			manifest.SupportsStreaming = true
+		case "artifacts":
+			manifest.SupportsArtifacts = true
+		}
+	}
+}
+
 func (c StrictClient) EnsureSession(ctx context.Context, session domain.Session) (string, error) {
 	if session.ACPSessionID != "" {
 		return session.ACPSessionID, nil
 	}
 	body := map[string]any{"gateway_session_id": session.ID}
 	var created strictSession
-	if err := c.postJSON(ctx, "/sessions", nil, body, &created); err != nil {
-		return "", err
+	if err := c.postJSON(ctx, "/sessions", nil, body, &created, sessionHeaders(session, "", "")); err != nil {
+		if putErr := c.putJSON(ctx, "/sessions/"+url.PathEscape(session.ID), nil, body, &created, sessionHeaders(session, "", "")); putErr != nil {
+			return "", err
+		}
+	}
+	if created.ID == "" {
+		created.ID = created.SessionID
 	}
 	if created.ID == "" {
 		return "", fmt.Errorf("ensure session: missing session id")
@@ -120,18 +152,22 @@ func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) 
 			return domain.Run{}, domain.RunEventStream{}, err
 		}
 	}
+	parts := strictMessageParts(req.Message.Parts)
 	body := map[string]any{
 		"session_id":      sessionID,
 		"agent_name":      req.RouteDecision.ACPAgentName,
 		"idempotency_key": req.IdempotencyKey,
+		"text":            req.Message.Text,
+		"parts":           parts,
+		"artifacts":       req.Message.Artifacts,
 		"message": map[string]any{
 			"text":      req.Message.Text,
-			"parts":     req.Message.Parts,
+			"parts":     parts,
 			"artifacts": req.Message.Artifacts,
 		},
 	}
 	var response strictRun
-	if err := c.postJSON(ctx, "/runs", nil, body, &response); err != nil {
+	if err := c.postJSON(ctx, "/runs", nil, body, &response, sessionHeaders(req.Session, req.IdempotencyKey, "")); err != nil {
 		return domain.Run{}, domain.RunEventStream{}, err
 	}
 	run, event, err := c.mapRunResponse(req.Session.ID, response)
@@ -142,10 +178,25 @@ func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) 
 	return run, staticRunEventStream(event), nil
 }
 
+func strictMessageParts(parts []domain.Part) []map[string]string {
+	out := make([]map[string]string, 0, len(parts))
+	for _, part := range parts {
+		contentType := strings.TrimSpace(part.ContentType)
+		content := part.Content
+		switch {
+		case contentType == "", strings.HasPrefix(contentType, "text/"):
+			out = append(out, map[string]string{"type": "text", "text": content})
+		default:
+			out = append(out, map[string]string{"type": contentType, "text": content})
+		}
+	}
+	return out
+}
+
 func (c StrictClient) ResumeRun(ctx context.Context, await domain.Await, payload []byte) (domain.RunEventStream, error) {
 	acpRunID := strings.TrimPrefix(await.RunID, "run_")
 	var response strictRun
-	if err := c.postJSON(ctx, "/runs/"+url.PathEscape(acpRunID)+"/resume", nil, map[string]any{"payload": json.RawMessage(payload)}, &response); err != nil {
+	if err := c.postJSON(ctx, "/runs/"+url.PathEscape(acpRunID)+"/resume", nil, map[string]any{"payload": json.RawMessage(payload)}, &response, map[string]string{"X-Run-ID": await.RunID}); err != nil {
 		return domain.RunEventStream{}, err
 	}
 	_, event, err := c.mapRunResponse(await.SessionID, response)
@@ -209,6 +260,9 @@ func (c StrictClient) CancelRun(ctx context.Context, run domain.Run) error {
 }
 
 func (c StrictClient) mapRunResponse(sessionID string, response strictRun) (domain.Run, domain.RunEvent, error) {
+	if response.Status == "" {
+		response.Status = response.State
+	}
 	if response.ID == "" || response.SessionID == "" || response.Status == "" {
 		return domain.Run{}, domain.RunEvent{}, fmt.Errorf("run response missing required fields")
 	}
@@ -234,6 +288,9 @@ func (c StrictClient) mapRunResponse(sessionID string, response strictRun) (doma
 }
 
 func (c StrictClient) mapSnapshot(response strictRun) (domain.RunStatusSnapshot, error) {
+	if response.Status == "" {
+		response.Status = response.State
+	}
 	if response.ID == "" || response.Status == "" {
 		return domain.RunStatusSnapshot{}, fmt.Errorf("run snapshot missing required fields")
 	}
@@ -276,7 +333,7 @@ func (c StrictClient) getJSON(ctx context.Context, path string, query map[string
 	return c.do(req, out)
 }
 
-func (c StrictClient) postJSON(ctx context.Context, path string, query map[string]string, body any, out any) error {
+func (c StrictClient) postJSON(ctx context.Context, path string, query map[string]string, body any, out any, headers ...map[string]string) error {
 	var payload []byte
 	var err error
 	if body != nil {
@@ -289,7 +346,56 @@ func (c StrictClient) postJSON(ctx context.Context, path string, query map[strin
 	if err != nil {
 		return err
 	}
+	for _, headerSet := range headers {
+		for key, value := range headerSet {
+			if strings.TrimSpace(value) != "" {
+				req.Header.Set(key, value)
+			}
+		}
+	}
 	return c.do(req, out)
+}
+
+func (c StrictClient) putJSON(ctx context.Context, path string, query map[string]string, body any, out any, headers ...map[string]string) error {
+	var payload []byte
+	var err error
+	if body != nil {
+		payload, err = json.Marshal(body)
+		if err != nil {
+			return err
+		}
+	}
+	req, err := c.newRequest(ctx, http.MethodPut, path, query, payload)
+	if err != nil {
+		return err
+	}
+	for _, headerSet := range headers {
+		for key, value := range headerSet {
+			if strings.TrimSpace(value) != "" {
+				req.Header.Set(key, value)
+			}
+		}
+	}
+	return c.do(req, out)
+}
+
+func sessionHeaders(session domain.Session, idempotencyKey, runID string) map[string]string {
+	userID := strings.TrimSpace(session.OwnerUserID)
+	if userID == "" {
+		userID = strings.TrimSpace(session.ChannelScopeKey)
+	}
+	return map[string]string{
+		"X-Customer-ID":             session.TenantID,
+		"X-User-ID":                 userID,
+		"X-Agent-Instance-ID":       session.AgentProfileID,
+		"X-Session-ID":              session.ID,
+		"X-Request-ID":              session.ID,
+		"X-Idempotency-Key":         idempotencyKey,
+		"X-Run-ID":                  runID,
+		"X-Channel-Type":            session.ChannelType,
+		"X-Channel-User-ID":         userID,
+		"X-Channel-Conversation-ID": session.ChannelScopeKey,
+	}
 }
 
 func (c StrictClient) newRequest(ctx context.Context, method, path string, query map[string]string, body []byte) (*http.Request, error) {
