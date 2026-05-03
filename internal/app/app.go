@@ -590,6 +590,8 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/trust/whatsapp/contacts", a.handleWhatsAppPolicyContacts)
 	mux.HandleFunc("/admin/trust/whatsapp/events", a.handleWhatsAppPolicyEvents)
 	mux.HandleFunc("/admin/trust/whatsapp/consent/update", a.handleWhatsAppConsentUpdate)
+	mux.HandleFunc("/admin/identity/link-code", a.handleAdminIdentityLinkCode)
+	mux.HandleFunc("/admin/identity/link-status", a.handleAdminIdentityLinkStatus)
 	mux.HandleFunc("/admin/retention", a.handleRetentionStatus)
 	mux.HandleFunc("/admin/retention/run", a.handleRunRetention)
 	mux.HandleFunc("/admin/retention/policy/upsert", a.handleUpsertRetentionPolicy)

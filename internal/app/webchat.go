@@ -774,7 +774,7 @@ func (a *App) handleWebChatIdentityLinkCode(w http.ResponseWriter, r *http.Reque
 	}
 	channel := strings.TrimSpace(strings.ToLower(body.Channel))
 	switch channel {
-	case "slack", "telegram", "whatsapp", "email":
+	case "slack", "telegram", "whatsapp", "whatsapp_web", "email":
 	default:
 		httpx.Error(w, http.StatusBadRequest, "unsupported channel")
 		return

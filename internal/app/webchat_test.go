@@ -440,6 +440,84 @@ func TestAdminWebChatSessionCanRequestGreeting(t *testing.T) {
 	}
 }
 
+func TestAdminIdentityLinkCodeSupportsWhatsAppWeb(t *testing.T) {
+	identity := &identityStub{}
+	user, err := identity.EnsureUserByEmail(context.Background(), "tenant_default", "user@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default", IdentityLinkMinutes: 10}, Identity: identity}
+	body := `{"user_id":"` + user.ID + `","channel":"whatsapp_web"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/identity/link-code", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	app.handleAdminIdentityLinkCode(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Data struct {
+			Channel   string `json:"channel"`
+			LinkCode  string `json:"link_code"`
+			ExpiresAt string `json:"expires_at"`
+			UserID    string `json:"user_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Data.Channel != "whatsapp_web" || out.Data.UserID != user.ID || !strings.HasPrefix(out.Data.LinkCode, user.ID+".") || out.Data.ExpiresAt == "" {
+		t.Fatalf("unexpected response: %+v", out.Data)
+	}
+	challenge := identity.challenges[user.ID+"|link|whatsapp_web"]
+	if challenge.UserID != user.ID || challenge.ChannelType != "whatsapp_web" || challenge.Purpose != "link" {
+		t.Fatalf("expected whatsapp_web challenge, got %+v", challenge)
+	}
+}
+
+func TestAdminIdentityLinkStatusMatchesRelatedWhatsAppChannels(t *testing.T) {
+	identity := &identityStub{}
+	user, err := identity.EnsureUserByEmail(context.Background(), "tenant_default", "user@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = identity.UpsertLinkedIdentity(context.Background(), domain.LinkedIdentity{
+		TenantID:      "tenant_default",
+		UserID:        user.ID,
+		ChannelType:   "whatsapp_web",
+		ChannelUserID: "628123456789",
+		Status:        "linked",
+		LinkedAt:      time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Identity: identity}
+	body := `{"user_id":"` + user.ID + `","channel":"whatsapp"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/identity/link-status", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	app.handleAdminIdentityLinkStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Data struct {
+			Status        string `json:"status"`
+			Channel       string `json:"channel"`
+			ChannelUserID string `json:"channel_user_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Data.Status != "linked" || out.Data.Channel != "whatsapp_web" || out.Data.ChannelUserID != "628123456789" {
+		t.Fatalf("unexpected status response: %+v", out.Data)
+	}
+}
+
 func TestWebChatArtifactRequiresAuth(t *testing.T) {
 	app := &App{
 		Config: config.Config{
