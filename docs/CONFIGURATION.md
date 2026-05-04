@@ -173,6 +173,7 @@ Behavior notes:
 Behavior notes:
 
 - inbound email accepts text/html plus attachments
+- strict ACP delivery adds a `structured_data` content part with trusted email metadata (`subject`, sender, message/thread IDs, reply references) and adds `artifact_ref` parts for hydrated attachments
 - await responses can be recovered from subject/body markers
 - outbound artifacts are attached to the email message
 

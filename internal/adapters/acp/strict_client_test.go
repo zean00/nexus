@@ -103,6 +103,62 @@ func TestStrictStartRun(t *testing.T) {
 	}
 }
 
+func TestStrictStartRunAddsEmailContextAndArtifactRefs(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runs" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"run_1","session_id":"ses_1","status":"completed","output":"done"}`)
+	}))
+	defer server.Close()
+
+	raw := []byte(`{"message_id":"<msg-1@example.com>","from":"Alice <alice@example.com>","from_name":"Alice","subject":"Re: Proposal","thread_id":"thread-1","in_reply_to":"<prior@example.com>","references":["<root@example.com>"]}`)
+	client := NewStrictClient(server.URL, "")
+	client.HTTP = server.Client()
+	_, _, err := client.StartRun(context.Background(), domain.StartRunRequest{
+		Session:       domain.Session{ID: "session_1", ACPSessionID: "ses_1", ChannelType: "email"},
+		RouteDecision: domain.RouteDecision{ACPAgentName: "strict-agent"},
+		Message: domain.Message{
+			Text:       "email body",
+			RawPayload: raw,
+			Artifacts:  []domain.Artifact{{ID: "att-1", Name: "proposal.pdf", MIMEType: "application/pdf", SizeBytes: 123}},
+		},
+		IdempotencyKey: "queue_1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, _ := payload["message"].(map[string]any)
+	parts, _ := message["parts"].([]any)
+	if len(parts) < 2 {
+		t.Fatalf("expected email context and artifact refs in parts: %+v", message["parts"])
+	}
+	var sawEmail, sawArtifact bool
+	for _, rawPart := range parts {
+		part, _ := rawPart.(map[string]any)
+		switch part["type"] {
+		case "structured_data":
+			data, _ := part["data"].(map[string]any)
+			if data["kind"] == "email_context" && data["subject"] == "Re: Proposal" && data["thread_id"] == "thread-1" {
+				sawEmail = true
+			}
+		case "artifact_ref":
+			data, _ := part["data"].(map[string]any)
+			if data["artifact_id"] == "att-1" && data["mime_type"] == "application/pdf" {
+				sawArtifact = true
+			}
+		}
+	}
+	if !sawEmail || !sawArtifact {
+		t.Fatalf("missing email/artifact parts: %+v", parts)
+	}
+}
+
 func TestStrictEnsureSessionWithGreeting(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

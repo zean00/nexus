@@ -243,6 +243,10 @@ When the stdio bridge is active, runtime surfaces expose:
 | Existing OpenCode-compatible HTTP service | OpenCode HTTP bridge |
 | Parmesan-native runtime | `parmesan` |
 
+## Strict ACP Email Context
+
+For `email` sessions, Nexus passes email-specific metadata as trusted structured context instead of merging it only into user text. The strict/native ACP request includes a `structured_data` part with `data.kind: "email_context"` and fields such as `subject`, `from`, `from_name`, `message_id`, `thread_id`, `in_reply_to`, and `references`. Hydrated email attachments are still sent in `artifacts`, and Nexus also adds `artifact_ref` parts so compatible runtimes can process those attachments during the run.
+
 ## Related Docs
 
 - [Architecture](./ARCHITECTURE.md)

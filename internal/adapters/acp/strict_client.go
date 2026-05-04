@@ -190,6 +190,8 @@ func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) 
 		}
 	}
 	parts := strictMessageParts(req.Message.Parts)
+	parts = appendEmailContextPart(parts, req.Session, req.Message)
+	parts = appendArtifactRefParts(parts, req.Message.Artifacts)
 	body := map[string]any{
 		"session_id":      sessionID,
 		"agent_name":      req.RouteDecision.ACPAgentName,
@@ -215,19 +217,77 @@ func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) 
 	return run, staticRunEventStream(event), nil
 }
 
-func strictMessageParts(parts []domain.Part) []map[string]string {
-	out := make([]map[string]string, 0, len(parts))
+func strictMessageParts(parts []domain.Part) []map[string]any {
+	out := make([]map[string]any, 0, len(parts))
 	for _, part := range parts {
 		contentType := strings.TrimSpace(part.ContentType)
 		content := part.Content
 		switch {
 		case contentType == "", strings.HasPrefix(contentType, "text/"):
-			out = append(out, map[string]string{"type": "text", "text": content})
+			out = append(out, map[string]any{"type": "text", "text": content})
 		default:
-			out = append(out, map[string]string{"type": contentType, "text": content})
+			out = append(out, map[string]any{"type": contentType, "text": content})
 		}
 	}
 	return out
+}
+
+func appendEmailContextPart(parts []map[string]any, session domain.Session, message domain.Message) []map[string]any {
+	if !strings.EqualFold(strings.TrimSpace(session.ChannelType), "email") || len(message.RawPayload) == 0 {
+		return parts
+	}
+	var payload struct {
+		MessageID  string   `json:"message_id"`
+		From       string   `json:"from"`
+		FromName   string   `json:"from_name"`
+		Subject    string   `json:"subject"`
+		ThreadID   string   `json:"thread_id"`
+		InReplyTo  string   `json:"in_reply_to"`
+		References []string `json:"references"`
+	}
+	if err := json.Unmarshal(message.RawPayload, &payload); err != nil {
+		return parts
+	}
+	data := map[string]any{"kind": "email_context"}
+	add := func(key, value string) {
+		if value = strings.TrimSpace(value); value != "" {
+			data[key] = value
+		}
+	}
+	add("message_id", payload.MessageID)
+	add("from", payload.From)
+	add("from_name", payload.FromName)
+	add("subject", payload.Subject)
+	add("thread_id", payload.ThreadID)
+	add("in_reply_to", payload.InReplyTo)
+	if len(payload.References) > 0 {
+		data["references"] = payload.References
+	}
+	if len(data) == 1 {
+		return parts
+	}
+	return append(parts, map[string]any{"type": "structured_data", "data": data})
+}
+
+func appendArtifactRefParts(parts []map[string]any, artifacts []domain.Artifact) []map[string]any {
+	for _, artifact := range artifacts {
+		id := strings.TrimSpace(artifact.ID)
+		if id == "" {
+			continue
+		}
+		data := map[string]any{"artifact_id": id}
+		if artifact.Name != "" {
+			data["name"] = artifact.Name
+		}
+		if artifact.MIMEType != "" {
+			data["mime_type"] = artifact.MIMEType
+		}
+		if artifact.SizeBytes > 0 {
+			data["size_bytes"] = artifact.SizeBytes
+		}
+		parts = append(parts, map[string]any{"type": "artifact_ref", "data": data})
+	}
+	return parts
 }
 
 func (c StrictClient) ResumeRun(ctx context.Context, await domain.Await, payload []byte) (domain.RunEventStream, error) {
