@@ -42,6 +42,17 @@ func TestPrepareReplacementDeliverySlack(t *testing.T) {
 	}
 }
 
+func TestSurfaceStateIDIncludesTenant(t *testing.T) {
+	a := surfaceStateID("tenant_a", "webchat", "user@example.com")
+	b := surfaceStateID("tenant_b", "webchat", "user@example.com")
+	if a == b {
+		t.Fatal("surface state ids must not collide across tenants")
+	}
+	if !strings.HasPrefix(a, "surface_webchat_") || strings.Contains(a, "user@example.com") {
+		t.Fatalf("unexpected surface state id format: %s", a)
+	}
+}
+
 func TestPrepareReplacementDeliveryTelegram(t *testing.T) {
 	delivery := domain.OutboundDelivery{
 		ID:               "delivery_1",

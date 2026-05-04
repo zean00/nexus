@@ -2758,6 +2758,11 @@ func notificationSessionID(tenantID, channelType, surfaceKey, ownerUserID string
 	return fmt.Sprintf("session_notice_%s_%s_%s", channelType, ownerUserID, hex.EncodeToString(sum[:6]))
 }
 
+func surfaceStateID(tenantID, channelType, surfaceKey string) string {
+	sum := sha1.Sum([]byte(strings.Join([]string{tenantID, channelType, surfaceKey}, "|")))
+	return fmt.Sprintf("surface_%s_%s", channelType, hex.EncodeToString(sum[:]))
+}
+
 func (r *PostgresRepository) Audit(ctx context.Context, event domain.AuditEvent) error {
 	_, err := r.exec(ctx, `
 		insert into audit_events (
@@ -2773,7 +2778,7 @@ func (r *PostgresRepository) upsertSurfaceState(ctx context.Context, tenantID, c
 		values ($1,$2,$3,$4,nullif($5,''),now(),now())
 		on conflict (tenant_id, channel_type, surface_key)
 		do update set active_session_id = nullif(excluded.active_session_id,''), updated_at=now()
-	`, fmt.Sprintf("surface_%s_%s", channelType, surfaceKey), tenantID, channelType, surfaceKey, sessionID)
+	`, surfaceStateID(tenantID, channelType, surfaceKey), tenantID, channelType, surfaceKey, sessionID)
 	return err
 }
 

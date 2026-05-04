@@ -27,6 +27,7 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 		SendGreeting        bool     `json:"send_greeting"`
 		GreetingChannels    []string `json:"greeting_channels"`
 		Nickname            string   `json:"nickname"`
+		PreferredLanguage   string   `json:"preferred_language"`
 	}
 	if !decodeJSONBody(w, r, &body) {
 		return
@@ -88,7 +89,7 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 		"user_id":     user.ID,
 	}
 	if body.SendGreeting {
-		greeting, err := a.ensureWebChatGreeting(r.Context(), session, domain.SessionGreetingOptions{SendGreeting: true, GreetingChannels: body.GreetingChannels, Nickname: body.Nickname})
+		greeting, err := a.ensureWebChatGreeting(r.Context(), session, domain.SessionGreetingOptions{SendGreeting: true, GreetingChannels: body.GreetingChannels, Nickname: body.Nickname, PreferredLanguage: body.PreferredLanguage})
 		if err != nil {
 			httpx.Error(w, http.StatusBadGateway, err.Error())
 			return

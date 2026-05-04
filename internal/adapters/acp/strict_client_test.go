@@ -177,9 +177,10 @@ func TestStrictEnsureSessionWithGreeting(t *testing.T) {
 	client.HTTP = server.Client()
 
 	out, err := client.EnsureSessionWithGreeting(context.Background(), domain.Session{ID: "session_1"}, domain.SessionGreetingOptions{
-		SendGreeting:     true,
-		GreetingChannels: []string{"webchat"},
-		Nickname:         "Sahal",
+		SendGreeting:      true,
+		GreetingChannels:  []string{"webchat"},
+		Nickname:          "Sahal",
+		PreferredLanguage: "id",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,12 +188,44 @@ func TestStrictEnsureSessionWithGreeting(t *testing.T) {
 	if out["session_id"] != "session_1" || out["greeting_run_id"] != "run_1" || out["greeting_state"] != "queued" {
 		t.Fatalf("unexpected response %#v", out)
 	}
-	if payload["gateway_session_id"] != "session_1" || payload["send_greeting"] != true || payload["nickname"] != "Sahal" {
+	if payload["gateway_session_id"] != "session_1" || payload["send_greeting"] != true || payload["nickname"] != "Sahal" || payload["preferred_language"] != "id" || payload["language"] != "id" || payload["language_preference"] != "id" {
 		t.Fatalf("unexpected payload %#v", payload)
+	}
+	if payload["preferred_language_name"] != "Indonesian" || payload["greeting_instruction"] != "Write the greeting in Indonesian." {
+		t.Fatalf("expected Indonesian greeting instruction, got %#v", payload)
 	}
 	channels, _ := payload["greeting_channels"].([]any)
 	if len(channels) != 1 || channels[0] != "webchat" {
 		t.Fatalf("unexpected channels %#v", payload["greeting_channels"])
+	}
+}
+
+func TestStrictEnsureSessionWithGreetingNormalizesIndonesiaLanguage(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sessions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"session_id":"session_1"}`)
+	}))
+	defer server.Close()
+
+	client := NewStrictClient(server.URL, "")
+	client.HTTP = server.Client()
+
+	_, err := client.EnsureSessionWithGreeting(context.Background(), domain.Session{ID: "session_1"}, domain.SessionGreetingOptions{
+		SendGreeting:      true,
+		PreferredLanguage: "Indonesia",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["preferred_language"] != "id" || payload["preferred_language_name"] != "Indonesian" || payload["greeting_instruction"] != "Write the greeting in Indonesian." {
+		t.Fatalf("expected Indonesia to normalize to Indonesian greeting instructions, got %#v", payload)
 	}
 }
 

@@ -415,7 +415,7 @@ func TestAdminWebChatSessionCanRequestGreeting(t *testing.T) {
 		Repo:     &webchatRepoStub{},
 		ACP:      acp,
 	}
-	req := httptest.NewRequest(http.MethodPost, "/admin/webchat/sessions", strings.NewReader(`{"email":"user@example.com","session_id":"websess_1","send_greeting":true,"greeting_channels":["webchat"],"nickname":"Sahal"}`))
+	req := httptest.NewRequest(http.MethodPost, "/admin/webchat/sessions", strings.NewReader(`{"email":"user@example.com","session_id":"websess_1","send_greeting":true,"greeting_channels":["webchat"],"nickname":"Sahal","preferred_language":"id"}`))
 	rec := httptest.NewRecorder()
 
 	app.handleAdminWebChatSession(rec, req)
@@ -432,7 +432,7 @@ func TestAdminWebChatSessionCanRequestGreeting(t *testing.T) {
 	if body.Data["session_id"] != "websess_1" || body.Data["acp_session_id"] != "session_webchat_1" || body.Data["greeting_run_id"] != "run_greeting_1" {
 		t.Fatalf("unexpected response %#v", body.Data)
 	}
-	if !acp.options.SendGreeting || acp.options.Nickname != "Sahal" || len(acp.options.GreetingChannels) != 1 || acp.options.GreetingChannels[0] != "webchat" {
+	if !acp.options.SendGreeting || acp.options.Nickname != "Sahal" || acp.options.PreferredLanguage != "id" || len(acp.options.GreetingChannels) != 1 || acp.options.GreetingChannels[0] != "webchat" {
 		t.Fatalf("unexpected greeting options %#v", acp.options)
 	}
 	if acp.session.ID != "session_webchat_1" || acp.session.ChannelType != "webchat" {

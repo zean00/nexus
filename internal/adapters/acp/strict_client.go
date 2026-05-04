@@ -161,6 +161,16 @@ func (c StrictClient) ensureSession(ctx context.Context, session domain.Session,
 		body["send_greeting"] = true
 		body["greeting_channels"] = options.GreetingChannels
 		body["nickname"] = options.Nickname
+		if language, name := strictGreetingLanguage(options.PreferredLanguage); language != "" {
+			body["preferred_language"] = language
+			body["language"] = language
+			body["locale"] = language
+			body["language_preference"] = language
+			if name != "" {
+				body["preferred_language_name"] = name
+				body["greeting_instruction"] = "Write the greeting in " + name + "."
+			}
+		}
 	}
 	var created strictSession
 	if err := c.postJSON(ctx, "/sessions", nil, body, &created, sessionHeaders(session, "", "")); err != nil {
@@ -178,6 +188,21 @@ func (c StrictClient) ensureSession(ctx context.Context, session domain.Session,
 		return strictSession{}, fmt.Errorf("ensure session: missing session id")
 	}
 	return created, nil
+}
+
+func strictGreetingLanguage(value string) (string, string) {
+	clean := strings.ToLower(strings.TrimSpace(value))
+	clean = strings.ReplaceAll(clean, "_", "-")
+	switch clean {
+	case "":
+		return "", ""
+	case "id", "id-id", "indonesia", "indonesian", "bahasa indonesia":
+		return "id", "Indonesian"
+	case "en", "en-us", "en-gb", "english":
+		return "en", "English"
+	default:
+		return strings.TrimSpace(value), ""
+	}
 }
 
 func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {

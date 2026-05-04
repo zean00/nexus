@@ -316,9 +316,10 @@ type StartRunRequest struct {
 }
 
 type SessionGreetingOptions struct {
-	SendGreeting     bool
-	GreetingChannels []string
-	Nickname         string
+	SendGreeting      bool
+	GreetingChannels  []string
+	Nickname          string
+	PreferredLanguage string
 }
 
 type RunEvent struct {
