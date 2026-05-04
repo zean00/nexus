@@ -530,6 +530,56 @@ func TestInboundServiceLinksRelatedWhatsAppWebIdentity(t *testing.T) {
 	}
 }
 
+func TestInboundServiceConsumesWhatsAppCodeFromWhatsAppWeb(t *testing.T) {
+	repo := &fakeRepo{
+		receipts: map[string]bool{},
+		sessions: map[string]domain.Session{},
+	}
+	identity := &fakeIdentityRepo{
+		challenges: map[string]domain.StepUpChallenge{
+			"tenant_default|user_1|link|whatsapp|" + sha256Hex("12345678"): {
+				ID:                    "challenge_1",
+				TenantID:              "tenant_default",
+				UserID:                "user_1",
+				Purpose:               "link",
+				ChannelType:           "whatsapp",
+				ExpectedChannelUserID: "6281234567890",
+				CodeHash:              sha256Hex("12345678"),
+				ExpiresAt:             time.Now().UTC().Add(5 * time.Minute),
+			},
+		},
+	}
+	svc := InboundService{
+		Repo:     repo,
+		Identity: identity,
+		Router:   StaticRouter{DefaultAgentProfileID: "agent_profile_default"},
+	}
+	raw, _ := json.Marshal(map[string]string{"ok": "true"})
+	result, err := svc.Handle(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_link_wa_cross",
+		TenantID:        "tenant_default",
+		Channel:         "whatsapp_web",
+		ProviderEventID: "provider_link_wa_cross",
+		ReceivedAt:      time.Now(),
+		Sender:          domain.Sender{ChannelUserID: "+62 812-3456-7890"},
+		Conversation:    domain.Conversation{ChannelSurfaceKey: "wa_surface_1"},
+		Message:         domain.Message{MessageID: "msg_link_wa_cross", Text: "link user_1.12345678"},
+		Metadata:        domain.Metadata{RawPayload: raw},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "identity_linked" {
+		t.Fatalf("expected identity_linked, got %s", result.Status)
+	}
+	for _, channel := range []string{"whatsapp", "whatsapp_web"} {
+		linked, ok := identity.identities["tenant_default|"+channel+"|6281234567890"]
+		if !ok || linked.UserID != "user_1" {
+			t.Fatalf("expected %s linked identity, got %+v", channel, identity.identities)
+		}
+	}
+}
+
 func TestInboundServiceRejectsWhatsAppLinkWhenExpectedPhoneDiffers(t *testing.T) {
 	repo := &fakeRepo{
 		receipts: map[string]bool{},
