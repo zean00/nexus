@@ -183,9 +183,12 @@ func (s *identityStub) CreateStepUpChallenge(_ context.Context, challenge domain
 	s.challenges[challenge.UserID+"|"+challenge.Purpose+"|"+challenge.ChannelType] = challenge
 	return nil
 }
-func (s *identityStub) ConsumeStepUpChallenge(_ context.Context, tenantID, userID, purpose, channelType, codeHash string, now time.Time) (domain.StepUpChallenge, error) {
+func (s *identityStub) ConsumeStepUpChallenge(_ context.Context, tenantID, userID, purpose, channelType, codeHash, actualChannelUserID string, now time.Time) (domain.StepUpChallenge, error) {
 	for key, challenge := range s.challenges {
 		if challenge.TenantID == tenantID && challenge.Purpose == purpose && challenge.ChannelType == channelType && challenge.CodeHash == codeHash && challenge.UserID == userID {
+			if challenge.ExpectedChannelUserID != "" && challenge.ExpectedChannelUserID != actualChannelUserID {
+				return domain.StepUpChallenge{}, domain.ErrStepUpChallengeNotFound
+			}
 			challenge.ConsumedAt = now
 			s.challenges[key] = challenge
 			return challenge, nil
@@ -447,7 +450,7 @@ func TestAdminIdentityLinkCodeSupportsWhatsAppWeb(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := &App{Config: config.Config{DefaultTenantID: "tenant_default", IdentityLinkMinutes: 10}, Identity: identity}
-	body := `{"user_id":"` + user.ID + `","channel":"whatsapp_web"}`
+	body := `{"user_id":"` + user.ID + `","channel":"whatsapp_web","phone":"081234567890"}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/identity/link-code", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
@@ -459,6 +462,7 @@ func TestAdminIdentityLinkCodeSupportsWhatsAppWeb(t *testing.T) {
 	var out struct {
 		Data struct {
 			Channel   string `json:"channel"`
+			Expected  string `json:"expected_channel_user_id"`
 			LinkCode  string `json:"link_code"`
 			ExpiresAt string `json:"expires_at"`
 			UserID    string `json:"user_id"`
@@ -467,11 +471,11 @@ func TestAdminIdentityLinkCodeSupportsWhatsAppWeb(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Data.Channel != "whatsapp_web" || out.Data.UserID != user.ID || !strings.HasPrefix(out.Data.LinkCode, user.ID+".") || out.Data.ExpiresAt == "" {
+	if out.Data.Channel != "whatsapp_web" || out.Data.UserID != user.ID || out.Data.Expected != "6281234567890" || !strings.HasPrefix(out.Data.LinkCode, user.ID+".") || out.Data.ExpiresAt == "" {
 		t.Fatalf("unexpected response: %+v", out.Data)
 	}
 	challenge := identity.challenges[user.ID+"|link|whatsapp_web"]
-	if challenge.UserID != user.ID || challenge.ChannelType != "whatsapp_web" || challenge.Purpose != "link" {
+	if challenge.UserID != user.ID || challenge.ChannelType != "whatsapp_web" || challenge.ExpectedChannelUserID != "6281234567890" || challenge.Purpose != "link" {
 		t.Fatalf("expected whatsapp_web challenge, got %+v", challenge)
 	}
 }

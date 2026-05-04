@@ -225,15 +225,16 @@ type LinkedIdentity struct {
 }
 
 type StepUpChallenge struct {
-	ID          string    `json:"id"`
-	TenantID    string    `json:"tenant_id"`
-	UserID      string    `json:"user_id"`
-	Purpose     string    `json:"purpose"`
-	ChannelType string    `json:"channel_type,omitempty"`
-	CodeHash    string    `json:"code_hash"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	ConsumedAt  time.Time `json:"consumed_at,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID                    string    `json:"id"`
+	TenantID              string    `json:"tenant_id"`
+	UserID                string    `json:"user_id"`
+	Purpose               string    `json:"purpose"`
+	ChannelType           string    `json:"channel_type,omitempty"`
+	ExpectedChannelUserID string    `json:"expected_channel_user_id,omitempty"`
+	CodeHash              string    `json:"code_hash"`
+	ExpiresAt             time.Time `json:"expires_at"`
+	ConsumedAt            time.Time `json:"consumed_at,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 type TrustPolicy struct {

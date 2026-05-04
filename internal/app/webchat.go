@@ -950,7 +950,7 @@ func (a *App) handleWebChatStepUpVerify(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if _, err := a.Identity.ConsumeStepUpChallenge(r.Context(), a.Config.DefaultTenantID, user.ID, "step_up", "", sha256Hex(strings.TrimSpace(body.Code)), time.Now().UTC()); err != nil {
+	if _, err := a.Identity.ConsumeStepUpChallenge(r.Context(), a.Config.DefaultTenantID, user.ID, "step_up", "", sha256Hex(strings.TrimSpace(body.Code)), "", time.Now().UTC()); err != nil {
 		_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
 			ID:            "audit_trust_stepup_rejected_" + randomToken(6),
 			TenantID:      a.Config.DefaultTenantID,

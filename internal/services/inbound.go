@@ -188,7 +188,8 @@ func (s InboundService) handleIdentityCommand(ctx context.Context, evt domain.Ca
 		return true, InboundResult{Status: "identity_link_rejected"}, domain.ErrStepUpChallengeNotFound
 	}
 	hash := sha256Hex(code)
-	challenge, err := s.Identity.ConsumeStepUpChallenge(ctx, evt.TenantID, userID, "link", evt.Channel, hash, time.Now().UTC())
+	actualChannelUserID := normalizeLinkedIdentityUserID(evt.Channel, evt.Sender.ChannelUserID)
+	challenge, err := consumeIdentityLinkChallenge(ctx, s.Identity, evt.TenantID, userID, evt.Channel, hash, actualChannelUserID, time.Now().UTC())
 	if err != nil {
 		return true, InboundResult{Status: "identity_link_rejected"}, err
 	}
@@ -230,6 +231,35 @@ func (s InboundService) handleIdentityCommand(ctx context.Context, evt domain.Ca
 		})
 	}
 	return true, InboundResult{Status: "identity_linked"}, nil
+}
+
+func consumeIdentityLinkChallenge(ctx context.Context, identity ports.IdentityRepository, tenantID, userID, channelType, codeHash, actualChannelUserID string, now time.Time) (domain.StepUpChallenge, error) {
+	var lastErr error
+	for _, candidate := range pairingChallengeChannels(channelType) {
+		challenge, err := identity.ConsumeStepUpChallenge(ctx, tenantID, userID, "link", candidate, codeHash, actualChannelUserID, now)
+		if err == nil {
+			return challenge, nil
+		}
+		lastErr = err
+		if !errors.Is(err, domain.ErrStepUpChallengeNotFound) {
+			return domain.StepUpChallenge{}, err
+		}
+	}
+	if lastErr != nil {
+		return domain.StepUpChallenge{}, lastErr
+	}
+	return domain.StepUpChallenge{}, domain.ErrStepUpChallengeNotFound
+}
+
+func pairingChallengeChannels(channelType string) []string {
+	switch channelType {
+	case "whatsapp":
+		return []string{"whatsapp", "whatsapp_web"}
+	case "whatsapp_web":
+		return []string{"whatsapp_web", "whatsapp"}
+	default:
+		return []string{channelType}
+	}
 }
 
 func relatedChannelIdentities(channelType, channelUserID string) []domain.LinkedIdentity {

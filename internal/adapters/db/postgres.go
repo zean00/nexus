@@ -399,23 +399,23 @@ func (r *PostgresRepository) CreateStepUpChallenge(ctx context.Context, challeng
 			return err
 		}
 		_, err = txRepo.exec(ctx, `
-			insert into step_up_challenges (id, tenant_id, user_id, purpose, channel_type, code_hash, expires_at, consumed_at, created_at)
-			values ($1,$2,$3,$4,$5,$6,$7,null,$8)
-		`, challenge.ID, challenge.TenantID, challenge.UserID, challenge.Purpose, challenge.ChannelType, challenge.CodeHash, challenge.ExpiresAt, challenge.CreatedAt)
+			insert into step_up_challenges (id, tenant_id, user_id, purpose, channel_type, expected_channel_user_id, code_hash, expires_at, consumed_at, created_at)
+			values ($1,$2,$3,$4,$5,$6,$7,$8,null,$9)
+		`, challenge.ID, challenge.TenantID, challenge.UserID, challenge.Purpose, challenge.ChannelType, challenge.ExpectedChannelUserID, challenge.CodeHash, challenge.ExpiresAt, challenge.CreatedAt)
 		return err
 	})
 }
 
-func (r *PostgresRepository) ConsumeStepUpChallenge(ctx context.Context, tenantID, userID, purpose, channelType, codeHash string, now time.Time) (domain.StepUpChallenge, error) {
+func (r *PostgresRepository) ConsumeStepUpChallenge(ctx context.Context, tenantID, userID, purpose, channelType, codeHash, actualChannelUserID string, now time.Time) (domain.StepUpChallenge, error) {
 	row := r.queryRow(ctx, `
-		select id, tenant_id, user_id, purpose, channel_type, code_hash, expires_at, coalesce(consumed_at,'epoch'::timestamptz), created_at
+		select id, tenant_id, user_id, purpose, channel_type, coalesce(expected_channel_user_id,''), code_hash, expires_at, coalesce(consumed_at,'epoch'::timestamptz), created_at
 		from step_up_challenges
 		where tenant_id=$1 and user_id=$2 and purpose=$3 and channel_type=$4 and code_hash=$5
 		order by created_at desc
 		limit 1
 	`, tenantID, userID, purpose, channelType, codeHash)
 	var challenge domain.StepUpChallenge
-	if err := row.Scan(&challenge.ID, &challenge.TenantID, &challenge.UserID, &challenge.Purpose, &challenge.ChannelType, &challenge.CodeHash, &challenge.ExpiresAt, &challenge.ConsumedAt, &challenge.CreatedAt); err != nil {
+	if err := row.Scan(&challenge.ID, &challenge.TenantID, &challenge.UserID, &challenge.Purpose, &challenge.ChannelType, &challenge.ExpectedChannelUserID, &challenge.CodeHash, &challenge.ExpiresAt, &challenge.ConsumedAt, &challenge.CreatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.StepUpChallenge{}, domain.ErrStepUpChallengeNotFound
 		}
@@ -426,6 +426,9 @@ func (r *PostgresRepository) ConsumeStepUpChallenge(ctx context.Context, tenantI
 	}
 	if now.After(challenge.ExpiresAt) {
 		return domain.StepUpChallenge{}, domain.ErrStepUpChallengeExpired
+	}
+	if strings.TrimSpace(challenge.ExpectedChannelUserID) != "" && strings.TrimSpace(challenge.ExpectedChannelUserID) != strings.TrimSpace(actualChannelUserID) {
+		return domain.StepUpChallenge{}, domain.ErrStepUpChallengeNotFound
 	}
 	tag, err := r.exec(ctx, `update step_up_challenges set consumed_at=$2 where id=$1 and consumed_at is null`, challenge.ID, now)
 	if err != nil {

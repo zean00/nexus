@@ -48,7 +48,7 @@ type IdentityRepository interface {
 	MarkUserStepUp(ctx context.Context, tenantID, userID string, at time.Time) error
 	HasRecentStepUp(ctx context.Context, tenantID, userID string, since time.Time) (bool, error)
 	CreateStepUpChallenge(ctx context.Context, challenge domain.StepUpChallenge, minInterval time.Duration) error
-	ConsumeStepUpChallenge(ctx context.Context, tenantID, userID, purpose, channelType, codeHash string, now time.Time) (domain.StepUpChallenge, error)
+	ConsumeStepUpChallenge(ctx context.Context, tenantID, userID, purpose, channelType, codeHash, actualChannelUserID string, now time.Time) (domain.StepUpChallenge, error)
 	UpsertLinkedIdentity(ctx context.Context, identity domain.LinkedIdentity) error
 	GetLinkedIdentity(ctx context.Context, tenantID, channelType, channelUserID string) (domain.LinkedIdentity, error)
 	ListLinkedIdentitiesForUser(ctx context.Context, tenantID, userID string) ([]domain.LinkedIdentity, error)

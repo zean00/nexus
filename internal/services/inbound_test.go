@@ -49,9 +49,12 @@ func (r *fakeIdentityRepo) HasRecentStepUp(context.Context, string, string, time
 func (r *fakeIdentityRepo) CreateStepUpChallenge(context.Context, domain.StepUpChallenge, time.Duration) error {
 	return nil
 }
-func (r *fakeIdentityRepo) ConsumeStepUpChallenge(_ context.Context, tenantID, userID, purpose, channelType, codeHash string, now time.Time) (domain.StepUpChallenge, error) {
+func (r *fakeIdentityRepo) ConsumeStepUpChallenge(_ context.Context, tenantID, userID, purpose, channelType, codeHash, actualChannelUserID string, now time.Time) (domain.StepUpChallenge, error) {
 	challenge, ok := r.challenges[tenantID+"|"+userID+"|"+purpose+"|"+channelType+"|"+codeHash]
 	if !ok {
+		return domain.StepUpChallenge{}, domain.ErrStepUpChallengeNotFound
+	}
+	if challenge.ExpectedChannelUserID != "" && challenge.ExpectedChannelUserID != actualChannelUserID {
 		return domain.StepUpChallenge{}, domain.ErrStepUpChallengeNotFound
 	}
 	challenge.ConsumedAt = now
@@ -524,6 +527,53 @@ func TestInboundServiceLinksRelatedWhatsAppWebIdentity(t *testing.T) {
 	}
 	if len(repo.queue) != 0 {
 		t.Fatalf("expected no queued items, got %d", len(repo.queue))
+	}
+}
+
+func TestInboundServiceRejectsWhatsAppLinkWhenExpectedPhoneDiffers(t *testing.T) {
+	repo := &fakeRepo{
+		receipts: map[string]bool{},
+		sessions: map[string]domain.Session{},
+	}
+	identity := &fakeIdentityRepo{
+		challenges: map[string]domain.StepUpChallenge{
+			"tenant_default|user_1|link|whatsapp_web|" + sha256Hex("12345678"): {
+				ID:                    "challenge_1",
+				TenantID:              "tenant_default",
+				UserID:                "user_1",
+				Purpose:               "link",
+				ChannelType:           "whatsapp_web",
+				ExpectedChannelUserID: "628111111111",
+				CodeHash:              sha256Hex("12345678"),
+				ExpiresAt:             time.Now().UTC().Add(5 * time.Minute),
+			},
+		},
+	}
+	svc := InboundService{
+		Repo:     repo,
+		Identity: identity,
+		Router:   StaticRouter{DefaultAgentProfileID: "agent_profile_default"},
+	}
+	raw, _ := json.Marshal(map[string]string{"ok": "true"})
+	_, err := svc.Handle(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_link_wa_mismatch",
+		TenantID:        "tenant_default",
+		Channel:         "whatsapp_web",
+		ProviderEventID: "provider_link_wa_mismatch",
+		ReceivedAt:      time.Now(),
+		Sender:          domain.Sender{ChannelUserID: "+62 812-3456-7890"},
+		Conversation:    domain.Conversation{ChannelSurfaceKey: "wa_surface_1"},
+		Message:         domain.Message{MessageID: "msg_link_wa_mismatch", Text: "link user_1.12345678"},
+		Metadata:        domain.Metadata{RawPayload: raw},
+	})
+	if !errors.Is(err, domain.ErrStepUpChallengeNotFound) {
+		t.Fatalf("expected challenge not found, got %v", err)
+	}
+	if len(identity.identities) != 0 {
+		t.Fatalf("expected no linked identity, got %+v", identity.identities)
+	}
+	if challenge := identity.challenges["tenant_default|user_1|link|whatsapp_web|"+sha256Hex("12345678")]; !challenge.ConsumedAt.IsZero() {
+		t.Fatalf("expected mismatch not to consume challenge, got %+v", challenge)
 	}
 }
 
