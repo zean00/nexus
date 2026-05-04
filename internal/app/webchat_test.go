@@ -480,6 +480,28 @@ func TestAdminIdentityLinkCodeSupportsWhatsAppWeb(t *testing.T) {
 	}
 }
 
+func TestAdminIdentityLinkCodeAcceptsWhatsAppWebAlias(t *testing.T) {
+	identity := &identityStub{}
+	user, err := identity.EnsureUserByEmail(context.Background(), "tenant_default", "user@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default", IdentityLinkMinutes: 10}, Identity: identity}
+	body := `{"user_id":"` + user.ID + `","channel":"whatsapp-web","phone":"+62 812-3456-7890"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/identity/link-code", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	app.handleAdminIdentityLinkCode(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	challenge := identity.challenges[user.ID+"|link|whatsapp_web"]
+	if challenge.ChannelType != "whatsapp_web" || challenge.ExpectedChannelUserID != "6281234567890" {
+		t.Fatalf("expected normalized whatsapp-web challenge, got %+v", challenge)
+	}
+}
+
 func TestAdminIdentityLinkStatusMatchesRelatedWhatsAppChannels(t *testing.T) {
 	identity := &identityStub{}
 	user, err := identity.EnsureUserByEmail(context.Background(), "tenant_default", "user@example.com")
