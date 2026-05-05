@@ -289,7 +289,11 @@ func normalizeLinkedIdentityUserID(channelType, channelUserID string) string {
 			b.WriteRune(ch)
 		}
 	}
-	return b.String()
+	digits := b.String()
+	if strings.HasPrefix(digits, "08") {
+		digits = "62" + strings.TrimPrefix(digits, "0")
+	}
+	return digits
 }
 
 func parseIdentityCommand(text string) (string, string) {
