@@ -162,7 +162,10 @@ func TestStrictStartRunAddsEmailContextAndArtifactRefs(t *testing.T) {
 func TestStrictEnsureSessionWithGreeting(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/sessions" {
+		if r.Method != http.MethodPut {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/sessions/session_1" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -203,7 +206,10 @@ func TestStrictEnsureSessionWithGreeting(t *testing.T) {
 func TestStrictEnsureSessionWithGreetingNormalizesIndonesiaLanguage(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/sessions" {
+		if r.Method != http.MethodPut {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/sessions/session_1" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -234,7 +240,10 @@ func TestStrictEnsureSessionWithGreetingRequestsExistingACPSession(t *testing.T)
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		if r.URL.Path != "/sessions" {
+		if r.Method != http.MethodPut {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/sessions/acp_session_1" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {

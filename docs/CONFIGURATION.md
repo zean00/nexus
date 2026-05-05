@@ -152,6 +152,7 @@ Behavior notes:
 Behavior notes:
 
 - `whatsapp_web` is a separate channel from `whatsapp`
+- WAHA webhook verification accepts hex or base64 `X-Webhook-Hmac` values, with optional case-insensitive `sha1`, `sha256`, `sha512`, or `hmac-sha*` prefixes; `X-Webhook-Hmac-Algorithm` selects the HMAC algorithm and defaults to SHA-256
 - outbound artifacts are sent through WAHA directly and do not require public URLs
 - inbound WAHA location payloads are normalized into canonical location parts with a maps-link text fallback
 - Nexus exposes admin session lifecycle endpoints for the configured WAHA session

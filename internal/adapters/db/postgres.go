@@ -99,6 +99,12 @@ func (r *PostgresRepository) ResolveSession(ctx context.Context, evt domain.Cano
 	var s domain.Session
 	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPSessionID)
 	if err == nil {
+		if s.AgentProfileID == "" && strings.TrimSpace(agentProfileID) != "" {
+			if _, updateErr := r.exec(ctx, `update sessions set agent_profile_id=$1, updated_at=now() where id=$2`, agentProfileID, s.ID); updateErr != nil {
+				return domain.Session{}, false, updateErr
+			}
+			s.AgentProfileID = agentProfileID
+		}
 		return s, false, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -135,6 +141,12 @@ func (r *PostgresRepository) resolveVirtualSurfaceSession(ctx context.Context, e
 	var s domain.Session
 	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPSessionID)
 	if err == nil {
+		if s.AgentProfileID == "" && strings.TrimSpace(agentProfileID) != "" {
+			if _, updateErr := r.exec(ctx, `update sessions set agent_profile_id=$1, updated_at=now() where id=$2`, agentProfileID, s.ID); updateErr != nil {
+				return domain.Session{}, false, updateErr
+			}
+			s.AgentProfileID = agentProfileID
+		}
 		return s, false, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {

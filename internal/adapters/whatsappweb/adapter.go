@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"mime"
 	"net/http"
@@ -89,19 +93,70 @@ func (a Adapter) VerifyInbound(_ context.Context, r *http.Request, body []byte) 
 	if got == "" {
 		return errors.New("missing WAHA webhook signature")
 	}
-	mac := hmac.New(sha256.New, []byte(a.WebhookSecret))
+	mac, err := newWebhookHMAC(strings.TrimSpace(r.Header.Get("X-Webhook-Hmac-Algorithm")), []byte(a.WebhookSecret))
+	if err != nil {
+		return err
+	}
 	_, _ = mac.Write(body)
-	expected := hex.EncodeToString(mac.Sum(nil))
-	if !secureEqualHex(got, expected) {
+	expected := mac.Sum(nil)
+	if !secureEqualHMAC(got, expected) {
 		return errors.New("invalid WAHA webhook signature")
 	}
 	return nil
 }
 
-func secureEqualHex(aHex, bHex string) bool {
-	aHex = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(aHex), "sha256="))
-	bHex = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(bHex), "sha256="))
-	return hmac.Equal([]byte(aHex), []byte(bHex))
+func newWebhookHMAC(algorithm string, secret []byte) (hash.Hash, error) {
+	switch strings.ToLower(strings.TrimSpace(algorithm)) {
+	case "", "sha256", "hmac-sha256":
+		return hmac.New(sha256.New, secret), nil
+	case "sha512", "hmac-sha512":
+		return hmac.New(sha512.New, secret), nil
+	case "sha1", "hmac-sha1":
+		return hmac.New(sha1.New, secret), nil
+	default:
+		return nil, fmt.Errorf("unsupported WAHA webhook signature algorithm %q", algorithm)
+	}
+}
+
+func secureEqualHMAC(got string, expected []byte) bool {
+	got = stripHMACSignaturePrefix(got)
+	if got == "" {
+		return false
+	}
+
+	if decoded, err := hex.DecodeString(got); err == nil {
+		return hmac.Equal(decoded, expected)
+	}
+	if decoded, err := hex.DecodeString(strings.ToLower(got)); err == nil {
+		return hmac.Equal(decoded, expected)
+	}
+
+	for _, enc := range []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	} {
+		if decoded, err := enc.DecodeString(got); err == nil && hmac.Equal(decoded, expected) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripHMACSignaturePrefix(value string) string {
+	value = strings.TrimSpace(value)
+	for _, sep := range []string{"=", ":"} {
+		prefix, signature, ok := strings.Cut(value, sep)
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(prefix)) {
+		case "sha1", "sha256", "sha512", "hmac-sha1", "hmac-sha256", "hmac-sha512":
+			return strings.TrimSpace(signature)
+		}
+	}
+	return value
 }
 
 type webhookEnvelope struct {
@@ -120,7 +175,7 @@ type messagePayload struct {
 	Body      string `json:"body"`
 	HasMedia  bool   `json:"hasMedia"`
 	Ack       *int   `json:"ack"`
-	ReplyTo   string `json:"replyTo"`
+	ReplyTo   any    `json:"replyTo"`
 	Media     *struct {
 		URL      string `json:"url"`
 		MimeType string `json:"mimetype"`
@@ -146,7 +201,7 @@ func (a Adapter) ParseInbound(ctx context.Context, r *http.Request, body []byte,
 	return events[0], nil
 }
 
-func (a Adapter) ParseInboundBatch(_ context.Context, _ *http.Request, body []byte, tenantID string) ([]domain.CanonicalInboundEvent, error) {
+func (a Adapter) ParseInboundBatch(ctx context.Context, _ *http.Request, body []byte, tenantID string) ([]domain.CanonicalInboundEvent, error) {
 	var env webhookEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, err
@@ -165,6 +220,9 @@ func (a Adapter) ParseInboundBatch(_ context.Context, _ *http.Request, body []by
 		return nil, nil
 	}
 	channelUserID := normalizeWAHAIdentity(payload.From)
+	if resolved := a.resolveWAHAContactIdentity(ctx, payload.From); resolved != "" {
+		channelUserID = resolved
+	}
 	conversationID := normalizeWAHAConversation(payload.From)
 	surfaceKey := strings.TrimSpace(payload.From)
 	if surfaceKey == "" {
@@ -246,6 +304,51 @@ func (a Adapter) ParseInboundBatch(_ context.Context, _ *http.Request, body []by
 		Artifacts:   artifacts,
 	}
 	return []domain.CanonicalInboundEvent{evt}, nil
+}
+
+type contactPayload struct {
+	ID     string `json:"id"`
+	Number string `json:"number"`
+}
+
+func (a Adapter) resolveWAHAContactIdentity(ctx context.Context, jid string) string {
+	jid = strings.TrimSpace(jid)
+	if jid == "" || !strings.HasSuffix(jid, "@lid") || a.BaseURL == "" {
+		return ""
+	}
+	session := strings.TrimSpace(a.Session)
+	if session == "" {
+		session = "default"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.BaseURL+"/api/"+url.PathEscape(session)+"/contacts/"+url.PathEscape(jid), nil)
+	if err != nil {
+		return ""
+	}
+	if a.APIKey != "" {
+		req.Header.Set("X-Api-Key", a.APIKey)
+	}
+	client := a.HTTP
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ""
+	}
+	var contact contactPayload
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&contact); err != nil {
+		return ""
+	}
+	for _, candidate := range []string{contact.Number, contact.ID} {
+		if normalized := normalizeWAHAIdentity(candidate); normalized != "" {
+			return normalized
+		}
+	}
+	return ""
 }
 
 func wahaArtifacts(payload messagePayload) []domain.Artifact {
@@ -442,7 +545,7 @@ func (a Adapter) send(ctx context.Context, delivery domain.OutboundDelivery, _ b
 		return result, nil
 	default:
 		var response struct {
-			ID string `json:"id"`
+			ID any `json:"id"`
 		}
 		if err := a.postJSON(ctx, "/api/sendText", map[string]any{
 			"session":  a.Session,
@@ -453,7 +556,7 @@ func (a Adapter) send(ctx context.Context, delivery domain.OutboundDelivery, _ b
 			return domain.DeliveryResult{}, err
 		}
 		a.markOffline(ctx)
-		return domain.DeliveryResult{ProviderMessageID: response.ID}, nil
+		return domain.DeliveryResult{ProviderMessageID: wahaMessageID(response.ID)}, nil
 	}
 }
 
@@ -528,7 +631,7 @@ func (a Adapter) sendArtifact(ctx context.Context, body map[string]any) (domain.
 		chatID = strings.TrimSpace(asString(body["to"]))
 	}
 	var response struct {
-		ID string `json:"id"`
+		ID any `json:"id"`
 	}
 	payload := map[string]any{
 		"session":  a.Session,
@@ -540,7 +643,7 @@ func (a Adapter) sendArtifact(ctx context.Context, body map[string]any) (domain.
 	if err := a.postJSON(ctx, "/api/sendFile", payload, &response); err != nil {
 		return domain.DeliveryResult{}, err
 	}
-	return domain.DeliveryResult{ProviderMessageID: response.ID}, nil
+	return domain.DeliveryResult{ProviderMessageID: wahaMessageID(response.ID)}, nil
 }
 
 func (a Adapter) markOffline(ctx context.Context) {
@@ -604,11 +707,19 @@ func readStorageURI(uri string) ([]byte, error) {
 }
 
 func (a Adapter) postJSON(ctx context.Context, path string, payload any, out any) error {
+	return a.writeJSON(ctx, http.MethodPost, path, payload, out)
+}
+
+func (a Adapter) putJSON(ctx context.Context, path string, payload any, out any) error {
+	return a.writeJSON(ctx, http.MethodPut, path, payload, out)
+}
+
+func (a Adapter) writeJSON(ctx context.Context, method, path string, payload any, out any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+path, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, method, a.BaseURL+path, bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
@@ -694,7 +805,9 @@ func (a Adapter) StartSession(ctx context.Context) (SessionStatus, error) {
 		return SessionStatus{}, err
 	}
 	if err := a.postJSON(ctx, "/api/sessions/"+url.PathEscape(a.Session)+"/start", map[string]any{}, nil); err != nil {
-		return SessionStatus{}, err
+		if !strings.Contains(err.Error(), "already started") {
+			return SessionStatus{}, err
+		}
 	}
 	return a.GetSessionStatus(ctx)
 }
@@ -716,7 +829,12 @@ func (a Adapter) SyncWebhook(ctx context.Context) (SessionStatus, error) {
 	}
 	var status SessionStatus
 	if err := a.postJSON(ctx, "/api/sessions", payload, &status); err != nil {
-		return SessionStatus{}, err
+		if !strings.Contains(err.Error(), "already exists") {
+			return SessionStatus{}, err
+		}
+		if err := a.putJSON(ctx, "/api/sessions/"+url.PathEscape(a.Session), payload, &status); err != nil {
+			return SessionStatus{}, err
+		}
 	}
 	return status, nil
 }
@@ -749,6 +867,20 @@ func nestedString(body map[string]any, key, nested string) string {
 		return ""
 	}
 	return asString(v[nested])
+}
+
+func wahaMessageID(raw any) string {
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case map[string]any:
+		for _, key := range []string{"_serialized", "serialized", "id"} {
+			if id := strings.TrimSpace(asString(v[key])); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {

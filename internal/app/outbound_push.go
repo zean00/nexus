@@ -209,9 +209,6 @@ func (a *App) materializeDelegatedOutboundSessions(ctx context.Context, parent d
 }
 
 func (a *App) persistWebChatOutboundPush(ctx context.Context, session domain.Session, runID string, req outboundPushRequest) error {
-	if session.ChannelType != "webchat" {
-		return nil
-	}
 	text := strings.TrimSpace(req.Text)
 	if text == "" && len(req.Artifacts) == 0 {
 		return nil
@@ -238,9 +235,7 @@ func (a *App) persistWebChatOutboundPush(ctx context.Context, session domain.Ses
 			return err
 		}
 	}
-	if a.WebChatHub != nil {
-		a.WebChatHub.Notify(session.ID)
-	}
+	a.notifyWebChatSessionUpdate(session.ID)
 	return nil
 }
 

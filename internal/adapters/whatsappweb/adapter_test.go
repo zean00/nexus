@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -49,6 +51,21 @@ func TestVerifyInboundValidatesSignature(t *testing.T) {
 	if err := adapter.VerifyInbound(context.Background(), req, body); err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("X-Webhook-Hmac", "SHA256="+hex.EncodeToString(mac.Sum(nil)))
+	if err := adapter.VerifyInbound(context.Background(), req, body); err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Webhook-Hmac", base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+	if err := adapter.VerifyInbound(context.Background(), req, body); err != nil {
+		t.Fatal(err)
+	}
+	sha512MAC := hmac.New(sha512.New, []byte("secret"))
+	_, _ = sha512MAC.Write(body)
+	req.Header.Set("X-Webhook-Hmac-Algorithm", "sha512")
+	req.Header.Set("X-Webhook-Hmac", "sha512="+hex.EncodeToString(sha512MAC.Sum(nil)))
+	if err := adapter.VerifyInbound(context.Background(), req, body); err != nil {
+		t.Fatal(err)
+	}
 	req.Header.Set("X-Webhook-Hmac", "deadbeef")
 	if err := adapter.VerifyInbound(context.Background(), req, body); err == nil {
 		t.Fatal("expected invalid signature")
@@ -80,6 +97,47 @@ func TestParseInboundBatchMessage(t *testing.T) {
 	}
 	if events[0].Conversation.ChannelSurfaceKey != "628123456789@c.us" {
 		t.Fatalf("expected surface key to preserve JID, got %+v", events[0].Conversation)
+	}
+}
+
+func TestParseInboundBatchResolvesLIDContact(t *testing.T) {
+	waha := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/default/contacts/15629503459410@lid" {
+			t.Fatalf("unexpected contact path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("X-Api-Key"); got != "api-key" {
+			t.Fatalf("unexpected api key %q", got)
+		}
+		_, _ = w.Write([]byte(`{"id":"628562936915@c.us","number":"628562936915"}`))
+	}))
+	defer waha.Close()
+	adapter := New(waha.URL, "api-key", "default", "", "secret", "https://nexus.example")
+	adapter.HTTP = waha.Client()
+	body := []byte(`{
+		"id":"evt_1",
+		"event":"message",
+		"session":"default",
+		"payload":{
+			"id":"msg_1",
+			"timestamp":1710000000,
+			"from":"15629503459410@lid",
+			"to":"6285930006776@c.us",
+			"body":"link user_1.12345678",
+			"replyTo":{"id":"quoted"}
+		}
+	}`)
+	events, err := adapter.ParseInboundBatch(context.Background(), httptest.NewRequest(http.MethodPost, "/webhooks/whatsapp-web", nil), body, "tenant_default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one event, got %+v", events)
+	}
+	if events[0].Sender.ChannelUserID != "628562936915" {
+		t.Fatalf("expected resolved phone sender, got %+v", events[0].Sender)
+	}
+	if events[0].Conversation.ChannelSurfaceKey != "15629503459410@lid" {
+		t.Fatalf("expected LID surface key to be preserved, got %+v", events[0].Conversation)
 	}
 }
 
@@ -171,6 +229,37 @@ func TestSendMessageAppliesAntiBlockSequence(t *testing.T) {
 		t.Fatalf("expected offline presence reset at end, got %q", got)
 	}
 	if result.ProviderMessageID != "wamid.1" {
+		t.Fatalf("unexpected result %+v", result)
+	}
+}
+
+func TestSendMessageAcceptsObjectMessageID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/sendText" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"id":{"_serialized":"wamid.object.1"}}`)
+	}))
+	defer server.Close()
+	adapter := New(server.URL, "token", "default", "", "secret", "https://nexus.example")
+	adapter.HTTP = server.Client()
+	adapter.EnableAntiBlock = false
+	adapter.RequireRecentInbound = false
+	adapter.SetOfflineAfterSend = false
+	payload, err := json.Marshal(map[string]any{"chatId": "628123456789@c.us", "text": "hello there"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.SendMessage(context.Background(), domain.OutboundDelivery{
+		ID:          "delivery_1",
+		SessionID:   "session_1",
+		ChannelType: "whatsapp_web",
+		PayloadJSON: payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderMessageID != "wamid.object.1" {
 		t.Fatalf("unexpected result %+v", result)
 	}
 }

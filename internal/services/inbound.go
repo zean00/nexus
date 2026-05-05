@@ -46,7 +46,11 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 			return ErrDuplicateEvent
 		}
 
-		session, _, err := repo.ResolveSession(ctx, evt, "")
+		route, err := s.Router.Route(ctx, evt, domain.Session{})
+		if err != nil {
+			return err
+		}
+		session, _, err := repo.ResolveSession(ctx, evt, route.AgentProfileID)
 		if err != nil {
 			return err
 		}
@@ -61,10 +65,6 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 		} else if handled {
 			result = commandResult
 			return nil
-		}
-		route, err := s.Router.Route(ctx, evt, session)
-		if err != nil {
-			return err
 		}
 		if session.AgentProfileID == "" {
 			session.AgentProfileID = route.AgentProfileID

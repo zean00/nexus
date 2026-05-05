@@ -173,8 +173,12 @@ func (c StrictClient) ensureSession(ctx context.Context, session domain.Session,
 		}
 	}
 	var created strictSession
-	if err := c.postJSON(ctx, "/sessions", nil, body, &created, sessionHeaders(session, "", "")); err != nil {
-		if putErr := c.putJSON(ctx, "/sessions/"+url.PathEscape(session.ID), nil, body, &created, sessionHeaders(session, "", "")); putErr != nil {
+	targetSessionID := session.ID
+	if strings.TrimSpace(session.ACPSessionID) != "" {
+		targetSessionID = session.ACPSessionID
+	}
+	if err := c.putJSON(ctx, "/sessions/"+url.PathEscape(targetSessionID), nil, body, &created, sessionHeaders(session, "", "")); err != nil {
+		if postErr := c.postJSON(ctx, "/sessions", nil, body, &created, sessionHeaders(session, "", "")); postErr != nil {
 			return strictSession{}, err
 		}
 	}
