@@ -187,6 +187,10 @@ For channel-specific payloads, send `raw_channel_payload`; Nexus will enqueue it
 
 The bulk endpoint also accepts Duraclaw outbox batches where each item has `outbox_id`, `topic`, and `payload`. If `payload` is an outbound-intent envelope with `customer_id`, `user_id`, `session_id`, `intent_type`, and nested `payload.text`, Nexus lifts those fields before target resolution.
 
+Duraclaw agent-delegation artifacts are first-class outbound metadata. When an outbound payload contains an artifact with `type: "agent_delegation_reference"`, Nexus preserves the delegation fields under artifact `data` in both the message payload and the persisted artifact record, then materializes a visible delegated session for the Duraclaw child `session_id`. The delegated Nexus session uses the same ID as the Duraclaw child ACP session, points at `target_agent_instance_id`, and receives aliases from `target_handle` plus `delegate-<target_handle>`.
+
+Delegated sessions are not made active automatically. Users can continue them by selecting the session in webchat or by using the normal channel session switch flow, for example `/switch finance` or `/switch delegate-finance` on channels that support text commands. Alias lookup is scoped to the full channel surface key, including composite surfaces such as Slack channel-thread keys, so delegated sessions do not leak across sibling threads or conversations.
+
 ## Telegram Trust Endpoints
 
 Primary Telegram trust endpoints:

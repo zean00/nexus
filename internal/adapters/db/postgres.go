@@ -875,20 +875,47 @@ func firstNonEmptyDB(values ...string) string {
 
 func (r *PostgresRepository) StoreArtifacts(ctx context.Context, messageID string, direction string, artifacts []domain.Artifact) error {
 	for _, artifact := range artifacts {
-		_, err := r.exec(ctx, `
+		dataJSON, err := marshalArtifactData(artifact.Data)
+		if err != nil {
+			return err
+		}
+		_, err = r.exec(ctx, `
 			insert into artifacts (
-				id, message_id, direction, name, mime_type, size_bytes, sha256, storage_uri, created_at
-			) values ($1,$2,$3,$4,$5,$6,$7,$8,now())
+				id, message_id, direction, name, mime_type, size_bytes, sha256, storage_uri, artifact_type, data_json, created_at
+			) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())
 			on conflict (id) do update
 			set storage_uri=excluded.storage_uri,
 			    sha256=excluded.sha256,
 			    size_bytes=excluded.size_bytes,
 			    mime_type=excluded.mime_type,
-			    name=excluded.name
-		`, artifact.ID, messageID, direction, artifact.Name, artifact.MIMEType, artifact.SizeBytes, artifact.SHA256, artifact.StorageURI)
+			    name=excluded.name,
+			    artifact_type=excluded.artifact_type,
+			    data_json=excluded.data_json
+		`, artifact.ID, messageID, direction, artifact.Name, artifact.MIMEType, artifact.SizeBytes, artifact.SHA256, artifact.StorageURI, artifact.Type, dataJSON)
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func marshalArtifactData(data map[string]any) ([]byte, error) {
+	if len(data) == 0 {
+		return []byte(`{}`), nil
+	}
+	return json.Marshal(data)
+}
+
+func restoreArtifactData(artifact *domain.Artifact, raw []byte) error {
+	if len(raw) == 0 || string(raw) == "{}" {
+		return nil
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return err
+	}
+	if len(data) > 0 {
+		artifact.Data = data
 	}
 	return nil
 }
@@ -1382,7 +1409,7 @@ func (r *PostgresRepository) ListArtifacts(ctx context.Context, query domain.Art
 	}
 	args = append(args, limit+1)
 	rows, err := r.query(ctx, fmt.Sprintf(`
-		select a.id, a.message_id, a.name, a.mime_type, a.size_bytes, a.sha256, a.storage_uri, a.created_at
+		select a.id, a.message_id, a.name, a.mime_type, a.size_bytes, a.sha256, a.storage_uri, coalesce(a.artifact_type, ''), coalesce(a.data_json, '{}'::jsonb), a.created_at
 		from artifacts a
 		join messages m on m.id = a.message_id
 		join sessions s on s.id = m.session_id
@@ -1398,8 +1425,12 @@ func (r *PostgresRepository) ListArtifacts(ctx context.Context, query domain.Art
 	var cursor []cursorValue
 	for rows.Next() {
 		var artifact domain.Artifact
+		var dataJSON []byte
 		var createdAt time.Time
-		if err := rows.Scan(&artifact.ID, &artifact.MessageID, &artifact.Name, &artifact.MIMEType, &artifact.SizeBytes, &artifact.SHA256, &artifact.StorageURI, &createdAt); err != nil {
+		if err := rows.Scan(&artifact.ID, &artifact.MessageID, &artifact.Name, &artifact.MIMEType, &artifact.SizeBytes, &artifact.SHA256, &artifact.StorageURI, &artifact.Type, &dataJSON, &createdAt); err != nil {
+			return domain.PagedResult[domain.Artifact]{}, err
+		}
+		if err := restoreArtifactData(&artifact, dataJSON); err != nil {
 			return domain.PagedResult[domain.Artifact]{}, err
 		}
 		out = append(out, artifact)
@@ -1480,12 +1511,13 @@ func (r *PostgresRepository) GetSessionDetail(ctx context.Context, sessionID str
 
 func (r *PostgresRepository) GetArtifactForSession(ctx context.Context, tenantID, sessionID, artifactID string) (domain.Artifact, error) {
 	row := r.queryRow(ctx, `
-		select a.id, a.message_id, a.name, a.mime_type, a.size_bytes, a.sha256, coalesce(a.storage_uri, '')
+		select a.id, a.message_id, a.name, a.mime_type, a.size_bytes, a.sha256, coalesce(a.storage_uri, ''), coalesce(a.artifact_type, ''), coalesce(a.data_json, '{}'::jsonb)
 		from artifacts a
 		join messages m on m.id = a.message_id
 		where m.tenant_id=$1 and m.session_id=$2 and a.id=$3
 	`, tenantID, sessionID, artifactID)
 	var artifact domain.Artifact
+	var dataJSON []byte
 	if err := row.Scan(
 		&artifact.ID,
 		&artifact.MessageID,
@@ -1494,10 +1526,15 @@ func (r *PostgresRepository) GetArtifactForSession(ctx context.Context, tenantID
 		&artifact.SizeBytes,
 		&artifact.SHA256,
 		&artifact.StorageURI,
+		&artifact.Type,
+		&dataJSON,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.Artifact{}, domain.ErrArtifactNotFound
 		}
+		return domain.Artifact{}, err
+	}
+	if err := restoreArtifactData(&artifact, dataJSON); err != nil {
 		return domain.Artifact{}, err
 	}
 	return artifact, nil
@@ -2443,6 +2480,60 @@ func (r *PostgresRepository) CreateVirtualSession(ctx context.Context, tenantID,
 	return session, nil
 }
 
+func (r *PostgresRepository) CreateDelegatedSession(ctx context.Context, parent domain.Session, artifact domain.Artifact) (domain.Session, error) {
+	acpSessionID := strings.TrimSpace(stringFromArtifactData(artifact.Data, "session_id"))
+	if acpSessionID == "" {
+		return domain.Session{}, fmt.Errorf("delegation artifact missing session_id")
+	}
+	targetAgentProfileID := strings.TrimSpace(stringFromArtifactData(artifact.Data, "target_agent_instance_id"))
+	if targetAgentProfileID == "" {
+		targetAgentProfileID = parent.AgentProfileID
+	}
+	surfaceKey := delegatedSurfaceKey(parent)
+	session := domain.Session{
+		ID:              acpSessionID,
+		TenantID:        parent.TenantID,
+		OwnerUserID:     parent.OwnerUserID,
+		AgentProfileID:  targetAgentProfileID,
+		ChannelType:     parent.ChannelType,
+		ChannelScopeKey: surfaceKey + ":" + acpSessionID,
+		State:           "open",
+		LastActiveAt:    time.Now().UTC(),
+		ACPSessionID:    acpSessionID,
+	}
+	_, err := r.exec(ctx, `
+		insert into sessions (
+			id, tenant_id, owner_user_id, agent_profile_id, channel_type, channel_scope_key,
+			acp_connection_id, acp_server_url, acp_agent_name, acp_session_id, mode, state, last_active_at, created_at, updated_at
+		) values ($1,$2,$3,$4,$5,$6,'acp_default','','',$7,'delegated','open',now(),now(),now())
+		on conflict (id)
+		do update set
+			tenant_id=excluded.tenant_id,
+			owner_user_id=excluded.owner_user_id,
+			agent_profile_id=excluded.agent_profile_id,
+			channel_type=excluded.channel_type,
+			channel_scope_key=excluded.channel_scope_key,
+			acp_session_id=excluded.acp_session_id,
+			state='open',
+			last_active_at=now(),
+			updated_at=now()
+	`, session.ID, session.TenantID, session.OwnerUserID, session.AgentProfileID, session.ChannelType, session.ChannelScopeKey, session.ACPSessionID)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if alias := delegationAlias(artifact); alias != "" {
+		if err := r.upsertSessionAlias(ctx, parent.TenantID, parent.ChannelType, surfaceKey, session.ID, alias); err != nil {
+			return domain.Session{}, err
+		}
+		if prefixed := "delegate-" + alias; prefixed != alias {
+			if err := r.upsertSessionAlias(ctx, parent.TenantID, parent.ChannelType, surfaceKey, session.ID, prefixed); err != nil {
+				return domain.Session{}, err
+			}
+		}
+	}
+	return session, nil
+}
+
 func (r *PostgresRepository) EnsureNotificationSession(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID string) (domain.Session, error) {
 	scopeKey := surfaceKey + ":notice"
 	row := r.queryRow(ctx, `
@@ -2759,6 +2850,47 @@ func validateTelegramAccessResolution(existing domain.TelegramUserAccess) error 
 func notificationSessionID(tenantID, channelType, surfaceKey, ownerUserID string) string {
 	sum := sha1.Sum([]byte(strings.Join([]string{tenantID, channelType, surfaceKey, ownerUserID}, "|")))
 	return fmt.Sprintf("session_notice_%s_%s_%s", channelType, ownerUserID, hex.EncodeToString(sum[:6]))
+}
+
+func delegatedSurfaceKey(parent domain.Session) string {
+	return strings.TrimSpace(parent.ChannelScopeKey)
+}
+
+func delegationAlias(artifact domain.Artifact) string {
+	alias := strings.TrimSpace(stringFromArtifactData(artifact.Data, "target_handle"))
+	alias = strings.TrimPrefix(alias, "@")
+	alias = strings.ToLower(alias)
+	alias = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '_' || r == '-':
+			return r
+		default:
+			return -1
+		}
+	}, alias)
+	return alias
+}
+
+func stringFromArtifactData(data map[string]any, key string) string {
+	if data == nil {
+		return ""
+	}
+	value, ok := data[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case fmt.Stringer:
+		return typed.String()
+	default:
+		return fmt.Sprint(value)
+	}
 }
 
 func surfaceStateID(tenantID, channelType, surfaceKey string) string {

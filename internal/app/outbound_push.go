@@ -133,6 +133,9 @@ func (a *App) enqueueOutboundPush(ctx context.Context, req outboundPushRequest, 
 	if err != nil {
 		return outboundPushResult{}, err
 	}
+	if err := a.materializeDelegatedOutboundSessions(ctx, session, req.Artifacts); err != nil {
+		return outboundPushResult{}, err
+	}
 	runID := strings.TrimSpace(req.RunID)
 	if runID == "" {
 		runID = outboundPushRunID(req, idx)
@@ -170,6 +173,39 @@ func (a *App) enqueueOutboundPush(ctx context.Context, req outboundPushRequest, 
 		CreatedAt: time.Now().UTC(),
 	})
 	return outboundPushResult{SessionID: session.ID, ChannelType: session.ChannelType, DeliveryIDs: ids}, nil
+}
+
+type delegatedOutboundSessionRepository interface {
+	CreateDelegatedSession(ctx context.Context, parent domain.Session, artifact domain.Artifact) (domain.Session, error)
+}
+
+func (a *App) materializeDelegatedOutboundSessions(ctx context.Context, parent domain.Session, artifacts []outboundPushArtifact) error {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	repo, ok := a.Repo.(delegatedOutboundSessionRepository)
+	if !ok {
+		return nil
+	}
+	for i := range artifacts {
+		if artifacts[i].Type != "agent_delegation_reference" {
+			continue
+		}
+		artifact := outboundPushArtifacts([]outboundPushArtifact{artifacts[i]})[0]
+		if strings.TrimSpace(stringFromAny(artifact.Data["session_id"])) == "" {
+			continue
+		}
+		child, err := repo.CreateDelegatedSession(ctx, parent, artifact)
+		if err != nil {
+			return err
+		}
+		if artifacts[i].Data == nil {
+			artifacts[i].Data = map[string]any{}
+		}
+		artifacts[i].Data["nexus_session_id"] = child.ID
+		artifacts[i].Data["nexus_alias"] = stringFromAny(artifact.Data["target_handle"])
+	}
+	return nil
 }
 
 func (a *App) persistWebChatOutboundPush(ctx context.Context, session domain.Session, runID string, req outboundPushRequest) error {
@@ -480,6 +516,20 @@ func stringFromMap(values map[string]any, key string) string {
 	}
 }
 
+func stringFromAny(value any) string {
+	if value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case fmt.Stringer:
+		return typed.String()
+	default:
+		return fmt.Sprint(value)
+	}
+}
+
 func mapFromMap(values map[string]any, key string) (map[string]any, bool) {
 	if values == nil {
 		return nil, false
@@ -527,10 +577,31 @@ func artifactsFromMap(values map[string]any, key string) []outboundPushArtifact 
 			SHA256:     stringFromMap(m, "sha256"),
 			StorageURI: stringFromMap(m, "storage_uri"),
 			SourceURL:  stringFromMap(m, "source_url"),
-			Data:       mapValueFromMap(m, "data"),
+			Data:       artifactDataFromMap(m),
 		})
 	}
 	return out
+}
+
+func artifactDataFromMap(values map[string]any) map[string]any {
+	data := map[string]any{}
+	if existing := mapValueFromMap(values, "data"); len(existing) > 0 {
+		for key, value := range existing {
+			data[key] = value
+		}
+	}
+	for key, value := range values {
+		switch key {
+		case "id", "type", "name", "mime_type", "size_bytes", "sha256", "storage_uri", "source_url", "data":
+			continue
+		default:
+			data[key] = value
+		}
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	return data
 }
 
 func int64FromMap(values map[string]any, key string) int64 {

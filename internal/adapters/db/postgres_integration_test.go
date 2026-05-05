@@ -83,6 +83,22 @@ func TestPostgresRepositoryIntegrationAdminQueries(t *testing.T) {
 	})
 
 	t.Run("artifacts", func(t *testing.T) {
+		err := repo.StoreArtifacts(ctx, "message_2", "outbound", []domain.Artifact{{
+			ID:         "artifact_delegation",
+			Type:       "agent_delegation_reference",
+			Name:       "delegation.json",
+			MIMEType:   "application/json",
+			SizeBytes:  128,
+			SHA256:     "sha256-delegation",
+			StorageURI: "file:///tmp/delegation.json",
+			Data: map[string]any{
+				"session_id":    "child_1",
+				"target_handle": "finance",
+			},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
 		query := domain.ArtifactListQuery{
 			TenantID:     "tenant_default",
 			NameContains: "report",
@@ -101,6 +117,28 @@ func TestPostgresRepositoryIntegrationAdminQueries(t *testing.T) {
 		}
 		if count != 1 {
 			t.Fatalf("expected artifact count=1, got %d", count)
+		}
+		delegationPage, err := repo.ListArtifacts(ctx, domain.ArtifactListQuery{
+			TenantID:     "tenant_default",
+			NameContains: "delegation",
+			CursorPage:   domain.CursorPage{Limit: 10},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(delegationPage.Items) != 1 {
+			t.Fatalf("expected delegation artifact, got %+v", delegationPage)
+		}
+		delegation := delegationPage.Items[0]
+		if delegation.Type != "agent_delegation_reference" || delegation.Data["session_id"] != "child_1" || delegation.Data["target_handle"] != "finance" {
+			t.Fatalf("expected delegation metadata to round trip, got %+v", delegation)
+		}
+		detail, err := repo.GetArtifactForSession(ctx, "tenant_default", "session_1", "artifact_delegation")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if detail.Type != "agent_delegation_reference" || detail.Data["session_id"] != "child_1" || detail.Data["target_handle"] != "finance" {
+			t.Fatalf("expected delegation detail metadata to round trip, got %+v", detail)
 		}
 	})
 

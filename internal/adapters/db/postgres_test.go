@@ -328,6 +328,23 @@ func TestKeyForSurface(t *testing.T) {
 	}
 }
 
+func TestDelegatedSurfaceKeyPreservesCompositeSurface(t *testing.T) {
+	parent := domain.Session{ChannelScopeKey: "slack:C123:thread-456"}
+	if got := delegatedSurfaceKey(parent); got != parent.ChannelScopeKey {
+		t.Fatalf("expected full surface key to be preserved, got %q", got)
+	}
+}
+
+func TestRestoreArtifactData(t *testing.T) {
+	var artifact domain.Artifact
+	if err := restoreArtifactData(&artifact, []byte(`{"session_id":"child_1","target_handle":"finance"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Data["session_id"] != "child_1" || artifact.Data["target_handle"] != "finance" {
+		t.Fatalf("unexpected artifact data: %+v", artifact.Data)
+	}
+}
+
 func mustJSONMap(t *testing.T, v map[string]any) []byte {
 	t.Helper()
 	raw, err := json.Marshal(v)

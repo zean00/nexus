@@ -112,6 +112,7 @@ type appRepoStub struct {
 	deliveries            []domain.OutboundDelivery
 	outboundMessages      []domain.Message
 	storedArtifacts       []domain.Artifact
+	delegatedSessions     []domain.Session
 	telegramAllowed       map[string]bool
 	telegramUsers         []domain.TelegramUserAccess
 	telegramAccessQueries []domain.TelegramUserAccessListQuery
@@ -370,6 +371,21 @@ func (r *appRepoStub) RepairRunFromSnapshot(context.Context, domain.QueueItem, d
 }
 func (r *appRepoStub) CreateVirtualSession(context.Context, string, string, string, string, string, string) (domain.Session, error) {
 	return domain.Session{}, nil
+}
+func (r *appRepoStub) CreateDelegatedSession(_ context.Context, parent domain.Session, artifact domain.Artifact) (domain.Session, error) {
+	sessionID := fmt.Sprint(artifact.Data["session_id"])
+	session := domain.Session{
+		ID:              sessionID,
+		TenantID:        parent.TenantID,
+		OwnerUserID:     parent.OwnerUserID,
+		AgentProfileID:  fmt.Sprint(artifact.Data["target_agent_instance_id"]),
+		ChannelType:     parent.ChannelType,
+		ChannelScopeKey: parent.ChannelScopeKey + ":" + sessionID,
+		State:           "open",
+		ACPSessionID:    sessionID,
+	}
+	r.delegatedSessions = append(r.delegatedSessions, session)
+	return session, nil
 }
 func (r *appRepoStub) EnsureNotificationSession(_ context.Context, tenantID string, channelType string, surfaceKey string, ownerUserID string) (domain.Session, error) {
 	return domain.Session{
@@ -3141,6 +3157,68 @@ func TestHandlePushOutboundPreservesNestedArtifactMetadata(t *testing.T) {
 	}
 	if len(repo.outboundMessages) != 1 || !strings.Contains(string(repo.outboundMessages[0].RawPayload), `"sha256":"abc123"`) {
 		t.Fatalf("expected raw webchat payload to include nested artifact metadata, got %+v", repo.outboundMessages)
+	}
+}
+
+func TestHandlePushOutboundMaterializesDelegatedAgentSession(t *testing.T) {
+	repo := &appRepoStub{
+		sessions: map[string]domain.Session{
+			"session_parent_1": {
+				ID:              "session_parent_1",
+				TenantID:        "tenant_default",
+				OwnerUserID:     "user1@example.com",
+				AgentProfileID:  "agent_parent",
+				ChannelType:     "webchat",
+				ChannelScopeKey: "websess_1:session_parent_1",
+				State:           "open",
+			},
+		},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+		"payload":{
+			"outbound_intent_id":"intent_delegate_1",
+			"customer_id":"tenant_default",
+			"session_id":"session_parent_1",
+			"payload":{
+				"text":"I delegated this to @finance.",
+				"artifacts":[{
+					"id":"delegation_1",
+					"type":"agent_delegation_reference",
+					"delegation_id":"delegation_1",
+					"target_handle":"finance",
+					"target_agent_instance_id":"agent_finance",
+					"session_id":"delegation_child_1",
+					"run_id":"run_child_1",
+					"status":"queued"
+				}]
+			}
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutbound(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.delegatedSessions) != 1 {
+		t.Fatalf("expected delegated session to be materialized, got %+v", repo.delegatedSessions)
+	}
+	delegated := repo.delegatedSessions[0]
+	if delegated.ID != "delegation_child_1" || delegated.ACPSessionID != "delegation_child_1" || delegated.AgentProfileID != "agent_finance" {
+		t.Fatalf("unexpected delegated session: %+v", delegated)
+	}
+	if len(repo.storedArtifacts) != 1 {
+		t.Fatalf("expected delegation artifact to be stored, got %+v", repo.storedArtifacts)
+	}
+	data := repo.storedArtifacts[0].Data
+	if data["target_handle"] != "finance" || data["session_id"] != "delegation_child_1" || data["nexus_session_id"] != "delegation_child_1" {
+		t.Fatalf("expected delegation metadata on stored artifact, got %+v", data)
+	}
+	if len(repo.outboundMessages) != 1 || !strings.Contains(string(repo.outboundMessages[0].RawPayload), `"nexus_session_id":"delegation_child_1"`) {
+		t.Fatalf("expected webchat payload to include delegated Nexus session metadata, got %+v", repo.outboundMessages)
 	}
 }
 

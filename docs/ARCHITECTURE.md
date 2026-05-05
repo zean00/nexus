@@ -288,6 +288,8 @@ Runs and outbound sends are driven by outbox events instead of inline side effec
 
 The admin API can enqueue outbound-only reminders, broadcasts, and notifications from an external scheduler or agent runtime. Push requests resolve a target session by session ID, notification surface, channel account, or linked identity, then reuse the same renderer, delivery table, and worker path as ACP run output.
 
+Duraclaw delegation responses use the same path. Nexus preserves `agent_delegation_reference` artifacts, including their `type` and `data` metadata, creates a separate visible session for the delegated ACP session, and attaches switch aliases derived from the target agent handle. Those aliases are scoped to the parent channel surface key, including composite surfaces such as Slack channel-thread keys. The parent session remains active unless the user explicitly switches or selects the delegated session.
+
 ### Session queueing
 
 A session can only have one active run at a time. New messages are queued behind the active run or pending await.
