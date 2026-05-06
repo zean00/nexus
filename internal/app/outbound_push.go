@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -18,6 +19,8 @@ import (
 type outboundPushRequest struct {
 	CustomerID        string                 `json:"customer_id"`
 	TenantID          string                 `json:"tenant_id"`
+	ACPSessionID      string                 `json:"acp_session_id"`
+	NexusSessionID    string                 `json:"nexus_session_id"`
 	SessionID         string                 `json:"session_id"`
 	UserID            string                 `json:"user_id"`
 	AccountID         string                 `json:"account_id"`
@@ -56,11 +59,27 @@ type outboundPushBulkRequest struct {
 }
 
 type outboundPushResult struct {
-	Index       int      `json:"index,omitempty"`
-	SessionID   string   `json:"session_id,omitempty"`
-	ChannelType string   `json:"channel_type,omitempty"`
-	DeliveryIDs []string `json:"delivery_ids,omitempty"`
-	Error       string   `json:"error,omitempty"`
+	Index        int                               `json:"index,omitempty"`
+	ACPSessionID string                            `json:"acp_session_id,omitempty"`
+	SessionID    string                            `json:"session_id,omitempty"`
+	ChannelType  string                            `json:"channel_type,omitempty"`
+	DeliveryIDs  []string                          `json:"delivery_ids,omitempty"`
+	Targets      []outboundPushTargetResult        `json:"targets,omitempty"`
+	Channels     []outboundPushChannelAvailability `json:"channels,omitempty"`
+	Error        string                            `json:"error,omitempty"`
+}
+
+type outboundPushTargetResult struct {
+	SessionID   string   `json:"session_id"`
+	ChannelType string   `json:"channel_type"`
+	DeliveryIDs []string `json:"delivery_ids"`
+}
+
+type outboundPushChannelAvailability struct {
+	ChannelType string   `json:"channel_type"`
+	Available   bool     `json:"available"`
+	SessionIDs  []string `json:"session_ids,omitempty"`
+	Reason      string   `json:"reason,omitempty"`
 }
 
 func (a *App) handlePushOutbound(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +93,13 @@ func (a *App) handlePushOutbound(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := a.enqueueOutboundPush(r.Context(), body, 0)
 	if err != nil {
+		var pushErr *outboundPushResolutionError
+		if errors.As(err, &pushErr) {
+			result = pushErr.result
+			result.Error = pushErr.Error()
+			httpx.Respond(w, pushErr.status, result, actionMeta("outbound_push_rejected"))
+			return
+		}
 		httpx.Error(w, outboundPushStatus(err), err.Error())
 		return
 	}
@@ -102,6 +128,14 @@ func (a *App) handlePushOutboundBulk(w http.ResponseWriter, r *http.Request) {
 		result, err := a.enqueueOutboundPush(r.Context(), item, idx)
 		if err != nil {
 			failed++
+			var pushErr *outboundPushResolutionError
+			if errors.As(err, &pushErr) {
+				result = pushErr.result
+				result.Index = idx
+				result.Error = pushErr.Error()
+				results = append(results, result)
+				continue
+			}
 			results = append(results, outboundPushResult{Index: idx, Error: err.Error()})
 			continue
 		}
@@ -129,50 +163,74 @@ func (a *App) enqueueOutboundPush(ctx context.Context, req outboundPushRequest, 
 	if tenantID == "" {
 		tenantID = a.Config.DefaultTenantID
 	}
-	session, err := a.resolveOutboundPushSession(ctx, tenantID, req)
+	sessions, channels, err := a.resolveOutboundPushSessions(ctx, tenantID, req)
 	if err != nil {
-		return outboundPushResult{}, err
-	}
-	if err := a.materializeDelegatedOutboundSessions(ctx, session, req.Artifacts); err != nil {
 		return outboundPushResult{}, err
 	}
 	runID := strings.TrimSpace(req.RunID)
 	if runID == "" {
 		runID = outboundPushRunID(req, idx)
 	}
-	deliveries, err := a.renderOutboundPush(ctx, session, runID, req)
-	if err != nil {
-		return outboundPushResult{}, err
-	}
-	if len(deliveries) == 0 {
-		return outboundPushResult{}, fmt.Errorf("no outbound deliveries rendered")
-	}
-	ids := make([]string, 0, len(deliveries))
-	for _, delivery := range deliveries {
-		if err := a.Repo.EnqueueDelivery(ctx, delivery); err != nil {
+
+	allIDs := make([]string, 0, len(sessions))
+	targets := make([]outboundPushTargetResult, 0, len(sessions))
+	for i, session := range sessions {
+		if err := a.materializeDelegatedOutboundSessions(ctx, session, req.Artifacts); err != nil {
 			return outboundPushResult{}, err
 		}
-		ids = append(ids, delivery.ID)
+		targetRunID := outboundPushTargetRunID(runID, session, len(sessions), i)
+		deliveries, err := a.renderOutboundPush(ctx, session, targetRunID, req)
+		if err != nil {
+			return outboundPushResult{}, err
+		}
+		if len(deliveries) == 0 {
+			return outboundPushResult{}, fmt.Errorf("no outbound deliveries rendered")
+		}
+		ids := make([]string, 0, len(deliveries))
+		for _, delivery := range deliveries {
+			if err := a.Repo.EnqueueDelivery(ctx, delivery); err != nil {
+				return outboundPushResult{}, err
+			}
+			ids = append(ids, delivery.ID)
+		}
+		if err := a.persistWebChatOutboundPush(ctx, session, targetRunID, req); err != nil {
+			return outboundPushResult{}, err
+		}
+		allIDs = append(allIDs, ids...)
+		targets = append(targets, outboundPushTargetResult{
+			SessionID:   session.ID,
+			ChannelType: session.ChannelType,
+			DeliveryIDs: ids,
+		})
+		_ = a.Repo.Audit(ctx, domain.AuditEvent{
+			ID:            "audit_outbound_push_" + cleanOutboundPushID(targetRunID) + "_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
+			TenantID:      tenantID,
+			SessionID:     session.ID,
+			RunID:         targetRunID,
+			AggregateType: "outbound_push",
+			AggregateID:   runID,
+			EventType:     "admin.outbound_push_queued",
+			PayloadJSON: mustJSON(map[string]any{
+				"acp_session_id": req.ACPSessionID,
+				"delivery_ids":   ids,
+				"message_id":     req.MessageID,
+				"metadata":       req.Metadata,
+				"source_run_id":  runID,
+			}),
+			CreatedAt: time.Now().UTC(),
+		})
 	}
-	if err := a.persistWebChatOutboundPush(ctx, session, runID, req); err != nil {
-		return outboundPushResult{}, err
+	result := outboundPushResult{
+		ACPSessionID: req.ACPSessionID,
+		DeliveryIDs:  allIDs,
+		Targets:      targets,
+		Channels:     channels,
 	}
-	_ = a.Repo.Audit(ctx, domain.AuditEvent{
-		ID:            "audit_outbound_push_" + runID + "_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
-		TenantID:      tenantID,
-		SessionID:     session.ID,
-		RunID:         runID,
-		AggregateType: "outbound_push",
-		AggregateID:   runID,
-		EventType:     "admin.outbound_push_queued",
-		PayloadJSON: mustJSON(map[string]any{
-			"delivery_ids": ids,
-			"message_id":   req.MessageID,
-			"metadata":     req.Metadata,
-		}),
-		CreatedAt: time.Now().UTC(),
-	})
-	return outboundPushResult{SessionID: session.ID, ChannelType: session.ChannelType, DeliveryIDs: ids}, nil
+	if len(targets) == 1 {
+		result.SessionID = targets[0].SessionID
+		result.ChannelType = targets[0].ChannelType
+	}
+	return result, nil
 }
 
 type delegatedOutboundSessionRepository interface {
@@ -239,18 +297,64 @@ func (a *App) persistWebChatOutboundPush(ctx context.Context, session domain.Ses
 	return nil
 }
 
-func (a *App) resolveOutboundPushSession(ctx context.Context, tenantID string, req outboundPushRequest) (domain.Session, error) {
-	if sessionID := strings.TrimSpace(req.SessionID); sessionID != "" {
+type outboundPushACPSessionRepository interface {
+	ListSessionsByACPSessionID(ctx context.Context, tenantID, acpSessionID string) ([]domain.Session, error)
+}
+
+type outboundPushResolutionError struct {
+	status  int
+	message string
+	result  outboundPushResult
+}
+
+func (e *outboundPushResolutionError) Error() string {
+	return e.message
+}
+
+func (a *App) resolveOutboundPushSessions(ctx context.Context, tenantID string, req outboundPushRequest) ([]domain.Session, []outboundPushChannelAvailability, error) {
+	channelType := strings.ToLower(strings.TrimSpace(req.ChannelType))
+	if sessionID := strings.TrimSpace(req.NexusSessionID); sessionID != "" {
 		session, err := a.Repo.GetSession(ctx, sessionID)
 		if err != nil {
-			return domain.Session{}, err
+			return nil, nil, err
 		}
 		if session.TenantID != "" && session.TenantID != tenantID {
-			return domain.Session{}, fmt.Errorf("session tenant mismatch")
+			return nil, nil, fmt.Errorf("session tenant mismatch")
 		}
-		return session, nil
+		channels := outboundPushChannelAvailabilityForSessions([]domain.Session{session}, channelType)
+		if channelType != "" && strings.ToLower(session.ChannelType) != channelType {
+			return nil, channels, &outboundPushResolutionError{
+				status:  http.StatusBadRequest,
+				message: fmt.Sprintf("nexus_session_id %s is not available on channel %s", sessionID, channelType),
+				result:  outboundPushResult{SessionID: session.ID, ChannelType: session.ChannelType, Channels: channels},
+			}
+		}
+		return []domain.Session{session}, channels, nil
 	}
-	channelType := strings.ToLower(strings.TrimSpace(req.ChannelType))
+	acpSessionID := firstNonEmptyString(req.ACPSessionID, req.SessionID)
+	if acpSessionID != "" {
+		repo, ok := a.Repo.(outboundPushACPSessionRepository)
+		if !ok {
+			return nil, nil, fmt.Errorf("acp_session_id lookup is not supported")
+		}
+		sessions, err := repo.ListSessionsByACPSessionID(ctx, tenantID, acpSessionID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(sessions) == 0 {
+			return nil, nil, fmt.Errorf("no nexus sessions found for acp_session_id %s", acpSessionID)
+		}
+		channels := outboundPushChannelAvailabilityForSessions(sessions, channelType)
+		targets := filterOutboundPushSessionsByChannel(sessions, channelType)
+		if len(targets) == 0 {
+			return nil, channels, &outboundPushResolutionError{
+				status:  http.StatusBadRequest,
+				message: fmt.Sprintf("channel %s is not available for acp_session_id %s", channelType, acpSessionID),
+				result:  outboundPushResult{ACPSessionID: acpSessionID, Channels: channels},
+			}
+		}
+		return targets, channels, nil
+	}
 	surfaceKey := strings.TrimSpace(req.SurfaceKey)
 	ownerUserID := firstNonEmptyString(req.UserID, req.AccountID)
 	if ownerUserID == "" && req.ChannelUserID != "" {
@@ -262,15 +366,68 @@ func (a *App) resolveOutboundPushSession(ctx context.Context, tenantID string, r
 	if ownerUserID != "" && (channelType == "" || surfaceKey == "") {
 		identity, err := a.resolveOutboundPushIdentity(ctx, tenantID, ownerUserID, channelType)
 		if err != nil {
-			return domain.Session{}, err
+			return nil, nil, err
 		}
 		channelType = identity.ChannelType
 		surfaceKey = identity.ChannelUserID
 	}
 	if channelType == "" || surfaceKey == "" || ownerUserID == "" {
-		return domain.Session{}, fmt.Errorf("session_id or target identity required")
+		return nil, nil, fmt.Errorf("acp_session_id, nexus_session_id, or target identity required")
 	}
-	return a.Repo.EnsureNotificationSession(ctx, tenantID, channelType, surfaceKey, ownerUserID)
+	session, err := a.Repo.EnsureNotificationSession(ctx, tenantID, channelType, surfaceKey, ownerUserID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return []domain.Session{session}, outboundPushChannelAvailabilityForSessions([]domain.Session{session}, channelType), nil
+}
+
+func filterOutboundPushSessionsByChannel(sessions []domain.Session, channelType string) []domain.Session {
+	if channelType == "" {
+		return sessions
+	}
+	out := make([]domain.Session, 0, len(sessions))
+	for _, session := range sessions {
+		if strings.ToLower(session.ChannelType) == channelType {
+			out = append(out, session)
+		}
+	}
+	return out
+}
+
+func outboundPushChannelAvailabilityForSessions(sessions []domain.Session, requestedChannel string) []outboundPushChannelAvailability {
+	byChannel := map[string][]string{}
+	order := []string{}
+	for _, session := range sessions {
+		channel := strings.ToLower(strings.TrimSpace(session.ChannelType))
+		if channel == "" {
+			continue
+		}
+		if _, ok := byChannel[channel]; !ok {
+			order = append(order, channel)
+		}
+		byChannel[channel] = append(byChannel[channel], session.ID)
+	}
+	if requestedChannel != "" {
+		requestedChannel = strings.ToLower(strings.TrimSpace(requestedChannel))
+		if _, ok := byChannel[requestedChannel]; !ok {
+			order = append(order, requestedChannel)
+			byChannel[requestedChannel] = nil
+		}
+	}
+	out := make([]outboundPushChannelAvailability, 0, len(order))
+	for _, channel := range order {
+		sessionIDs := byChannel[channel]
+		item := outboundPushChannelAvailability{
+			ChannelType: channel,
+			Available:   len(sessionIDs) > 0,
+			SessionIDs:  sessionIDs,
+		}
+		if !item.Available {
+			item.Reason = "no session mapped to acp_session_id for channel"
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func (a *App) resolveOutboundPushIdentity(ctx context.Context, tenantID, userID, channelType string) (domain.LinkedIdentity, error) {
@@ -403,6 +560,16 @@ func outboundPushRunID(req outboundPushRequest, idx int) string {
 	return "push_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10) + "_" + strconv.Itoa(idx)
 }
 
+func outboundPushTargetRunID(runID string, session domain.Session, targetCount, targetIndex int) string {
+	if targetCount <= 1 {
+		return runID
+	}
+	if cleanSessionID := cleanOutboundPushID(session.ID); cleanSessionID != "" {
+		return runID + "_" + cleanSessionID
+	}
+	return runID + "_" + strconv.Itoa(targetIndex)
+}
+
 func outboundPushDeliveryID(runID, suffix string) string {
 	return "delivery_" + cleanOutboundPushID(runID) + "_" + cleanOutboundPushID(suffix)
 }
@@ -447,11 +614,13 @@ func normalizeOutboundPushRequest(req outboundPushRequest) outboundPushRequest {
 	req.TenantID = firstNonEmptyString(req.TenantID, req.CustomerID)
 	req.UserID = firstNonEmptyString(req.UserID, req.AccountID)
 	if req.Payload == nil {
+		req.ACPSessionID = firstNonEmptyString(req.ACPSessionID, req.SessionID)
 		return req
 	}
 	if looksLikeOutboundIntent(req.Payload) {
 		req = mergeOutboundIntentEnvelope(req, req.Payload)
 	}
+	req.ACPSessionID = firstNonEmptyString(req.ACPSessionID, req.SessionID)
 	req.Text = firstNonEmptyString(req.Text, stringFromMap(req.Payload, "text"), stringFromMap(req.Payload, "message"))
 	if req.WhatsAppTemplate == nil {
 		if template, ok := mapFromMap(req.Payload, "whatsapp_template"); ok {
@@ -470,7 +639,7 @@ func normalizeOutboundPushRequest(req outboundPushRequest) outboundPushRequest {
 }
 
 func looksLikeOutboundIntent(payload map[string]any) bool {
-	for _, key := range []string{"customer_id", "session_id", "user_id", "intent_type", "outbound_intent_id"} {
+	for _, key := range []string{"customer_id", "acp_session_id", "session_id", "user_id", "intent_type", "outbound_intent_id"} {
 		if _, ok := payload[key]; ok {
 			return true
 		}
@@ -483,7 +652,8 @@ func mergeOutboundIntentEnvelope(req outboundPushRequest, payload map[string]any
 	req.TenantID = firstNonEmptyString(req.TenantID, req.CustomerID)
 	req.UserID = firstNonEmptyString(req.UserID, stringFromMap(payload, "user_id"))
 	req.AccountID = firstNonEmptyString(req.AccountID, req.UserID)
-	req.SessionID = firstNonEmptyString(req.SessionID, stringFromMap(payload, "session_id"))
+	req.ACPSessionID = firstNonEmptyString(req.ACPSessionID, stringFromMap(payload, "acp_session_id"), stringFromMap(payload, "session_id"))
+	req.ChannelType = firstNonEmptyString(req.ChannelType, stringFromMap(payload, "channel_type"))
 	req.RunID = firstNonEmptyString(req.RunID, stringFromMap(payload, "run_id"))
 	req.IntentType = firstNonEmptyString(req.IntentType, stringFromMap(payload, "intent_type"))
 	req.MessageID = firstNonEmptyString(req.MessageID, stringFromMap(payload, "outbound_intent_id"))

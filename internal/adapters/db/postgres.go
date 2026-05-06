@@ -1267,6 +1267,31 @@ func (r *PostgresRepository) UpdateSessionACPSessionID(ctx context.Context, sess
 	return err
 }
 
+func (r *PostgresRepository) ListSessionsByACPSessionID(ctx context.Context, tenantID, acpSessionID string) ([]domain.Session, error) {
+	rows, err := r.query(ctx, `
+		select id, tenant_id, coalesce(owner_user_id,''), coalesce(agent_profile_id,''), channel_type, channel_scope_key, state, last_active_at, coalesce(acp_session_id,'')
+		from sessions
+		where tenant_id=$1 and acp_session_id=$2 and state in ('open','paused')
+		order by updated_at desc, id desc
+	`, tenantID, acpSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Session
+	for rows.Next() {
+		var s domain.Session
+		if err := rows.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPSessionID); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r *PostgresRepository) GetRouteDecision(ctx context.Context, queueItemID string) (domain.RouteDecision, error) {
 	row := r.queryRow(ctx, `select route_decision_json from session_queue_items where id=$1`, queueItemID)
 	var raw []byte

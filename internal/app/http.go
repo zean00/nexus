@@ -392,6 +392,49 @@ func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	httpx.Page(w, http.StatusOK, sessions.Items, sessions.NextCursor, totalCount)
 }
 
+func (a *App) handleListSessionsByACP(w http.ResponseWriter, r *http.Request) {
+	acpSessionID, ok := requiredQueryParam(w, r, "acp_session_id")
+	if !ok {
+		return
+	}
+	tenantID := firstNonEmptyString(queryString(r, "tenant_id"), a.Config.DefaultTenantID)
+	repo, ok := a.Repo.(outboundPushACPSessionRepository)
+	if !ok {
+		httpx.Error(w, http.StatusInternalServerError, "acp_session_id lookup is not supported")
+		return
+	}
+	sessions, err := repo.ListSessionsByACPSessionID(r.Context(), tenantID, acpSessionID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	channelType := strings.ToLower(strings.TrimSpace(queryString(r, "channel_type")))
+	if channelType != "" {
+		sessions = filterOutboundPushSessionsByChannel(sessions, channelType)
+	}
+	items := make([]map[string]any, 0, len(sessions))
+	for _, session := range sessions {
+		items = append(items, map[string]any{
+			"session_id":      session.ID,
+			"acp_session_id":  session.ACPSessionID,
+			"channel_type":    session.ChannelType,
+			"channel_surface": session.ChannelScopeKey,
+			"owner_user_id":   session.OwnerUserID,
+			"state":           session.State,
+			"last_active_at":  session.LastActiveAt,
+		})
+	}
+	httpx.OK(w, map[string]any{
+		"items":    items,
+		"channels": outboundPushChannelAvailabilityForSessions(sessions, channelType),
+	}, map[string]any{
+		"acp_session_id": acpSessionID,
+		"tenant_id":      tenantID,
+		"channel_type":   channelType,
+		"total_count":    len(items),
+	})
+}
+
 func (a *App) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := requiredQueryParam(w, r, "session_id")
 	if !ok {

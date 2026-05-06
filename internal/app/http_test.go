@@ -101,6 +101,7 @@ var _ ports.Router = testRouter{}
 type appRepoStub struct {
 	receiptCount          int
 	sessions              map[string]domain.Session
+	sessionsByACP         map[string][]domain.Session
 	linkedIdentities      []domain.LinkedIdentity
 	surfaceItems          []domain.SurfaceSession
 	switchedSession       domain.Session
@@ -210,6 +211,19 @@ func (r *appRepoStub) GetSession(_ context.Context, sessionID string) (domain.Se
 }
 func (r *appRepoStub) UpdateSessionACPSessionID(context.Context, string, string) error {
 	return nil
+}
+func (r *appRepoStub) ListSessionsByACPSessionID(_ context.Context, tenantID, acpSessionID string) ([]domain.Session, error) {
+	if r.sessionsByACP == nil {
+		return nil, nil
+	}
+	sessions := r.sessionsByACP[acpSessionID]
+	out := make([]domain.Session, 0, len(sessions))
+	for _, session := range sessions {
+		if tenantID == "" || session.TenantID == tenantID {
+			out = append(out, session)
+		}
+	}
+	return out, nil
 }
 func (r *appRepoStub) GetRouteDecision(context.Context, string) (domain.RouteDecision, error) {
 	return domain.RouteDecision{}, nil
@@ -2935,20 +2949,21 @@ func TestHandleListSurfaceSessions(t *testing.T) {
 
 func TestHandlePushOutboundBySessionID(t *testing.T) {
 	repo := &appRepoStub{
-		sessions: map[string]domain.Session{
-			"session_push_1": {
+		sessionsByACP: map[string][]domain.Session{
+			"acp_session_push_1": {{
 				ID:              "session_push_1",
 				TenantID:        "tenant_default",
 				OwnerUserID:     "user1",
 				ChannelType:     "telegram",
 				ChannelScopeKey: "12345",
 				State:           "open",
-			},
+				ACPSessionID:    "acp_session_push_1",
+			}},
 		},
 	}
 	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
 	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
-		"session_id":"session_push_1",
+		"session_id":"acp_session_push_1",
 		"message_id":"reminder_1",
 		"text":"Time for your reminder"
 	}`))
@@ -2973,6 +2988,207 @@ func TestHandlePushOutboundBySessionID(t *testing.T) {
 	}
 	if payload["chat_id"] != "12345" || !strings.Contains(fmt.Sprint(payload["text"]), "Time for your reminder") {
 		t.Fatalf("unexpected telegram payload: %+v", payload)
+	}
+}
+
+func TestHandlePushOutboundFansOutByACPSessionID(t *testing.T) {
+	repo := &appRepoStub{
+		sessionsByACP: map[string][]domain.Session{
+			"acp_shared_1": {
+				{
+					ID:              "session_tg_1",
+					TenantID:        "tenant_default",
+					OwnerUserID:     "user1",
+					ChannelType:     "telegram",
+					ChannelScopeKey: "12345",
+					State:           "open",
+					ACPSessionID:    "acp_shared_1",
+				},
+				{
+					ID:              "session_web_1",
+					TenantID:        "tenant_default",
+					OwnerUserID:     "user1",
+					ChannelType:     "webchat",
+					ChannelScopeKey: "websess_1:session_web_1",
+					State:           "open",
+					ACPSessionID:    "acp_shared_1",
+				},
+			},
+		},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+		"acp_session_id":"acp_shared_1",
+		"message_id":"reminder_1",
+		"text":"Time for your reminder"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutbound(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.deliveries) != 2 {
+		t.Fatalf("expected two deliveries, got %+v", repo.deliveries)
+	}
+	if repo.deliveries[0].ID == repo.deliveries[1].ID {
+		t.Fatalf("expected unique fanout delivery ids, got %+v", repo.deliveries)
+	}
+	var body struct {
+		Data outboundPushResult `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if body.Data.ACPSessionID != "acp_shared_1" || len(body.Data.Targets) != 2 || len(body.Data.Channels) != 2 {
+		t.Fatalf("unexpected fanout response: %+v", body.Data)
+	}
+}
+
+func TestHandlePushOutboundFiltersACPSessionByChannel(t *testing.T) {
+	repo := &appRepoStub{
+		sessionsByACP: map[string][]domain.Session{
+			"acp_shared_1": {
+				{
+					ID:              "session_tg_1",
+					TenantID:        "tenant_default",
+					OwnerUserID:     "user1",
+					ChannelType:     "telegram",
+					ChannelScopeKey: "12345",
+					State:           "open",
+					ACPSessionID:    "acp_shared_1",
+				},
+				{
+					ID:              "session_web_1",
+					TenantID:        "tenant_default",
+					OwnerUserID:     "user1",
+					ChannelType:     "webchat",
+					ChannelScopeKey: "websess_1:session_web_1",
+					State:           "open",
+					ACPSessionID:    "acp_shared_1",
+				},
+			},
+		},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+		"acp_session_id":"acp_shared_1",
+		"channel_type":"webchat",
+		"message_id":"reminder_1",
+		"text":"Time for your reminder"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutbound(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.deliveries) != 1 || repo.deliveries[0].SessionID != "session_web_1" {
+		t.Fatalf("expected only webchat delivery, got %+v", repo.deliveries)
+	}
+	var body struct {
+		Data outboundPushResult `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(body.Data.Channels) != 2 {
+		t.Fatalf("expected channel availability for mapped channels, got %+v", body.Data.Channels)
+	}
+}
+
+func TestHandlePushOutboundReportsUnavailableChannel(t *testing.T) {
+	repo := &appRepoStub{
+		sessionsByACP: map[string][]domain.Session{
+			"acp_shared_1": {{
+				ID:              "session_tg_1",
+				TenantID:        "tenant_default",
+				OwnerUserID:     "user1",
+				ChannelType:     "telegram",
+				ChannelScopeKey: "12345",
+				State:           "open",
+				ACPSessionID:    "acp_shared_1",
+			}},
+		},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+		"acp_session_id":"acp_shared_1",
+		"channel_type":"webchat",
+		"message_id":"reminder_1",
+		"text":"Time for your reminder"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutbound(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.deliveries) != 0 {
+		t.Fatalf("expected no deliveries, got %+v", repo.deliveries)
+	}
+	var body struct {
+		Data outboundPushResult `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(body.Data.Channels) != 2 || body.Data.Channels[1].ChannelType != "webchat" || body.Data.Channels[1].Available {
+		t.Fatalf("expected unavailable webchat channel in response, got %+v", body.Data.Channels)
+	}
+}
+
+func TestHandleListSessionsByACP(t *testing.T) {
+	repo := &appRepoStub{
+		sessionsByACP: map[string][]domain.Session{
+			"acp_shared_1": {
+				{
+					ID:              "session_tg_1",
+					TenantID:        "tenant_default",
+					OwnerUserID:     "user1",
+					ChannelType:     "telegram",
+					ChannelScopeKey: "12345",
+					State:           "open",
+					ACPSessionID:    "acp_shared_1",
+				},
+				{
+					ID:              "session_web_1",
+					TenantID:        "tenant_default",
+					OwnerUserID:     "user1",
+					ChannelType:     "webchat",
+					ChannelScopeKey: "websess_1:session_web_1",
+					State:           "open",
+					ACPSessionID:    "acp_shared_1",
+				},
+			},
+		},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodGet, "/admin/sessions/by-acp?acp_session_id=acp_shared_1", nil)
+	rec := httptest.NewRecorder()
+
+	app.handleListSessionsByACP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Items    []map[string]any                  `json:"items"`
+			Channels []outboundPushChannelAvailability `json:"channels"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(body.Data.Items) != 2 || len(body.Data.Channels) != 2 {
+		t.Fatalf("unexpected acp session mapping response: %+v", body.Data)
 	}
 }
 
@@ -3014,15 +3230,16 @@ func TestHandlePushOutboundBulkByIdentity(t *testing.T) {
 
 func TestHandlePushOutboundBulkAcceptsDuraclawOutboxEnvelope(t *testing.T) {
 	repo := &appRepoStub{
-		sessions: map[string]domain.Session{
-			"session_duraclaw_1": {
+		sessionsByACP: map[string][]domain.Session{
+			"acp_duraclaw_1": {{
 				ID:              "session_duraclaw_1",
 				TenantID:        "tenant_default",
 				OwnerUserID:     "user1",
 				ChannelType:     "telegram",
 				ChannelScopeKey: "444",
 				State:           "open",
-			},
+				ACPSessionID:    "acp_duraclaw_1",
+			}},
 		},
 	}
 	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
@@ -3035,7 +3252,7 @@ func TestHandlePushOutboundBulkAcceptsDuraclawOutboxEnvelope(t *testing.T) {
 				"outbound_intent_id":"intent_1",
 				"customer_id":"tenant_default",
 				"user_id":"user1",
-				"session_id":"session_duraclaw_1",
+				"acp_session_id":"acp_duraclaw_1",
 				"intent_type":"reminder",
 				"payload":{"text":"Nested reminder text"}
 			}
@@ -3063,15 +3280,16 @@ func TestHandlePushOutboundBulkAcceptsDuraclawOutboxEnvelope(t *testing.T) {
 
 func TestHandlePushOutboundStoresWebChatMessage(t *testing.T) {
 	repo := &appRepoStub{
-		sessions: map[string]domain.Session{
-			"session_webchat_1": {
+		sessionsByACP: map[string][]domain.Session{
+			"acp_webchat_1": {{
 				ID:              "session_webchat_1",
 				TenantID:        "tenant_default",
 				OwnerUserID:     "user1@example.com",
 				ChannelType:     "webchat",
 				ChannelScopeKey: "websess_1:session_webchat_1",
 				State:           "open",
-			},
+				ACPSessionID:    "acp_webchat_1",
+			}},
 		},
 	}
 	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
@@ -3080,7 +3298,7 @@ func TestHandlePushOutboundStoresWebChatMessage(t *testing.T) {
 			"outbound_intent_id":"intent_webchat_1",
 			"customer_id":"tenant_default",
 			"user_id":"user1@example.com",
-			"session_id":"session_webchat_1",
+			"acp_session_id":"acp_webchat_1",
 			"intent_type":"message",
 			"payload":{"text":"Wa'alaikumussalam, siap!"}
 		}
@@ -3110,24 +3328,25 @@ func TestHandlePushOutboundStoresWebChatMessage(t *testing.T) {
 
 func TestHandlePushOutboundPreservesNestedArtifactMetadata(t *testing.T) {
 	repo := &appRepoStub{
-		sessions: map[string]domain.Session{
-			"session_webchat_1": {
+		sessionsByACP: map[string][]domain.Session{
+			"acp_webchat_1": {{
 				ID:              "session_webchat_1",
 				TenantID:        "tenant_default",
 				OwnerUserID:     "user1@example.com",
 				ChannelType:     "webchat",
 				ChannelScopeKey: "websess_1:session_webchat_1",
 				State:           "open",
-			},
+				ACPSessionID:    "acp_webchat_1",
+			}},
 		},
 	}
 	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
 	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
-		"payload":{
-			"outbound_intent_id":"intent_webchat_1",
-			"customer_id":"tenant_default",
-			"session_id":"session_webchat_1",
 			"payload":{
+				"outbound_intent_id":"intent_webchat_1",
+				"customer_id":"tenant_default",
+				"acp_session_id":"acp_webchat_1",
+				"payload":{
 				"text":"report ready",
 				"artifacts":[{
 					"id":"artifact_1",
@@ -3162,8 +3381,8 @@ func TestHandlePushOutboundPreservesNestedArtifactMetadata(t *testing.T) {
 
 func TestHandlePushOutboundMaterializesDelegatedAgentSession(t *testing.T) {
 	repo := &appRepoStub{
-		sessions: map[string]domain.Session{
-			"session_parent_1": {
+		sessionsByACP: map[string][]domain.Session{
+			"acp_parent_1": {{
 				ID:              "session_parent_1",
 				TenantID:        "tenant_default",
 				OwnerUserID:     "user1@example.com",
@@ -3171,16 +3390,17 @@ func TestHandlePushOutboundMaterializesDelegatedAgentSession(t *testing.T) {
 				ChannelType:     "webchat",
 				ChannelScopeKey: "websess_1:session_parent_1",
 				State:           "open",
-			},
+				ACPSessionID:    "acp_parent_1",
+			}},
 		},
 	}
 	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
 	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
-		"payload":{
-			"outbound_intent_id":"intent_delegate_1",
-			"customer_id":"tenant_default",
-			"session_id":"session_parent_1",
 			"payload":{
+				"outbound_intent_id":"intent_delegate_1",
+				"customer_id":"tenant_default",
+				"acp_session_id":"acp_parent_1",
+				"payload":{
 				"text":"I delegated this to @finance.",
 				"artifacts":[{
 					"id":"delegation_1",

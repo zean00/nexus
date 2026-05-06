@@ -550,6 +550,7 @@ func (a *App) AdminHandler() http.Handler {
 		writeMetrics(w, context.Background(), "admin", a.Config.DefaultTenantID, a.Repo, a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
 	})
 	mux.HandleFunc("/admin/sessions", a.handleListSessions)
+	mux.HandleFunc("/admin/sessions/by-acp", a.handleListSessionsByACP)
 	mux.HandleFunc("/admin/sessions/detail", a.handleSessionDetail)
 	mux.HandleFunc("/admin/acp/agents", a.handleListACPAgents)
 	mux.HandleFunc("/admin/acp/compatible", a.handleListCompatibleACPAgents)

@@ -147,16 +147,29 @@ Both endpoints require the normal admin bearer token when `ADMIN_BEARER_TOKEN` i
 
 Targets can be resolved by:
 
-- `session_id`
+- `acp_session_id`
+- legacy `session_id` as an ACP session ID
+- `nexus_session_id` for a specific Nexus internal session
 - `channel_type`, `surface_key`, and `user_id` or `account_id`
 - `channel_type` and `channel_user_id`
 - `user_id` or `account_id`, optionally with `channel_type`, using linked identities
+
+When an ACP session ID is supplied, Nexus looks up every Nexus session mapped to that ACP session. By default it enqueues one delivery per mapped session, so a shared Duraclaw session connected through webchat and WhatsApp receives the same outbound reminder or broadcast on both channels. Supplying `channel_type` filters delivery to that channel only. The response includes `targets` and `channels` so callers can see which Nexus sessions were queued and which mapped channels are available.
+
+To inspect the mapping without enqueueing a message, call:
+
+```text
+GET /admin/sessions/by-acp?acp_session_id=acp_session_123
+GET /admin/sessions/by-acp?acp_session_id=acp_session_123&channel_type=webchat
+```
+
+The response returns Nexus `session_id`, `channel_type`, state, owner, channel surface, and channel availability for that ACP session.
 
 Single push example:
 
 ```json
 {
-  "session_id": "session_123",
+  "acp_session_id": "acp_session_123",
   "message_id": "reminder_2026_04_29",
   "text": "Time for your reminder"
 }
@@ -185,7 +198,7 @@ Bulk push example:
 
 For channel-specific payloads, send `raw_channel_payload`; Nexus will enqueue it directly for the resolved channel.
 
-The bulk endpoint also accepts Duraclaw outbox batches where each item has `outbox_id`, `topic`, and `payload`. If `payload` is an outbound-intent envelope with `customer_id`, `user_id`, `session_id`, `intent_type`, and nested `payload.text`, Nexus lifts those fields before target resolution.
+The bulk endpoint also accepts Duraclaw outbox batches where each item has `outbox_id`, `topic`, and `payload`. If `payload` is an outbound-intent envelope with `customer_id`, `user_id`, `acp_session_id` or legacy `session_id`, `intent_type`, and nested `payload.text`, Nexus lifts those fields before target resolution. In this envelope, `session_id` is treated as the Duraclaw ACP session ID, not as a Nexus internal session ID.
 
 Duraclaw agent-delegation artifacts are first-class outbound metadata. When an outbound payload contains an artifact with `type: "agent_delegation_reference"`, Nexus preserves the delegation fields under artifact `data` in both the message payload and the persisted artifact record, then materializes a visible delegated session for the Duraclaw child `session_id`. The delegated Nexus session uses the same ID as the Duraclaw child ACP session, points at `target_agent_instance_id`, and receives aliases from `target_handle` plus `delegate-<target_handle>`.
 
