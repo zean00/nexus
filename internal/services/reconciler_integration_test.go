@@ -376,7 +376,7 @@ func seedReconcilerAwaitAndDeliveryFixture(t *testing.T, ctx context.Context, po
 	workerMustExec(t, ctx, pool, `
 		insert into session_queue_items (id, tenant_id, session_id, inbound_message_id, queue_position, status, route_decision_json, enqueued_at, started_at, completed_at, expires_at)
 		values ('queue_reconcile_active_1','tenant_default','session_reconcile_1','message_reconcile_active_1',1,'awaiting',$1,$2,$2,null,$3),
-		       ('queue_reconcile_next_1','tenant_default','session_reconcile_1','message_reconcile_next_1',2,'queued',$1,$2,null,null,$3)
+		       ('queue_reconcile_next_1','tenant_default','session_reconcile_1','message_reconcile_next_1',2,'queued',$1,$2,$2,null,$3)
 	`, []byte(`{"acp_agent_name":"agent_a","mode":"per-thread"}`), t1, t1.Add(24*time.Hour))
 	workerMustExec(t, ctx, pool, `
 		insert into awaits (id, run_id, session_id, channel_type, status, schema_json, prompt_render_model_json, allowed_responder_ids_json, expires_at, resolved_at)

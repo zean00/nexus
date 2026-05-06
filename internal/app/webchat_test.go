@@ -455,6 +455,44 @@ func TestAdminWebChatSessionCanRequestGreeting(t *testing.T) {
 	}
 }
 
+func TestAdminWebChatSessionReturnsACPSessionWithoutGreeting(t *testing.T) {
+	acp := &greetingTestACP{}
+	app := &App{
+		Config: config.Config{
+			DefaultTenantID:       "tenant_default",
+			DefaultAgentProfileID: "agent_profile_default",
+			WebChatCookieName:     "nexus_webchat_session",
+			WebChatSessionHours:   24,
+		},
+		WebAuth:  &webAuthStub{},
+		Identity: &identityStub{},
+		Repo: &webchatRepoStub{session: domain.Session{
+			ID: "session_webchat_1", TenantID: "tenant_default", OwnerUserID: "user@example.com", ChannelType: "webchat", ChannelScopeKey: "websess_1:session_webchat_1", State: "open", ACPSessionID: "session_webchat_1",
+		}},
+		ACP: acp,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/webchat/sessions", strings.NewReader(`{"email":"user@example.com","session_id":"websess_1"}`))
+	rec := httptest.NewRecorder()
+
+	app.handleAdminWebChatSession(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data["session_id"] != "websess_1" || body.Data["acp_session_id"] != "session_webchat_1" {
+		t.Fatalf("unexpected response %#v", body.Data)
+	}
+	if acp.options.SendGreeting {
+		t.Fatalf("did not expect greeting options %#v", acp.options)
+	}
+}
+
 func TestAdminIdentityLinkCodeSupportsWhatsAppWeb(t *testing.T) {
 	identity := &identityStub{}
 	user, err := identity.EnsureUserByEmail(context.Background(), "tenant_default", "user@example.com")

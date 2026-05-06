@@ -88,6 +88,9 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 		"cookie_name": a.Config.WebChatCookieName,
 		"user_id":     user.ID,
 	}
+	if resolved, err := a.ensureAdminWebChatACPSession(r.Context(), session); err == nil && strings.TrimSpace(resolved) != "" {
+		out["acp_session_id"] = resolved
+	}
 	if body.SendGreeting {
 		greeting, err := a.ensureWebChatGreeting(r.Context(), session, domain.SessionGreetingOptions{SendGreeting: true, GreetingChannels: body.GreetingChannels, Nickname: body.Nickname, PreferredLanguage: body.PreferredLanguage})
 		if err != nil {
@@ -103,6 +106,27 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	httpx.OK(w, out, nil)
+}
+
+func (a *App) ensureAdminWebChatACPSession(ctx context.Context, authSession domain.WebAuthSession) (string, error) {
+	if a.ACP == nil || a.Repo == nil {
+		return "", nil
+	}
+	session, err := a.resolveWebChatSession(ctx, authSession)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(session.ACPSessionID) != "" {
+		return session.ACPSessionID, nil
+	}
+	acpSessionID, err := a.ACP.EnsureSession(ctx, session)
+	if err != nil {
+		return "", err
+	}
+	if err := a.Repo.UpdateSessionACPSessionID(ctx, session.ID, acpSessionID); err != nil {
+		return "", err
+	}
+	return acpSessionID, nil
 }
 
 type acpGreetingEnsurer interface {

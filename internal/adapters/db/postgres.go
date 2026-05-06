@@ -998,8 +998,16 @@ func (r *PostgresRepository) UpdateQueueItemStatus(ctx context.Context, queueIte
 	_, err := r.exec(ctx, `
 		update session_queue_items
 		set status=$2,
-		    started_at = case when $2 in ('starting','running','awaiting') and started_at is null then now() else started_at end,
-		    completed_at = case when $2 in ('completed','failed','canceled','expired') then now() else completed_at end
+		    started_at = case
+		        when $2 = 'queued' then null
+		        when $2 in ('starting','running','awaiting') and started_at is null then now()
+		        else started_at
+		    end,
+		    completed_at = case
+		        when $2 = 'queued' then null
+		        when $2 in ('completed','failed','canceled','expired') then now()
+		        else completed_at
+		    end
 		where id=$1
 	`, queueItemID, status)
 	return err
