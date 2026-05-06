@@ -156,6 +156,8 @@ Targets can be resolved by:
 
 When an ACP session ID is supplied, Nexus looks up every Nexus session mapped to that ACP session. By default it enqueues one delivery per mapped session, so a shared Duraclaw session connected through webchat and WhatsApp receives the same outbound reminder or broadcast on both channels. Supplying `channel_type` filters delivery to that channel only. The response includes `targets` and `channels` so callers can see which Nexus sessions were queued and which mapped channels are available.
 
+If the supplied `acp_session_id` is unknown or has no mapped Nexus sessions, the single push endpoint returns `400 Bad Request` with the rejected `acp_session_id` in the response body. This is treated as a caller resolution error rather than an internal server failure.
+
 To inspect the mapping without enqueueing a message, call:
 
 ```text

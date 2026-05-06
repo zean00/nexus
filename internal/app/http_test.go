@@ -3144,6 +3144,36 @@ func TestHandlePushOutboundReportsUnavailableChannel(t *testing.T) {
 	}
 }
 
+func TestHandlePushOutboundReportsUnknownACPSessionAsClientError(t *testing.T) {
+	repo := &appRepoStub{sessionsByACP: map[string][]domain.Session{}}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+		"acp_session_id":"acp_missing_1",
+		"message_id":"reminder_1",
+		"text":"Time for your reminder"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutbound(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.deliveries) != 0 {
+		t.Fatalf("expected no deliveries, got %+v", repo.deliveries)
+	}
+	var body struct {
+		Data outboundPushResult `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if body.Data.ACPSessionID != "acp_missing_1" || !strings.Contains(body.Data.Error, "no nexus sessions found") {
+		t.Fatalf("unexpected unknown acp response: %+v", body.Data)
+	}
+}
+
 func TestHandleListSessionsByACP(t *testing.T) {
 	repo := &appRepoStub{
 		sessionsByACP: map[string][]domain.Session{

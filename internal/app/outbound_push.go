@@ -342,7 +342,11 @@ func (a *App) resolveOutboundPushSessions(ctx context.Context, tenantID string, 
 			return nil, nil, err
 		}
 		if len(sessions) == 0 {
-			return nil, nil, fmt.Errorf("no nexus sessions found for acp_session_id %s", acpSessionID)
+			return nil, nil, &outboundPushResolutionError{
+				status:  http.StatusBadRequest,
+				message: fmt.Sprintf("no nexus sessions found for acp_session_id %s", acpSessionID),
+				result:  outboundPushResult{ACPSessionID: acpSessionID},
+			}
 		}
 		channels := outboundPushChannelAvailabilityForSessions(sessions, channelType)
 		targets := filterOutboundPushSessionsByChannel(sessions, channelType)
