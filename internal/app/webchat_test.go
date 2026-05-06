@@ -86,7 +86,8 @@ func (s *webAuthStub) DeleteWebAuthSession(_ context.Context, sessionID string) 
 
 type webchatRepoStub struct {
 	appRepoStub
-	session domain.Session
+	session             domain.Session
+	updatedACPSessionID string
 }
 
 func (r *webchatRepoStub) InTx(ctx context.Context, fn func(context.Context, ports.Repository) error) error {
@@ -245,6 +246,14 @@ func (r *webchatRepoStub) ResolveSession(context.Context, domain.CanonicalInboun
 		r.session = domain.Session{ID: "session_webchat_1", TenantID: "tenant_default", OwnerUserID: "user@example.com", ChannelType: "webchat", ChannelScopeKey: "websess_1:session_webchat_1", State: "open"}
 	}
 	return r.session, false, nil
+}
+
+func (r *webchatRepoStub) UpdateSessionACPSessionID(_ context.Context, sessionID, acpSessionID string) error {
+	if r.session.ID == sessionID {
+		r.session.ACPSessionID = acpSessionID
+	}
+	r.updatedACPSessionID = acpSessionID
+	return nil
 }
 
 func (r *webchatRepoStub) GetArtifactForSession(_ context.Context, tenantID, sessionID, artifactID string) (domain.Artifact, error) {
@@ -440,6 +449,9 @@ func TestAdminWebChatSessionCanRequestGreeting(t *testing.T) {
 	}
 	if acp.session.ID != "session_webchat_1" || acp.session.ChannelType != "webchat" {
 		t.Fatalf("unexpected resolved session %#v", acp.session)
+	}
+	if repo, ok := app.Repo.(*webchatRepoStub); !ok || repo.updatedACPSessionID != "session_webchat_1" {
+		t.Fatalf("expected greeting ACP session id to be persisted, got %#v", repo)
 	}
 }
 

@@ -118,13 +118,34 @@ func (a *App) ensureWebChatGreeting(ctx context.Context, authSession domain.WebA
 		return nil, err
 	}
 	if greetingACP, ok := a.ACP.(acpGreetingEnsurer); ok {
-		return greetingACP.EnsureSessionWithGreeting(ctx, session, options)
+		out, err := greetingACP.EnsureSessionWithGreeting(ctx, session, options)
+		if err != nil {
+			return nil, err
+		}
+		if err := a.persistGreetingACPSessionID(ctx, session, out); err != nil {
+			return nil, err
+		}
+		return out, nil
 	}
 	sessionID, err := a.ACP.EnsureSession(ctx, session)
 	if err != nil {
 		return nil, err
 	}
+	if err := a.persistGreetingACPSessionID(ctx, session, map[string]any{"session_id": sessionID}); err != nil {
+		return nil, err
+	}
 	return map[string]any{"session_id": sessionID, "greeting_skipped": "unsupported_acp_bridge"}, nil
+}
+
+func (a *App) persistGreetingACPSessionID(ctx context.Context, session domain.Session, out map[string]any) error {
+	if a.Repo == nil {
+		return nil
+	}
+	acpSessionID := strings.TrimSpace(stringFromMap(out, "session_id"))
+	if acpSessionID == "" || acpSessionID == session.ACPSessionID {
+		return nil
+	}
+	return a.Repo.UpdateSessionACPSessionID(ctx, session.ID, acpSessionID)
 }
 
 func adminWebChatLinkedIdentities(channelType, channelUserID string) []domain.LinkedIdentity {
