@@ -1356,7 +1356,7 @@ func TestBuildWebChatMessageEventIncludesRawPayload(t *testing.T) {
 	evt := buildWebChatMessageEvent("tenant_default", domain.WebAuthSession{
 		ID:    "websess_1",
 		Email: "user@example.com",
-	}, "hello from webchat", nil)
+	}, "hello from webchat", nil, map[string]any{"message_id": "msg-1", "artifact_ids": []string{"cap-1"}})
 	if len(evt.Metadata.RawPayload) == 0 {
 		t.Fatal("expected raw payload to be populated")
 	}
@@ -1366,6 +1366,10 @@ func TestBuildWebChatMessageEventIncludesRawPayload(t *testing.T) {
 	}
 	if payload["text"] != "hello from webchat" {
 		t.Fatalf("unexpected raw payload: %+v", payload)
+	}
+	replyTo, _ := payload["reply_to"].(map[string]any)
+	if replyTo["message_id"] != "msg-1" {
+		t.Fatalf("unexpected reply_to: %+v", replyTo)
 	}
 }
 

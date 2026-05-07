@@ -234,6 +234,9 @@ func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) 
 			"artifacts": req.Message.Artifacts,
 		},
 	}
+	if replyTo := compactReplyToFromRawPayload(req.Message.RawPayload); len(replyTo) > 0 {
+		body["reply_to"] = replyTo
+	}
 	var response strictRun
 	if err := c.postJSON(ctx, "/runs", nil, body, &response, sessionHeaders(req.Session, req.IdempotencyKey, "")); err != nil {
 		return domain.Run{}, domain.RunEventStream{}, err
@@ -244,6 +247,56 @@ func (c StrictClient) StartRun(ctx context.Context, req domain.StartRunRequest) 
 	}
 	run.ACPAgentName = req.RouteDecision.ACPAgentName
 	return run, staticRunEventStream(event), nil
+}
+
+func compactReplyToFromRawPayload(raw []byte) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var payload struct {
+		ReplyTo map[string]any `json:"reply_to"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || len(payload.ReplyTo) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for _, key := range []string{"message_id", "external_message_id", "run_id", "role", "source", "kind"} {
+		if value, _ := payload.ReplyTo[key].(string); strings.TrimSpace(value) != "" {
+			out[key] = strings.TrimSpace(value)
+		}
+	}
+	if ids := runInputStringsFromAny(payload.ReplyTo["artifact_ids"]); len(ids) > 0 {
+		out["artifact_ids"] = ids
+	} else if ids := runInputStringsFromAny(payload.ReplyTo["artifacts"]); len(ids) > 0 {
+		out["artifact_ids"] = ids
+	}
+	if strings.TrimSpace(fmt.Sprint(out["message_id"])) == "" && strings.TrimSpace(fmt.Sprint(out["external_message_id"])) == "" && strings.TrimSpace(fmt.Sprint(out["run_id"])) == "" {
+		return nil
+	}
+	return out
+}
+
+func runInputStringsFromAny(value any) []string {
+	switch v := value.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func strictMessageParts(parts []domain.Part) []map[string]any {

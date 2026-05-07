@@ -226,8 +226,10 @@ func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Sess
 		if err := s.Repo.UpdateRunStatus(ctx, runID, runEvent.Status); err != nil {
 			return "", err
 		}
-		if err := s.Repo.UpdateQueueItemStatus(ctx, queueItemID, runEvent.Status); err != nil {
-			return "", err
+		if runEvent.Status != "queued" {
+			if err := s.Repo.UpdateQueueItemStatus(ctx, queueItemID, runEvent.Status); err != nil {
+				return "", err
+			}
 		}
 		switch runEvent.Status {
 		case "completed", "failed", "canceled":

@@ -505,6 +505,7 @@ func (a *App) handleWebChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := strings.TrimSpace(r.FormValue("text"))
+	replyTo := parseWebChatReplyTo(r)
 	files := r.MultipartForm.File["files"]
 	artifacts, err := a.readWebChatUploads(r.Context(), files)
 	if err != nil {
@@ -515,7 +516,7 @@ func (a *App) handleWebChatMessage(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "missing message body")
 		return
 	}
-	evt := buildWebChatMessageEvent(a.Config.DefaultTenantID, authSession, text, artifacts)
+	evt := buildWebChatMessageEvent(a.Config.DefaultTenantID, authSession, text, artifacts, replyTo)
 	result, err := a.Inbound.Handle(r.Context(), evt)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -1557,7 +1558,7 @@ func webChatActivityTime(run domain.Run) time.Time {
 	return run.StartedAt
 }
 
-func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession, text string, artifacts []domain.Artifact) domain.CanonicalInboundEvent {
+func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession, text string, artifacts []domain.Artifact, replyTo map[string]any) domain.CanonicalInboundEvent {
 	eventID := "webchat_evt_" + randomToken(8)
 	messageType := "text"
 	switch {
@@ -1570,7 +1571,7 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 	if text != "" {
 		parts = append(parts, domain.Part{ContentType: "text/plain", Content: text})
 	}
-	rawPayload, _ := json.Marshal(map[string]any{
+	raw := map[string]any{
 		"event_id": eventID,
 		"text":     text,
 		"artifacts": func() []map[string]any {
@@ -1586,7 +1587,11 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 			}
 			return out
 		}(),
-	})
+	}
+	if len(replyTo) > 0 {
+		raw["reply_to"] = replyTo
+	}
+	rawPayload, _ := json.Marshal(raw)
 	return domain.CanonicalInboundEvent{
 		EventID:         eventID,
 		TenantID:        tenantID,
@@ -1621,6 +1626,55 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 			},
 			RawPayload: rawPayload,
 		},
+	}
+}
+
+func parseWebChatReplyTo(r *http.Request) map[string]any {
+	raw := strings.TrimSpace(r.FormValue("reply_to"))
+	if raw == "" {
+		return nil
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return nil
+	}
+	out := map[string]any{}
+	for _, key := range []string{"message_id", "external_message_id", "run_id", "role", "source", "kind"} {
+		if value, _ := data[key].(string); strings.TrimSpace(value) != "" {
+			out[key] = strings.TrimSpace(value)
+		}
+	}
+	if ids := stringsFromAny(data["artifact_ids"]); len(ids) > 0 {
+		out["artifact_ids"] = ids
+	} else if ids := stringsFromAny(data["artifacts"]); len(ids) > 0 {
+		out["artifact_ids"] = ids
+	}
+	if strings.TrimSpace(fmt.Sprint(out["message_id"])) == "" && strings.TrimSpace(fmt.Sprint(out["external_message_id"])) == "" && strings.TrimSpace(fmt.Sprint(out["run_id"])) == "" {
+		return nil
+	}
+	return out
+}
+
+func stringsFromAny(value any) []string {
+	switch v := value.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

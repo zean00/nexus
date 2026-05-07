@@ -62,12 +62,12 @@ func TestStrictDiscoverAgentsMergesCapabilitiesWithLegacyFlags(t *testing.T) {
 
 func TestStrictStartRun(t *testing.T) {
 	var auth string
+	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth = r.Header.Get("Authorization")
 		if r.URL.Path != "/runs" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
-		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
@@ -97,9 +97,59 @@ func TestStrictStartRun(t *testing.T) {
 	if run.ACPRunID != "run_1" || run.Status != "completed" {
 		t.Fatalf("unexpected strict run: %+v", run)
 	}
+	if _, ok := payload["reply_to"]; ok {
+		t.Fatalf("did not expect reply_to in plain run payload: %+v", payload)
+	}
 	events := collectRunEvents(t, stream)
 	if len(events) != 1 || events[0].Text != "done" || events[0].Status != "completed" {
 		t.Fatalf("unexpected strict events: %+v", events)
+	}
+}
+
+func TestStrictStartRunForwardsReplyTo(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runs" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"run_1","session_id":"ses_1","status":"completed","output":"done"}`)
+	}))
+	defer server.Close()
+
+	client := NewStrictClient(server.URL, "secret")
+	client.HTTP = server.Client()
+	raw, _ := json.Marshal(map[string]any{
+		"text": "ubah judulnya",
+		"reply_to": map[string]any{
+			"message_id":   "msg-1",
+			"role":         "assistant",
+			"artifact_ids": []string{"cap-1"},
+			"text":         "quoted text should not pass through",
+		},
+	})
+	_, _, err := client.StartRun(context.Background(), domain.StartRunRequest{
+		Session:        domain.Session{ID: "session_1", ACPSessionID: "ses_1"},
+		RouteDecision:  domain.RouteDecision{ACPAgentName: "strict-agent"},
+		Message:        domain.Message{Text: "ubah judulnya", RawPayload: raw},
+		IdempotencyKey: "queue_1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replyTo, _ := payload["reply_to"].(map[string]any)
+	if replyTo["message_id"] != "msg-1" || replyTo["role"] != "assistant" {
+		t.Fatalf("unexpected reply_to: %+v", replyTo)
+	}
+	ids, _ := replyTo["artifact_ids"].([]any)
+	if len(ids) != 1 || ids[0] != "cap-1" {
+		t.Fatalf("unexpected artifact ids: %+v", replyTo)
+	}
+	if _, ok := replyTo["text"]; ok {
+		t.Fatalf("quoted text should not be forwarded: %+v", replyTo)
 	}
 }
 

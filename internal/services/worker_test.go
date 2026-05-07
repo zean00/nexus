@@ -31,6 +31,7 @@ type workerRepo struct {
 	auditEvents         []domain.AuditEvent
 	runStatusUpdated    bool
 	queueStatusUpdated  bool
+	queueStatusUpdates  []string
 	markedSending       []string
 	markedSent          []string
 	markedFailed        []string
@@ -70,8 +71,9 @@ func (r *workerRepo) UpdateRunStatus(context.Context, string, string) error {
 	r.runStatusUpdated = true
 	return nil
 }
-func (r *workerRepo) UpdateQueueItemStatus(context.Context, string, string) error {
+func (r *workerRepo) UpdateQueueItemStatus(_ context.Context, _, status string) error {
 	r.queueStatusUpdated = true
+	r.queueStatusUpdates = append(r.queueStatusUpdates, status)
 	return nil
 }
 func (r *workerRepo) UpdateActiveQueueItemStatus(context.Context, string, string) error { return nil }
@@ -453,6 +455,40 @@ func (streamingWorkerACP) FindLatestRunForSession(context.Context, domain.Sessio
 }
 func (streamingWorkerACP) CancelRun(context.Context, domain.Run) error { return nil }
 
+type queuedThenCompletedWorkerACP struct{}
+
+func (queuedThenCompletedWorkerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
+	return nil, nil
+}
+func (queuedThenCompletedWorkerACP) EnsureSession(context.Context, domain.Session) (string, error) {
+	return "acp_session_1", nil
+}
+func (queuedThenCompletedWorkerACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
+	return domain.Run{
+			ID:          "run_queued_1",
+			SessionID:   "session_1",
+			Status:      "running",
+			StartedAt:   time.Now(),
+			LastEventAt: time.Now(),
+		}, domain.StaticRunEventStream(
+			domain.RunEvent{RunID: "run_queued_1", Status: "queued", Text: ""},
+			domain.RunEvent{RunID: "run_queued_1", Status: "completed", Text: "done"},
+		), nil
+}
+func (queuedThenCompletedWorkerACP) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(), nil
+}
+func (queuedThenCompletedWorkerACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
+	return domain.RunStatusSnapshot{}, nil
+}
+func (queuedThenCompletedWorkerACP) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (queuedThenCompletedWorkerACP) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (queuedThenCompletedWorkerACP) CancelRun(context.Context, domain.Run) error { return nil }
+
 type resumeWorkerACP struct{}
 
 func (resumeWorkerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
@@ -679,6 +715,33 @@ func TestWorkerStreamsSingleOutboundMessage(t *testing.T) {
 	}
 	if repo.storedOutboundText != "hello" {
 		t.Fatalf("expected final outbound text to be persisted, got %q", repo.storedOutboundText)
+	}
+}
+
+func TestWorkerDoesNotDowngradeStartedQueueItemToQueued(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
+		queueItem:    domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
+		session:      domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
+		message:      domain.Message{MessageID: "msg_1", Text: "start"},
+		route:        domain.RouteDecision{ACPAgentName: "default-agent"},
+	}
+	worker := WorkerService{
+		Repo:     repo,
+		ACP:      queuedThenCompletedWorkerACP{},
+		Renderer: WebChatRenderer{},
+		Channel:  noopChannel{},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range repo.queueStatusUpdates {
+		if status == "queued" {
+			t.Fatalf("queue item was downgraded to queued: %+v", repo.queueStatusUpdates)
+		}
+	}
+	if len(repo.queueStatusUpdates) == 0 || repo.queueStatusUpdates[len(repo.queueStatusUpdates)-1] != "completed" {
+		t.Fatalf("expected queue to finish completed, got %+v", repo.queueStatusUpdates)
 	}
 }
 
