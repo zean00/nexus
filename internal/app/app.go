@@ -17,6 +17,7 @@ import (
 	"nexus/internal/adapters/storage"
 	"nexus/internal/adapters/telegram"
 	"nexus/internal/adapters/webchat"
+	"nexus/internal/adapters/webpush"
 	"nexus/internal/adapters/whatsapp"
 	"nexus/internal/adapters/whatsappweb"
 	"nexus/internal/config"
@@ -48,6 +49,7 @@ type App struct {
 	WhatsAppWebEnabled bool
 	Email              email.Adapter
 	WebChat            webchat.Adapter
+	WebPush            webpush.Adapter
 	Telegram           telegram.Adapter
 	Channels           map[string]ports.ChannelAdapter
 	Runtime            *RuntimeState
@@ -330,6 +332,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	emailAdapter.MaxAttachmentBytes = cfg.EmailMaxAttachmentBytes
 	emailAdapter.MaxAttachments = cfg.EmailMaxAttachments
 	webchatAdapter := webchat.New()
+	webPushAdapter := webpush.New(cfg.WebPushVAPIDPublicKey, cfg.WebPushVAPIDPrivateKey, cfg.WebPushVAPIDSubject, cfg.WebPushTTLSeconds)
+	webPushAdapter.GetSubscription = repo.GetWebPushSubscriptionForSession
 	telegramAdapter := telegram.New(cfg.TelegramBotToken, cfg.TelegramWebhookSecret)
 	telegramAdapter.HTTP = policy.HTTPClient("telegram.api", 10*time.Second)
 	router := services.PolicyRouter{
@@ -350,6 +354,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		"whatsapp": services.WhatsAppRenderer{},
 		"email":    services.EmailRenderer{},
 		"webchat":  services.WebChatRenderer{},
+		"web_push": services.WebPushRenderer{},
 		"telegram": services.TelegramRenderer{},
 	}
 	channels := map[string]ports.ChannelAdapter{
@@ -357,6 +362,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		"whatsapp": whatsappAdapter,
 		"email":    emailAdapter,
 		"webchat":  webchatAdapter,
+		"web_push": webPushAdapter,
 		"telegram": telegramAdapter,
 	}
 	if cfg.WhatsAppWebEnabled {
@@ -463,6 +469,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		WhatsAppWebEnabled: cfg.WhatsAppWebEnabled,
 		Email:              emailAdapter,
 		WebChat:            webchatAdapter,
+		WebPush:            webPushAdapter,
 		Telegram:           telegramAdapter,
 		Channels:           channels,
 		Runtime:            runtime,
@@ -604,6 +611,8 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/artifacts", a.handleListArtifacts)
 	mux.HandleFunc("/admin/deliveries", a.handleListDeliveries)
 	mux.HandleFunc("/admin/webchat/sessions", a.handleAdminWebChatSession)
+	mux.HandleFunc("/admin/web-push/public-key", a.handleWebPushPublicKey)
+	mux.HandleFunc("/admin/web-push/subscriptions", a.handleWebPushSubscriptions)
 	mux.HandleFunc("/admin/outbound/push", a.handlePushOutbound)
 	mux.HandleFunc("/admin/outbound/push/bulk", a.handlePushOutboundBulk)
 	mux.HandleFunc("/admin/runs/cancel", a.handleCancelRun)

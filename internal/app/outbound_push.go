@@ -353,6 +353,9 @@ func (a *App) resolveOutboundPushSessions(ctx context.Context, tenantID string, 
 		}
 		channels := outboundPushChannelAvailabilityForSessions(sessions, channelType)
 		targets := filterOutboundPushSessionsByChannel(sessions, channelType)
+		if channelType == "" && a.webPushPreferenceEnabled() {
+			targets = preferWebPushTargets(targets)
+		}
 		if len(targets) == 0 {
 			return nil, channels, &outboundPushResolutionError{
 				status:  http.StatusBadRequest,
@@ -386,6 +389,34 @@ func (a *App) resolveOutboundPushSessions(ctx context.Context, tenantID string, 
 		return nil, nil, err
 	}
 	return []domain.Session{session}, outboundPushChannelAvailabilityForSessions([]domain.Session{session}, channelType), nil
+}
+
+func (a *App) webPushPreferenceEnabled() bool {
+	return a.Config.WebPushPreferForOutbound &&
+		a.Config.WebPushEnabled &&
+		strings.TrimSpace(a.Config.WebPushVAPIDPublicKey) != "" &&
+		strings.TrimSpace(a.Config.WebPushVAPIDPrivateKey) != ""
+}
+
+func preferWebPushTargets(sessions []domain.Session) []domain.Session {
+	hasWebPush := false
+	for _, session := range sessions {
+		if strings.EqualFold(session.ChannelType, "web_push") {
+			hasWebPush = true
+			break
+		}
+	}
+	if !hasWebPush {
+		return sessions
+	}
+	out := make([]domain.Session, 0, len(sessions))
+	for _, session := range sessions {
+		channel := strings.ToLower(strings.TrimSpace(session.ChannelType))
+		if channel == "web_push" || channel == "webchat" {
+			out = append(out, session)
+		}
+	}
+	return out
 }
 
 func filterOutboundPushSessionsByChannel(sessions []domain.Session, channelType string) []domain.Session {
@@ -535,6 +566,8 @@ func servicesDefaultRenderer(channelType string) ports.Renderer {
 		return services.EmailRenderer{}
 	case "webchat":
 		return services.WebChatRenderer{}
+	case "web_push":
+		return services.WebPushRenderer{}
 	default:
 		return nil
 	}

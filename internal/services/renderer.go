@@ -17,6 +17,7 @@ type WhatsAppRenderer struct{}
 type WhatsAppWebRenderer struct{}
 type EmailRenderer struct{}
 type WebChatRenderer struct{}
+type WebPushRenderer struct{}
 
 func (r SlackRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
 	if evt.IsPartial {
@@ -549,6 +550,41 @@ func (r WebChatRenderer) RenderRunEvent(_ context.Context, session domain.Sessio
 	default:
 		return nil, nil
 	}
+}
+
+func (r WebPushRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
+	if evt.IsPartial || evt.Status == "running" {
+		return nil, nil
+	}
+	text := strings.TrimSpace(evt.Text)
+	if text == "" && evt.Status != "awaiting" {
+		return nil, nil
+	}
+	payload, err := json.Marshal(map[string]any{
+		"title": "Wulan",
+		"body":  text,
+		"url":   "/chat",
+		"tag":   "wulan-" + evt.RunID,
+		"data": map[string]any{
+			"session_id": session.ID,
+			"run_id":     evt.RunID,
+			"status":     evt.Status,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return []domain.OutboundDelivery{{
+		ID:               "delivery_" + evt.RunID + "_web_push",
+		TenantID:         session.TenantID,
+		SessionID:        session.ID,
+		RunID:            evt.RunID,
+		ChannelType:      session.ChannelType,
+		DeliveryKind:     "send",
+		Status:           "queued",
+		LogicalMessageID: "logical_" + evt.RunID + "_web_push",
+		PayloadJSON:      payload,
+	}}, nil
 }
 
 func renderSlackRunText(evt domain.RunEvent) string {

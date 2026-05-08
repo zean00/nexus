@@ -3183,6 +3183,103 @@ func TestHandlePushOutboundFansOutByACPSessionID(t *testing.T) {
 	}
 }
 
+func TestHandlePushOutboundOnlyPrefersWebPushWhenConfigured(t *testing.T) {
+	sessions := []domain.Session{
+		{
+			ID:              "session_push_web_1",
+			TenantID:        "tenant_default",
+			OwnerUserID:     "user1",
+			ChannelType:     "web_push",
+			ChannelScopeKey: "webpush:user1:endpoint",
+			State:           "open",
+			ACPSessionID:    "acp_shared_1",
+		},
+		{
+			ID:              "session_push_wa_1",
+			TenantID:        "tenant_default",
+			OwnerUserID:     "user1",
+			ChannelType:     "whatsapp",
+			ChannelScopeKey: "628123456789",
+			State:           "open",
+			ACPSessionID:    "acp_shared_1",
+		},
+	}
+	t.Run("disabled keeps fallback channels", func(t *testing.T) {
+		repo := &appRepoStub{sessionsByACP: map[string][]domain.Session{"acp_shared_1": sessions}}
+		app := &App{Config: config.Config{
+			DefaultTenantID:          "tenant_default",
+			WebPushPreferForOutbound: true,
+			WebPushEnabled:           false,
+		}, Repo: repo}
+		req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+			"acp_session_id":"acp_shared_1",
+			"message_id":"reminder_1",
+			"text":"Time for your reminder"
+		}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		app.handlePushOutbound(rec, req)
+
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if len(repo.deliveries) != 2 {
+			t.Fatalf("expected web push and fallback deliveries, got %+v", repo.deliveries)
+		}
+	})
+	t.Run("missing vapid keys keeps fallback channels", func(t *testing.T) {
+		repo := &appRepoStub{sessionsByACP: map[string][]domain.Session{"acp_shared_1": sessions}}
+		app := &App{Config: config.Config{
+			DefaultTenantID:          "tenant_default",
+			WebPushPreferForOutbound: true,
+			WebPushEnabled:           true,
+		}, Repo: repo}
+		req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+			"acp_session_id":"acp_shared_1",
+			"message_id":"reminder_1",
+			"text":"Time for your reminder"
+		}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		app.handlePushOutbound(rec, req)
+
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if len(repo.deliveries) != 2 {
+			t.Fatalf("expected web push and fallback deliveries, got %+v", repo.deliveries)
+		}
+	})
+	t.Run("enabled with keys prefers web push", func(t *testing.T) {
+		repo := &appRepoStub{sessionsByACP: map[string][]domain.Session{"acp_shared_1": sessions}}
+		app := &App{Config: config.Config{
+			DefaultTenantID:          "tenant_default",
+			WebPushPreferForOutbound: true,
+			WebPushEnabled:           true,
+			WebPushVAPIDPublicKey:    "public",
+			WebPushVAPIDPrivateKey:   "private",
+		}, Repo: repo}
+		req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+			"acp_session_id":"acp_shared_1",
+			"message_id":"reminder_1",
+			"text":"Time for your reminder"
+		}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		app.handlePushOutbound(rec, req)
+
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if len(repo.deliveries) != 1 || repo.deliveries[0].ChannelType != "web_push" {
+			t.Fatalf("expected only web push delivery, got %+v", repo.deliveries)
+		}
+	})
+}
+
 func TestHandlePushOutboundFiltersACPSessionByChannel(t *testing.T) {
 	repo := &appRepoStub{
 		sessionsByACP: map[string][]domain.Session{

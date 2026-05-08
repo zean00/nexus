@@ -73,6 +73,12 @@ type Config struct {
 	WebChatHistoryScope                   string
 	WebChatSessionHours                   int
 	WebChatOTPMinutes                     int
+	WebPushEnabled                        bool
+	WebPushVAPIDPublicKey                 string
+	WebPushVAPIDPrivateKey                string
+	WebPushVAPIDSubject                   string
+	WebPushTTLSeconds                     int
+	WebPushPreferForOutbound              bool
 	IdentityLinkMinutes                   int
 	StepUpOTPMinutes                      int
 	StepUpWindowMinutes                   int
@@ -167,6 +173,12 @@ func Load() (Config, error) {
 		WebChatDevAuth:                        envBool("WEBCHAT_DEV_AUTH", false),
 		WebChatInteractionVisibility:          env("WEBCHAT_INTERACTION_VISIBILITY", "full"),
 		WebChatHistoryScope:                   env("WEBCHAT_HISTORY_SCOPE", "linked_channels"),
+		WebPushEnabled:                        envBool("WEB_PUSH_ENABLED", false),
+		WebPushVAPIDPublicKey:                 strings.TrimSpace(os.Getenv("WEB_PUSH_VAPID_PUBLIC_KEY")),
+		WebPushVAPIDPrivateKey:                strings.TrimSpace(os.Getenv("WEB_PUSH_VAPID_PRIVATE_KEY")),
+		WebPushVAPIDSubject:                   env("WEB_PUSH_VAPID_SUBJECT", "mailto:admin@example.com"),
+		WebPushTTLSeconds:                     mustEnvIntDefault("WEB_PUSH_TTL_SECONDS", 86400),
+		WebPushPreferForOutbound:              envBool("WEB_PUSH_PREFER_FOR_OUTBOUND", true),
 		IdentityLinkMinutes:                   mustEnvIntDefault("IDENTITY_LINK_MINUTES", 10),
 		StepUpOTPMinutes:                      mustEnvIntDefault("STEP_UP_OTP_MINUTES", 10),
 		StepUpWindowMinutes:                   mustEnvIntDefault("STEP_UP_WINDOW_MINUTES", 15),

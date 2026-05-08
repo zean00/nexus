@@ -60,6 +60,58 @@ func TestPostgresRepositoryIntegrationAdminQueries(t *testing.T) {
 		}
 	})
 
+	t.Run("web push endpoint move closes old session", func(t *testing.T) {
+		endpoint := "https://push.example.test/endpoint-shared"
+		first, err := repo.UpsertWebPushSubscription(ctx, domain.WebPushSubscription{
+			TenantID:     "tenant_default",
+			UserID:       "user_push_1",
+			ACPSessionID: "acp_push_old",
+			Endpoint:     endpoint,
+			P256DH:       "p256dh-1",
+			Auth:         "auth-1",
+			UserAgent:    "ua-1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := repo.UpsertWebPushSubscription(ctx, domain.WebPushSubscription{
+			TenantID:     "tenant_default",
+			UserID:       "user_push_2",
+			ACPSessionID: "acp_push_new",
+			Endpoint:     endpoint,
+			P256DH:       "p256dh-2",
+			Auth:         "auth-2",
+			UserAgent:    "ua-2",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.SessionID == second.SessionID {
+			t.Fatalf("expected endpoint move to use a new session, got %q", second.SessionID)
+		}
+		oldSession, err := repo.GetSession(ctx, first.SessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if oldSession.State != "closed" {
+			t.Fatalf("expected old web push session to be closed, got %+v", oldSession)
+		}
+		oldMapped, err := repo.ListSessionsByACPSessionID(ctx, "tenant_default", "acp_push_old")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(oldMapped) != 0 {
+			t.Fatalf("expected old ACP session mapping to exclude stale web push session, got %+v", oldMapped)
+		}
+		newMapped, err := repo.ListSessionsByACPSessionID(ctx, "tenant_default", "acp_push_new")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(newMapped) != 1 || newMapped[0].ID != second.SessionID {
+			t.Fatalf("expected new ACP session mapping to include moved web push session, got %+v", newMapped)
+		}
+	})
+
 	t.Run("messages", func(t *testing.T) {
 		query := domain.MessageListQuery{
 			TenantID:   "tenant_default",

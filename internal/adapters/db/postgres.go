@@ -2661,6 +2661,148 @@ func (r *PostgresRepository) EnsureNotificationSession(ctx context.Context, tena
 	return session, nil
 }
 
+func (r *PostgresRepository) UpsertWebPushSubscription(ctx context.Context, sub domain.WebPushSubscription) (domain.WebPushSubscription, error) {
+	if sub.ID == "" {
+		sub.ID = "webpush_" + hashText(sub.TenantID+"|"+sub.Endpoint)
+	}
+	if sub.Status == "" {
+		sub.Status = "active"
+	}
+	surfaceKey := "webpush:" + sub.UserID + ":" + hashText(sub.Endpoint)
+	session := domain.Session{
+		ID:              "session_webpush_" + hashText(sub.TenantID+"|"+sub.UserID+"|"+sub.Endpoint),
+		TenantID:        sub.TenantID,
+		OwnerUserID:     sub.UserID,
+		ChannelType:     "web_push",
+		ChannelScopeKey: surfaceKey,
+		State:           "open",
+		LastActiveAt:    time.Now().UTC(),
+		ACPSessionID:    sub.ACPSessionID,
+	}
+	if sub.SessionID != "" {
+		session.ID = sub.SessionID
+	}
+	var previousSessionID string
+	err := r.queryRow(ctx, `
+		select session_id
+		from web_push_subscriptions
+		where tenant_id=$1 and endpoint=$2 and session_id<>$3
+		limit 1
+	`, sub.TenantID, sub.Endpoint, session.ID).Scan(&previousSessionID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return domain.WebPushSubscription{}, err
+	}
+	_, err = r.exec(ctx, `
+		insert into sessions (
+			id, tenant_id, owner_user_id, agent_profile_id, channel_type, channel_scope_key,
+			acp_connection_id, acp_server_url, acp_agent_name, acp_session_id, mode, state, last_active_at, created_at, updated_at
+		) values ($1,$2,$3,'',$4,$5,'acp_default','','',$6,'notification','open',now(),now(),now())
+		on conflict (id)
+		do update set
+			owner_user_id=excluded.owner_user_id,
+			channel_scope_key=excluded.channel_scope_key,
+			acp_session_id=excluded.acp_session_id,
+			state='open',
+			last_active_at=now(),
+			updated_at=now()
+	`, session.ID, session.TenantID, session.OwnerUserID, session.ChannelType, session.ChannelScopeKey, session.ACPSessionID)
+	if err != nil {
+		return domain.WebPushSubscription{}, err
+	}
+	sub.SessionID = session.ID
+	row := r.queryRow(ctx, `
+		insert into web_push_subscriptions (
+			id, tenant_id, user_id, acp_session_id, session_id, endpoint, p256dh, auth,
+			user_agent, status, fail_count, last_error, last_seen_at, created_at, updated_at
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',0,'',now(),now(),now())
+		on conflict (tenant_id, endpoint)
+		do update set
+			user_id=excluded.user_id,
+			acp_session_id=excluded.acp_session_id,
+			session_id=excluded.session_id,
+			p256dh=excluded.p256dh,
+			auth=excluded.auth,
+			user_agent=excluded.user_agent,
+			status='active',
+			last_seen_at=now(),
+			updated_at=now()
+		returning id, tenant_id, user_id, acp_session_id, session_id, endpoint, p256dh, auth, user_agent, status, fail_count, last_error, last_seen_at, created_at, updated_at
+	`, sub.ID, sub.TenantID, sub.UserID, sub.ACPSessionID, sub.SessionID, sub.Endpoint, sub.P256DH, sub.Auth, sub.UserAgent)
+	stored, err := scanWebPushSubscription(row)
+	if err != nil {
+		return domain.WebPushSubscription{}, err
+	}
+	if previousSessionID != "" {
+		if _, err := r.exec(ctx, `update sessions set state='closed', updated_at=now() where id=$1 and tenant_id=$2 and channel_type='web_push'`, previousSessionID, sub.TenantID); err != nil {
+			return domain.WebPushSubscription{}, err
+		}
+	}
+	return stored, nil
+}
+
+func (r *PostgresRepository) ListWebPushSubscriptions(ctx context.Context, tenantID, userID string) ([]domain.WebPushSubscription, error) {
+	rows, err := r.query(ctx, `
+		select id, tenant_id, user_id, acp_session_id, session_id, endpoint, p256dh, auth, user_agent, status, fail_count, last_error, last_seen_at, created_at, updated_at
+		from web_push_subscriptions
+		where tenant_id=$1 and user_id=$2
+		order by updated_at desc
+	`, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.WebPushSubscription
+	for rows.Next() {
+		item, err := scanWebPushSubscription(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (r *PostgresRepository) GetWebPushSubscriptionForSession(ctx context.Context, tenantID, sessionID string) (domain.WebPushSubscription, error) {
+	row := r.queryRow(ctx, `
+		select id, tenant_id, user_id, acp_session_id, session_id, endpoint, p256dh, auth, user_agent, status, fail_count, last_error, last_seen_at, created_at, updated_at
+		from web_push_subscriptions
+		where tenant_id=$1 and session_id=$2 and status='active'
+		limit 1
+	`, tenantID, sessionID)
+	return scanWebPushSubscription(row)
+}
+
+func (r *PostgresRepository) RevokeWebPushSubscription(ctx context.Context, tenantID, userID, endpoint string) error {
+	var sessionID string
+	err := r.queryRow(ctx, `
+		update web_push_subscriptions
+		set status='revoked', updated_at=now()
+		where tenant_id=$1 and user_id=$2 and endpoint=$3
+		returning session_id
+	`, tenantID, userID, endpoint).Scan(&sessionID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if sessionID != "" {
+		_, err := r.exec(ctx, `update sessions set state='closed', updated_at=now() where id=$1 and tenant_id=$2 and channel_type='web_push'`, sessionID, tenantID)
+		return err
+	}
+	return nil
+}
+
+type webPushScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanWebPushSubscription(row webPushScanner) (domain.WebPushSubscription, error) {
+	var sub domain.WebPushSubscription
+	err := row.Scan(&sub.ID, &sub.TenantID, &sub.UserID, &sub.ACPSessionID, &sub.SessionID, &sub.Endpoint, &sub.P256DH, &sub.Auth, &sub.UserAgent, &sub.Status, &sub.FailCount, &sub.LastError, &sub.LastSeenAt, &sub.CreatedAt, &sub.UpdatedAt)
+	return sub, err
+}
+
 func (r *PostgresRepository) SwitchActiveSession(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID, aliasOrID string) (domain.Session, error) {
 	row := r.queryRow(ctx, `
 		select s.id, s.tenant_id, coalesce(s.owner_user_id,''), coalesce(s.agent_profile_id,''), s.channel_type, s.channel_scope_key, s.state, s.last_active_at, coalesce(s.acp_session_id,'')

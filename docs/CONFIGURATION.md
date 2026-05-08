@@ -198,6 +198,19 @@ Behavior notes:
 | `WEBCHAT_SESSION_HOURS` | `24` | Webchat auth session TTL | Controls cookie-backed session lifetime |
 | `WEBCHAT_OTP_MINUTES` | `10` | OTP challenge TTL | Email login code expiry |
 
+## Web Push
+
+| Variable | Default | Purpose | Notes |
+| --- | --- | --- | --- |
+| `WEB_PUSH_ENABLED` | `false` | Enables browser push subscriptions and delivery | Requires VAPID keys |
+| `WEB_PUSH_VAPID_PUBLIC_KEY` | empty | Browser subscription public key | Exposed through the admin API for trusted app backends |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | empty | VAPID private key | Keep secret in deployment env |
+| `WEB_PUSH_VAPID_SUBJECT` | `mailto:admin@example.com` | VAPID subscriber contact | Use an operator email or HTTPS URL |
+| `WEB_PUSH_TTL_SECONDS` | `86400` | Push message TTL | Passed to the push service |
+| `WEB_PUSH_PREFER_FOR_OUTBOUND` | `true` | Prefer Web Push for channel-neutral ACP outbound messages | Applies only when `WEB_PUSH_ENABLED=true` and both VAPID keys are configured |
+
+When Web Push preference is active, channel-neutral ACP outbound pushes prefer active `web_push` and `webchat` sessions over external fallback channels such as WhatsApp. If Web Push is disabled or VAPID keys are missing, Nexus does not apply this preference, so existing web-push sessions do not suppress fallback deliveries. Re-subscribing the same browser endpoint under a different user or ACP session moves the subscription and closes the old web-push session so stale mappings are not selected later.
+
 ### `WEBCHAT_INTERACTION_VISIBILITY`
 
 Supported values:

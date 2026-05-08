@@ -260,6 +260,24 @@ type WhatsAppContactPolicy struct {
 	UpdatedAt           time.Time `json:"updated_at,omitempty"`
 }
 
+type WebPushSubscription struct {
+	ID           string    `json:"id"`
+	TenantID     string    `json:"tenant_id"`
+	UserID       string    `json:"user_id"`
+	ACPSessionID string    `json:"acp_session_id"`
+	SessionID    string    `json:"session_id"`
+	Endpoint     string    `json:"endpoint,omitempty"`
+	P256DH       string    `json:"p256dh,omitempty"`
+	Auth         string    `json:"auth,omitempty"`
+	UserAgent    string    `json:"user_agent,omitempty"`
+	Status       string    `json:"status"`
+	FailCount    int       `json:"fail_count"`
+	LastError    string    `json:"last_error,omitempty"`
+	LastSeenAt   time.Time `json:"last_seen_at,omitempty"`
+	CreatedAt    time.Time `json:"created_at,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+}
+
 type WhatsAppPolicyListQuery struct {
 	CursorPage
 	TenantID      string

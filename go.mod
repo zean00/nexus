@@ -3,6 +3,7 @@ module nexus
 go 1.25.1
 
 require (
+	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/grindlemire/go-tui v0.13.1
 	github.com/jackc/pgx/v5 v5.7.4
 	github.com/yuin/goldmark v1.7.13
@@ -18,6 +19,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/golang-jwt/jwt/v5 v5.2.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
