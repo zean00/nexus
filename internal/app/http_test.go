@@ -98,6 +98,49 @@ func (testRouter) Route(context.Context, domain.CanonicalInboundEvent, domain.Se
 
 var _ ports.Router = testRouter{}
 
+func TestForwardLajuInboundEnqueuesOutboxPayload(t *testing.T) {
+	repo := &appRepoStub{}
+	app := &App{
+		Config: config.Config{
+			LajuBaseURL:     "https://laju.example.test",
+			LajuBearerToken: "laju-token",
+		},
+		Repo: repo,
+	}
+	app.forwardLajuInbound(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_1",
+		TenantID:        "tenant_default",
+		Channel:         "webchat",
+		ProviderEventID: "provider_evt_1",
+		Sender: domain.Sender{
+			ChannelUserID:     "user_1",
+			DisplayName:       "Rina",
+			IsAuthenticated:   true,
+			IdentityAssurance: "linked",
+		},
+		Conversation: domain.Conversation{
+			ChannelConversationID: "conversation_1",
+			ChannelThreadID:       "thread_1",
+			ChannelSurfaceKey:     "web",
+		},
+		Message: domain.Message{
+			MessageID: "message_1",
+			Text:      "I need help",
+		},
+	}, services.InboundResult{SessionID: "session_1", Status: "queued", QueueID: "queue_1"})
+
+	if len(repo.lajuInboundEvents) != 1 {
+		t.Fatalf("expected one Laju outbox event, got %+v", repo.lajuInboundEvents)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(repo.lajuInboundEvents[0].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["session_id"] != "session_1" || payload["channelType"] != "webchat" || payload["identityLinked"] != true {
+		t.Fatalf("unexpected Laju payload %+v", payload)
+	}
+}
+
 type appRepoStub struct {
 	receiptCount          int
 	sessions              map[string]domain.Session
@@ -111,9 +154,12 @@ type appRepoStub struct {
 	retriedDeliveryID     string
 	auditEvents           []domain.AuditEvent
 	deliveries            []domain.OutboundDelivery
+	lajuInboundEvents     []domain.OutboxEvent
 	outboundMessages      []domain.Message
 	storedArtifacts       []domain.Artifact
 	delegatedSessions     []domain.Session
+	hiddenMessageID       string
+	hiddenMetadata        any
 	telegramAllowed       map[string]bool
 	telegramUsers         []domain.TelegramUserAccess
 	telegramAccessQueries []domain.TelegramUserAccessListQuery
@@ -162,6 +208,11 @@ func (r *appRepoStub) StoreOutboundMessage(_ context.Context, session domain.Ses
 	})
 	return id, nil
 }
+func (r *appRepoStub) MarkMessageHiddenFromHistory(_ context.Context, messageID string, metadata any) error {
+	r.hiddenMessageID = messageID
+	r.hiddenMetadata = metadata
+	return nil
+}
 func (r *appRepoStub) StoreArtifacts(_ context.Context, _ string, _ string, artifacts []domain.Artifact) error {
 	r.storedArtifacts = append(r.storedArtifacts, artifacts...)
 	return nil
@@ -188,6 +239,15 @@ func (r *appRepoStub) EnqueueAwaitResume(context.Context, domain.ResumeRequest, 
 }
 func (r *appRepoStub) EnqueueDelivery(_ context.Context, delivery domain.OutboundDelivery) error {
 	r.deliveries = append(r.deliveries, delivery)
+	return nil
+}
+func (r *appRepoStub) EnqueueLajuInbound(_ context.Context, tenantID, eventID string, payload []byte) error {
+	r.lajuInboundEvents = append(r.lajuInboundEvents, domain.OutboxEvent{
+		TenantID:    tenantID,
+		EventType:   "laju.inbound.forward",
+		AggregateID: eventID,
+		PayloadJSON: payload,
+	})
 	return nil
 }
 func (r *appRepoStub) ClaimOutbox(context.Context, time.Time, int) ([]domain.OutboxEvent, error) {
@@ -2988,6 +3048,82 @@ func TestHandlePushOutboundBySessionID(t *testing.T) {
 	}
 	if payload["chat_id"] != "12345" || !strings.Contains(fmt.Sprint(payload["text"]), "Time for your reminder") {
 		t.Fatalf("unexpected telegram payload: %+v", payload)
+	}
+}
+
+func TestHandlePushOutboundModerationWarningHidesExplicitInboundMessage(t *testing.T) {
+	repo := &appRepoStub{
+		sessionsByACP: map[string][]domain.Session{
+			"acp_session_push_1": {{
+				ID:              "session_push_1",
+				TenantID:        "tenant_default",
+				OwnerUserID:     "user1",
+				ChannelType:     "telegram",
+				ChannelScopeKey: "12345",
+				State:           "open",
+				ACPSessionID:    "acp_session_push_1",
+			}},
+		},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+		"session_id":"acp_session_push_1",
+		"message_id":"moderation_warning_1",
+		"text":"I cannot help with that request.",
+		"metadata":{
+			"source":"moderation_warning",
+			"message_id":"msg_unsafe_1",
+			"moderation_category":"safety"
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutbound(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if repo.hiddenMessageID != "msg_unsafe_1" {
+		t.Fatalf("expected explicit inbound message to be hidden, got %q", repo.hiddenMessageID)
+	}
+	metadata, ok := repo.hiddenMetadata.(map[string]any)
+	if !ok || metadata["source"] != "moderation_denied" || metadata["session_id"] != "session_push_1" || metadata["moderation_category"] != "safety" {
+		t.Fatalf("unexpected hidden metadata: %+v", repo.hiddenMetadata)
+	}
+}
+
+func TestHandlePushOutboundModerationWarningWithoutMessageIDDoesNotHideLatestInbound(t *testing.T) {
+	repo := &appRepoStub{
+		sessionsByACP: map[string][]domain.Session{
+			"acp_session_push_1": {{
+				ID:              "session_push_1",
+				TenantID:        "tenant_default",
+				OwnerUserID:     "user1",
+				ChannelType:     "telegram",
+				ChannelScopeKey: "12345",
+				State:           "open",
+				ACPSessionID:    "acp_session_push_1",
+			}},
+		},
+	}
+	app := &App{Config: config.Config{DefaultTenantID: "tenant_default"}, Repo: repo}
+	req := httptest.NewRequest(http.MethodPost, "/admin/outbound/push", strings.NewReader(`{
+		"session_id":"acp_session_push_1",
+		"message_id":"moderation_warning_1",
+		"text":"I cannot help with that request.",
+		"metadata":{"source":"moderation_warning"}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.handlePushOutbound(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if repo.hiddenMessageID != "" {
+		t.Fatalf("expected no hidden message without explicit source id, got %q", repo.hiddenMessageID)
 	}
 }
 

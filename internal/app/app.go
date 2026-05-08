@@ -432,13 +432,15 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		},
 		Catalog: catalog,
 		Worker: services.WorkerService{
-			Repo:      repo,
-			ACP:       acpClient,
-			Catalog:   catalog,
-			Renderer:  renderers["slack"],
-			Channel:   slackAdapter,
-			Renderers: renderers,
-			Channels:  channels,
+			Repo:            repo,
+			ACP:             acpClient,
+			Catalog:         catalog,
+			Renderer:        renderers["slack"],
+			Channel:         slackAdapter,
+			Renderers:       renderers,
+			Channels:        channels,
+			LajuBaseURL:     cfg.LajuBaseURL,
+			LajuBearerToken: cfg.LajuBearerToken,
 		},
 		Reconciler: services.Reconciler{
 			Repo: repo,
@@ -552,6 +554,7 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/sessions", a.handleListSessions)
 	mux.HandleFunc("/admin/sessions/by-acp", a.handleListSessionsByACP)
 	mux.HandleFunc("/admin/sessions/detail", a.handleSessionDetail)
+	mux.HandleFunc("/admin/laju/context", a.handleLajuContext)
 	mux.HandleFunc("/admin/acp/agents", a.handleListACPAgents)
 	mux.HandleFunc("/admin/acp/compatible", a.handleListCompatibleACPAgents)
 	mux.HandleFunc("/admin/acp/validate", a.handleValidateACPAgent)

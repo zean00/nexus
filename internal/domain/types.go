@@ -332,6 +332,7 @@ type RunEvent struct {
 	AwaitSchema []byte
 	AwaitPrompt []byte
 	Artifacts   []Artifact
+	Metadata    map[string]any
 }
 
 type SessionDetail struct {

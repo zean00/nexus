@@ -178,6 +178,9 @@ func (a *App) enqueueOutboundPush(ctx context.Context, req outboundPushRequest, 
 		if err := a.materializeDelegatedOutboundSessions(ctx, session, req.Artifacts); err != nil {
 			return outboundPushResult{}, err
 		}
+		if err := a.hideModerationDeniedOutboundSource(ctx, session, req); err != nil {
+			return outboundPushResult{}, err
+		}
 		targetRunID := outboundPushTargetRunID(runID, session, len(sessions), i)
 		deliveries, err := a.renderOutboundPush(ctx, session, targetRunID, req)
 		if err != nil {
@@ -634,9 +637,19 @@ func normalizeOutboundPushRequest(req outboundPushRequest) outboundPushRequest {
 	if len(req.Artifacts) == 0 {
 		req.Artifacts = artifactsFromMap(req.Payload, "artifacts")
 	}
+	if req.Metadata == nil {
+		if metadata, ok := mapFromMap(req.Payload, "metadata"); ok {
+			req.Metadata = metadata
+		}
+	}
 	if req.Text == "" {
 		if nested, ok := mapFromMap(req.Payload, "payload"); ok {
 			req.Text = firstNonEmptyString(stringFromMap(nested, "text"), stringFromMap(nested, "message"), stringFromMap(req.Payload, "title"))
+			if req.Metadata == nil {
+				if metadata, ok := mapFromMap(nested, "metadata"); ok {
+					req.Metadata = metadata
+				}
+			}
 		}
 	}
 	return req
@@ -664,7 +677,61 @@ func mergeOutboundIntentEnvelope(req outboundPushRequest, payload map[string]any
 	if nested, ok := mapFromMap(payload, "payload"); ok {
 		req.Payload = nested
 	}
+	if req.Metadata == nil {
+		if metadata, ok := mapFromMap(payload, "metadata"); ok {
+			req.Metadata = metadata
+		}
+	}
 	return req
+}
+
+type messageHistoryHider interface {
+	MarkMessageHiddenFromHistory(ctx context.Context, messageID string, metadata any) error
+}
+
+func (a *App) hideModerationDeniedOutboundSource(ctx context.Context, session domain.Session, req outboundPushRequest) error {
+	if !outboundPushSourceIs(req, "moderation_warning") {
+		return nil
+	}
+	sourceMessageID := moderationSourceMessageID(req)
+	if sourceMessageID == "" {
+		return nil
+	}
+	repo, ok := a.Repo.(messageHistoryHider)
+	if !ok {
+		return nil
+	}
+	return repo.MarkMessageHiddenFromHistory(ctx, sourceMessageID, map[string]any{
+		"context_excluded":      true,
+		"visible_in_history":    false,
+		"visibility":            "hidden",
+		"source":                "moderation_denied",
+		"session_id":            session.ID,
+		"moderation_category":   req.Metadata["moderation_category"],
+		"moderation_policy_id":  req.Metadata["moderation_policy_id"],
+		"moderation_confidence": req.Metadata["moderation_confidence"],
+		"moderation_reason":     req.Metadata["moderation_reason"],
+	})
+}
+
+func outboundPushSourceIs(req outboundPushRequest, source string) bool {
+	if req.Metadata == nil {
+		return false
+	}
+	value, _ := req.Metadata["source"].(string)
+	return strings.EqualFold(strings.TrimSpace(value), source)
+}
+
+func moderationSourceMessageID(req outboundPushRequest) string {
+	if req.Metadata == nil {
+		return ""
+	}
+	for _, key := range []string{"inbound_message_id", "nexus_message_id", "message_id"} {
+		if value := strings.TrimSpace(stringFromAny(req.Metadata[key])); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func stringFromMap(values map[string]any, key string) string {

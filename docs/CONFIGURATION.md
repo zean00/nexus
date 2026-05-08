@@ -73,6 +73,15 @@ This is easy to miss when hardening HTTP servers. The admin server can use a nor
 
 Choose `ACP_IMPLEMENTATION` based on the runtime you are actually talking to, not by preference alone. The bridge affects await semantics, compatibility validation, artifact behavior, and local test ergonomics.
 
+## Laju Integration
+
+| Variable | Default | Purpose | Notes |
+| --- | --- | --- | --- |
+| `LAJU_URL` | empty | Base URL for forwarding inbound Nexus channel context to Laju | When empty, forwarding is disabled |
+| `LAJU_TOKEN` | empty | Bearer token for Laju inbound forwarding | Sent as `Authorization: Bearer ...` when configured |
+
+When `LAJU_URL` is configured, Nexus enqueues inbound channel context as durable outbox work and the worker posts it to `/api/integrations/nexus/inbound`. The forwarded metadata includes the Nexus inbound `message_id`; Laju moderation-warning outbound pushes should echo that value as `metadata.message_id`, `metadata.inbound_message_id`, or `metadata.nexus_message_id` so Nexus can hide the exact denied inbound message from future history/context.
+
 ## Slack
 
 | Variable | Default | Purpose | Notes |

@@ -118,6 +118,7 @@ func (r *fakeRepo) StoreInboundMessage(_ context.Context, evt domain.CanonicalIn
 func (r *fakeRepo) StoreOutboundMessage(context.Context, domain.Session, string, string, string, []byte) (string, error) {
 	return "msg_out_1", nil
 }
+func (r *fakeRepo) MarkMessageHiddenFromHistory(context.Context, string, any) error { return nil }
 func (r *fakeRepo) StoreArtifacts(context.Context, string, string, []domain.Artifact) error {
 	return nil
 }

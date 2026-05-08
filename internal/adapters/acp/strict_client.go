@@ -466,6 +466,7 @@ func (c StrictClient) mapRunResponse(sessionID string, response strictRun) (doma
 		Status:     response.Status,
 		Text:       response.Output,
 		Artifacts:  mapStrictArtifacts(response.Artifacts),
+		Metadata:   response.Metadata,
 	}
 	if response.Await != nil {
 		event.AwaitSchema = response.Await.Schema

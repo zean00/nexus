@@ -1,10 +1,12 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -21,6 +23,8 @@ type WorkerService struct {
 	Channel             ports.ChannelAdapter
 	Renderers           map[string]ports.Renderer
 	Channels            map[string]ports.ChannelAdapter
+	LajuBaseURL         string
+	LajuBearerToken     string
 	NotifySessionUpdate func(sessionID string)
 }
 
@@ -82,9 +86,34 @@ func (s WorkerService) processEvent(ctx context.Context, evt domain.OutboxEvent)
 		return s.processAwaitResume(ctx, evt)
 	case "delivery.send":
 		return s.processDelivery(ctx, evt)
+	case "laju.inbound.forward":
+		return s.processLajuInboundForward(ctx, evt)
 	default:
 		return nil
 	}
+}
+
+func (s WorkerService) processLajuInboundForward(ctx context.Context, evt domain.OutboxEvent) error {
+	if strings.TrimSpace(s.LajuBaseURL) == "" {
+		return errors.New("laju url is not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.LajuBaseURL, "/")+"/api/integrations/nexus/inbound", bytes.NewReader(evt.PayloadJSON))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(s.LajuBearerToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(s.LajuBearerToken))
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("laju inbound forward failed with status %d", res.StatusCode)
+	}
+	return nil
 }
 
 func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxEvent) error {
@@ -154,7 +183,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	if err := s.Repo.CreateRun(ctx, run); err != nil {
 		return err
 	}
-	terminalStatus, err := s.consumeRunEvents(ctx, session, queued.ID, run.ID, route, currentCompat, stream)
+	terminalStatus, err := s.consumeRunEvents(ctx, session, queued.ID, queued.InboundMessageID, run.ID, route, currentCompat, stream)
 	if err != nil {
 		return err
 	}
@@ -167,7 +196,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	return nil
 }
 
-func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Session, queueItemID, runID string, route domain.RouteDecision, currentCompat *domain.AgentCompatibility, stream domain.RunEventStream) (string, error) {
+func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Session, queueItemID, inboundMessageID, runID string, route domain.RouteDecision, currentCompat *domain.AgentCompatibility, stream domain.RunEventStream) (string, error) {
 	terminalStatus := ""
 	for runEvent := range stream.Events {
 		originalStatus := runEvent.Status
@@ -192,6 +221,9 @@ func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Sess
 			})
 		}
 		if err := s.persistRunEvent(ctx, session, runEvent); err != nil {
+			return "", err
+		}
+		if err := s.hideModerationDeniedInbound(ctx, inboundMessageID, runEvent); err != nil {
 			return "", err
 		}
 		renderer := s.rendererFor(session.ChannelType)
@@ -429,6 +461,7 @@ func (s WorkerService) persistRunEvent(ctx context.Context, session domain.Sessi
 		"text":        evt.Text,
 		"is_partial":  evt.IsPartial,
 		"artifacts":   evt.Artifacts,
+		"metadata":    evt.Metadata,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal outbound message payload: %w", err)
@@ -447,4 +480,28 @@ func (s WorkerService) persistRunEvent(ctx context.Context, session domain.Sessi
 		}
 	}
 	return nil
+}
+
+func (s WorkerService) hideModerationDeniedInbound(ctx context.Context, inboundMessageID string, evt domain.RunEvent) error {
+	if strings.TrimSpace(inboundMessageID) == "" || !runEventSourceIs(evt, "moderation_warning") {
+		return nil
+	}
+	return s.Repo.MarkMessageHiddenFromHistory(ctx, inboundMessageID, map[string]any{
+		"context_excluded":      true,
+		"visible_in_history":    false,
+		"visibility":            "hidden",
+		"source":                "moderation_denied",
+		"moderation_category":   evt.Metadata["moderation_category"],
+		"moderation_policy_id":  evt.Metadata["moderation_policy_id"],
+		"moderation_confidence": evt.Metadata["moderation_confidence"],
+		"moderation_reason":     evt.Metadata["moderation_reason"],
+	})
+}
+
+func runEventSourceIs(evt domain.RunEvent, source string) bool {
+	if evt.Metadata == nil {
+		return false
+	}
+	value, _ := evt.Metadata["source"].(string)
+	return strings.EqualFold(strings.TrimSpace(value), source)
 }

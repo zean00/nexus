@@ -167,6 +167,7 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	a.forwardLajuInbound(r.Context(), evt, result)
 	httpx.Accepted(w, result, webhookResultMeta(evt))
 }
 
@@ -189,6 +190,7 @@ func (a *App) processBatchChannelEvent(ctx context.Context, adapter ports.Channe
 	result, err := a.Inbound.Handle(ctx, evt)
 	if err == nil {
 		a.notifyWebChatSessionUpdate(result.SessionID)
+		a.forwardLajuInbound(ctx, evt, result)
 	}
 	return err
 }

@@ -60,6 +60,8 @@ type Config struct {
 	WhatsAppWebBurstWindowMinutes         int
 	WhatsAppWebBurstMessageCap            int
 	NexusPublicBaseURL                    string
+	LajuBaseURL                           string
+	LajuBearerToken                       string
 	EmailWebhookSecret                    string
 	EmailSMTPAddr                         string
 	EmailSMTPUsername                     string
@@ -154,6 +156,8 @@ func Load() (Config, error) {
 		WhatsAppWebBurstWindowMinutes:         mustEnvIntDefault("WHATSAPP_WEB_BURST_WINDOW_MINUTES", 2),
 		WhatsAppWebBurstMessageCap:            mustEnvIntDefault("WHATSAPP_WEB_BURST_MESSAGE_CAP", 4),
 		NexusPublicBaseURL:                    strings.TrimRight(strings.TrimSpace(os.Getenv("NEXUS_PUBLIC_BASE_URL")), "/"),
+		LajuBaseURL:                           strings.TrimRight(strings.TrimSpace(os.Getenv("LAJU_URL")), "/"),
+		LajuBearerToken:                       strings.TrimSpace(os.Getenv("LAJU_TOKEN")),
 		EmailWebhookSecret:                    env("EMAIL_WEBHOOK_SECRET", "dev-email-secret"),
 		EmailSMTPAddr:                         os.Getenv("EMAIL_SMTP_ADDR"),
 		EmailSMTPUsername:                     os.Getenv("EMAIL_SMTP_USERNAME"),

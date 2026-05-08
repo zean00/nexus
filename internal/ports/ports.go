@@ -88,6 +88,7 @@ type Repository interface {
 	HasActiveRun(ctx context.Context, sessionID string) (bool, error)
 	StoreInboundMessage(ctx context.Context, evt domain.CanonicalInboundEvent, sessionID string) (string, error)
 	StoreOutboundMessage(ctx context.Context, session domain.Session, runID string, messageKey string, text string, rawPayload []byte) (string, error)
+	MarkMessageHiddenFromHistory(ctx context.Context, messageID string, metadata any) error
 	StoreArtifacts(ctx context.Context, messageID string, direction string, artifacts []domain.Artifact) error
 	EnqueueMessage(ctx context.Context, evt domain.CanonicalInboundEvent, session domain.Session, route domain.RouteDecision, inboundMessageID string, startNow bool) (domain.QueueItem, *domain.OutboxEvent, error)
 	CreateRun(ctx context.Context, run domain.Run) error

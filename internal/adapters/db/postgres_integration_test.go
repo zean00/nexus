@@ -80,6 +80,24 @@ func TestPostgresRepositoryIntegrationAdminQueries(t *testing.T) {
 		if count != 2 {
 			t.Fatalf("expected message count=2, got %d", count)
 		}
+		if err := repo.MarkMessageHiddenFromHistory(ctx, "message_1", map[string]any{"source": "test_hidden"}); err != nil {
+			t.Fatal(err)
+		}
+		query.CursorPage = domain.CursorPage{Limit: 10}
+		page, err = repo.ListMessages(ctx, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) != 1 || page.Items[0].MessageID != "message_3" {
+			t.Fatalf("expected hidden messages to be filtered from list, got %+v", page)
+		}
+		count, err = repo.CountMessages(ctx, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("expected hidden messages to be filtered from count, got %d", count)
+		}
 	})
 
 	t.Run("artifacts", func(t *testing.T) {

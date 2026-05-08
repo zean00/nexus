@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -36,6 +37,8 @@ type workerRepo struct {
 	markedSent          []string
 	markedFailed        []string
 	markedOutboxFailed  []string
+	hiddenMessageID     string
+	hiddenMetadata      any
 }
 
 func (r *workerRepo) InTx(ctx context.Context, fn func(context.Context, ports.Repository) error) error {
@@ -57,6 +60,11 @@ func (r *workerRepo) StoreOutboundMessage(_ context.Context, _ domain.Session, _
 	r.storedOutboundTexts = append(r.storedOutboundTexts, text)
 	r.storedMessageKeys = append(r.storedMessageKeys, messageKey)
 	return r.storedOutboundID, nil
+}
+func (r *workerRepo) MarkMessageHiddenFromHistory(_ context.Context, messageID string, metadata any) error {
+	r.hiddenMessageID = messageID
+	r.hiddenMetadata = metadata
+	return nil
 }
 func (r *workerRepo) StoreArtifacts(_ context.Context, _ string, direction string, artifacts []domain.Artifact) error {
 	r.storedArtifactsDir = direction
@@ -718,6 +726,68 @@ func TestWorkerStreamsSingleOutboundMessage(t *testing.T) {
 	}
 }
 
+type moderationWarningWorkerACP struct{}
+
+func (moderationWarningWorkerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
+	return nil, nil
+}
+func (moderationWarningWorkerACP) EnsureSession(context.Context, domain.Session) (string, error) {
+	return "acp_session_1", nil
+}
+func (moderationWarningWorkerACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
+	return domain.Run{
+			ID:          "run_moderation_1",
+			SessionID:   "session_1",
+			Status:      "completed",
+			StartedAt:   time.Now(),
+			LastEventAt: time.Now(),
+		}, domain.StaticRunEventStream(domain.RunEvent{
+			RunID:  "run_moderation_1",
+			Status: "completed",
+			Text:   "Aku tidak bisa membantu dengan pesan itu.",
+			Metadata: map[string]any{
+				"source":                "moderation_warning",
+				"moderation_category":   "unsafe",
+				"moderation_confidence": 0.91,
+			},
+		}), nil
+}
+func (moderationWarningWorkerACP) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(), nil
+}
+func (moderationWarningWorkerACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
+	return domain.RunStatusSnapshot{}, nil
+}
+func (moderationWarningWorkerACP) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (moderationWarningWorkerACP) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (moderationWarningWorkerACP) CancelRun(context.Context, domain.Run) error { return nil }
+
+func TestWorkerHidesInboundMessageWhenModerationWarningReturns(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
+		queueItem:    domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_unsafe_1", Status: "queued"},
+		session:      domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
+		message:      domain.Message{MessageID: "msg_unsafe_1", Text: "unsafe"},
+		route:        domain.RouteDecision{ACPAgentName: "default-agent"},
+	}
+	worker := WorkerService{
+		Repo:     repo,
+		ACP:      moderationWarningWorkerACP{},
+		Renderer: WebChatRenderer{},
+		Channel:  noopChannel{},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if repo.hiddenMessageID != "msg_unsafe_1" {
+		t.Fatalf("expected unsafe inbound message to be hidden, got %q", repo.hiddenMessageID)
+	}
+}
+
 func TestWorkerDoesNotDowngradeStartedQueueItemToQueued(t *testing.T) {
 	repo := &workerRepo{
 		outboxEvents: []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
@@ -822,5 +892,70 @@ func TestWorkerProcessesTelegramDelivery(t *testing.T) {
 	}
 	if telegram.sent[0].SessionID != "session_notice_telegram_123" {
 		t.Fatalf("expected telegram delivery session to be preserved, got %+v", telegram.sent[0])
+	}
+}
+
+func TestWorkerForwardsLajuInboundOutboxEvent(t *testing.T) {
+	var gotAuth string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if r.Method != http.MethodPost || r.URL.Path != "/api/integrations/nexus/inbound" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{
+			ID:          "outbox_laju_inbound_evt_1",
+			EventType:   "laju.inbound.forward",
+			AggregateID: "evt_1",
+			PayloadJSON: []byte(`{"channel":"webchat","session_id":"session_1","body":"hello"}`),
+		}},
+	}
+	worker := WorkerService{
+		Repo:            repo,
+		LajuBaseURL:     server.URL,
+		LajuBearerToken: "laju-token",
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer laju-token" {
+		t.Fatalf("unexpected auth header %q", gotAuth)
+	}
+	if gotBody["session_id"] != "session_1" {
+		t.Fatalf("unexpected forwarded payload %+v", gotBody)
+	}
+	if len(repo.markedOutboxFailed) != 0 {
+		t.Fatalf("expected successful forward, got failures %+v", repo.markedOutboxFailed)
+	}
+}
+
+func TestWorkerRetriesLajuInboundOutboxEventOnFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{
+			ID:          "outbox_laju_inbound_evt_1",
+			EventType:   "laju.inbound.forward",
+			AggregateID: "evt_1",
+			PayloadJSON: []byte(`{"channel":"webchat"}`),
+		}},
+	}
+	worker := WorkerService{Repo: repo, LajuBaseURL: server.URL}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.markedOutboxFailed) != 1 || repo.markedOutboxFailed[0] != "outbox_laju_inbound_evt_1" {
+		t.Fatalf("expected failed Laju forward to be requeued, got %+v", repo.markedOutboxFailed)
 	}
 }

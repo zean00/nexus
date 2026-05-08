@@ -817,6 +817,19 @@ func (r *PostgresRepository) StoreOutboundMessage(ctx context.Context, session d
 	return id, err
 }
 
+func (r *PostgresRepository) MarkMessageHiddenFromHistory(ctx context.Context, messageID string, metadata any) error {
+	rawMetadata, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	_, err = r.exec(ctx, `
+		update messages
+		set raw_payload_json=`+hiddenHistoryPayloadSQL("raw_payload_json", "$2::jsonb")+`
+		where id=$1
+	`, messageID, rawMetadata)
+	return err
+}
+
 type storedMessagePayload struct {
 	NexusMessage    *domain.Message `json:"nexus_message,omitempty"`
 	ProviderPayload json.RawMessage `json:"provider_payload,omitempty"`
@@ -883,6 +896,30 @@ func firstNonEmptyDB(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func messageHiddenFromHistorySQL(column string) string {
+	return fmt.Sprintf(`lower(coalesce(%[1]s->>'visible_in_history',''))='false'
+		or lower(coalesce(%[1]s->'metadata'->>'visible_in_history',''))='false'
+		or lower(coalesce(%[1]s->>'hidden_from_history',''))='true'
+		or lower(coalesce(%[1]s->'metadata'->>'hidden_from_history',''))='true'
+		or lower(coalesce(%[1]s->>'visibility',''))='hidden'
+		or lower(coalesce(%[1]s->'metadata'->>'visibility',''))='hidden'`, column)
+}
+
+func hiddenHistoryPayloadSQL(column, metadata string) string {
+	return fmt.Sprintf(`jsonb_set(
+		jsonb_set(
+			jsonb_set(
+				coalesce(%s, '{}'::jsonb),
+				'{visible_in_history}', 'false'::jsonb, true
+			),
+			'{visibility}', '"hidden"'::jsonb, true
+		),
+		'{metadata}',
+		coalesce(%s->'metadata', '{}'::jsonb) || %s || '{"context_excluded":true,"visible_in_history":false,"visibility":"hidden"}'::jsonb,
+		true
+	)`, column, column, metadata)
 }
 
 func (r *PostgresRepository) StoreArtifacts(ctx context.Context, messageID string, direction string, artifacts []domain.Artifact) error {
@@ -1134,6 +1171,16 @@ func (r *PostgresRepository) EnqueueAwaitResume(ctx context.Context, req domain.
 	return err
 }
 
+func (r *PostgresRepository) EnqueueLajuInbound(ctx context.Context, tenantID, eventID string, payload []byte) error {
+	_, err := r.exec(ctx, `
+		insert into outbox_events (
+			id, tenant_id, event_type, aggregate_type, aggregate_id, idempotency_key, payload_json, status, available_at, attempt_count
+		) values ($1,$2,'laju.inbound.forward','laju_inbound',$3,$4,$5,'queued',now(),0)
+		on conflict (id) do nothing
+	`, "outbox_laju_inbound_"+eventID, tenantID, eventID, "laju_inbound:"+eventID, payload)
+	return err
+}
+
 func (r *PostgresRepository) EnqueueDelivery(ctx context.Context, delivery domain.OutboundDelivery) error {
 	var err error
 	if delivery.DeliveryKind == "replace" {
@@ -1324,7 +1371,7 @@ func (r *PostgresRepository) GetInboundMessage(ctx context.Context, messageID st
 
 func (r *PostgresRepository) ListMessages(ctx context.Context, query domain.MessageListQuery) (domain.PagedResult[domain.Message], error) {
 	limit := normalizeLimit(query.Limit)
-	clauses := []string{"m.tenant_id=$1"}
+	clauses := []string{"m.tenant_id=$1", "not (" + messageHiddenFromHistorySQL("m.raw_payload_json") + ")"}
 	args := []any{query.TenantID}
 	if query.Type != "" {
 		args = append(args, query.Type)
@@ -1377,7 +1424,7 @@ func (r *PostgresRepository) ListMessages(ctx context.Context, query domain.Mess
 }
 
 func (r *PostgresRepository) CountMessages(ctx context.Context, query domain.MessageListQuery) (int, error) {
-	clauses := []string{"m.tenant_id=$1"}
+	clauses := []string{"m.tenant_id=$1", "not (" + messageHiddenFromHistorySQL("m.raw_payload_json") + ")"}
 	args := []any{query.TenantID}
 	if query.Type != "" {
 		args = append(args, query.Type)
