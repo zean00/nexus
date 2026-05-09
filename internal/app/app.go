@@ -41,6 +41,7 @@ type App struct {
 	Worker             services.WorkerService
 	Reconciler         services.Reconciler
 	ACP                ports.ACPBridge
+	ACPResolver        services.ACPResolver
 	WebAuth            ports.WebAuthRepository
 	Identity           ports.IdentityRepository
 	Slack              slack.Adapter
@@ -288,6 +289,122 @@ func (r *RuntimeState) RecordDeliveryRetry() {
 	r.DeliveryRetryCount++
 }
 
+func buildACPResolver(cfg config.Config, policy *resilience.Policy) *services.ACPRegistry {
+	bridges := map[string]ports.ACPBridge{}
+	profileBridges := map[string]ports.ACPBridge{}
+	connectionByID := map[string]config.ACPConnectionConfig{}
+	defaultID := "acp_default"
+	connections := cfg.ACPConnections
+	if len(connections) == 0 {
+		connections = []config.ACPConnectionConfig{{
+			ID:             "acp_default",
+			Implementation: cfg.ACPImplementation,
+			BaseURL:        cfg.ACPBaseURL,
+			Token:          cfg.ACPToken,
+			Command:        cfg.ACPCommand,
+			Args:           cfg.ACPArgs,
+			Env:            cfg.ACPEnv,
+			Workdir:        cfg.ACPWorkdir,
+		}}
+	}
+	for _, conn := range connections {
+		if conn.Enabled != nil && !*conn.Enabled {
+			continue
+		}
+		id := strings.TrimSpace(conn.ID)
+		if id == "" {
+			id = defaultID
+		}
+		bridge := buildACPBridgeForConnection(cfg, conn)
+		bridge = configureACPHTTP(bridge, id, policy)
+		bridges[id] = bridge
+		connectionByID[id] = conn
+		if defaultID == "acp_default" || id == "acp_default" {
+			defaultID = id
+		}
+	}
+	for _, profile := range cfg.ACPAgentProfiles {
+		if len(profile.Headers) == 0 && strings.TrimSpace(profile.PathPrefix) == "" {
+			continue
+		}
+		conn, ok := connectionByID[profile.ConnectionID]
+		if !ok {
+			continue
+		}
+		conn.Headers = mergeHeaders(conn.Headers, profile.Headers)
+		if profile.PathPrefix != "" {
+			conn.PathPrefix = strings.Trim(strings.Trim(conn.PathPrefix, "/")+"/"+strings.Trim(profile.PathPrefix, "/"), "/")
+		}
+		conn.ID = profile.ConnectionID + "__profile__" + profile.ID
+		profileBridge := buildACPBridgeForConnection(cfg, conn)
+		profileBridge = configureACPHTTP(profileBridge, conn.ID, policy)
+		profileBridges[profile.ID] = profileBridge
+	}
+	return &services.ACPRegistry{DefaultConnectionID: defaultID, Bridges: bridges, ProfileBridges: profileBridges}
+}
+
+func buildACPBridgeForConnection(cfg config.Config, conn config.ACPConnectionConfig) ports.ACPBridge {
+	baseURL := strings.TrimRight(strings.TrimSpace(conn.BaseURL), "/")
+	if conn.PathPrefix != "" {
+		baseURL = strings.TrimRight(baseURL+"/"+strings.Trim(conn.PathPrefix, "/"), "/")
+	}
+	return acp.NewBridge(acp.BridgeConfig{
+		Implementation:   firstNonEmptyString(conn.Implementation, cfg.ACPImplementation),
+		BaseURL:          firstNonEmptyString(baseURL, cfg.ACPBaseURL),
+		Token:            firstNonEmptyString(conn.Token, cfg.ACPToken),
+		Command:          firstNonEmptyString(conn.Command, cfg.ACPCommand),
+		Args:             firstNonEmptyStrings(conn.Args, cfg.ACPArgs),
+		Env:              firstNonEmptyStrings(conn.Env, cfg.ACPEnv),
+		Workdir:          firstNonEmptyString(conn.Workdir, cfg.ACPWorkdir),
+		DefaultAgentName: cfg.DefaultACPAgentName,
+		StartupTimeout:   cfg.ACPStartupTimeout,
+		RPCTimeout:       cfg.ACPRPCTimeout,
+		Headers:          conn.Headers,
+	})
+}
+
+func mergeHeaders(base, override map[string]string) map[string]string {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(base)+len(override))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range override {
+		out[key] = value
+	}
+	return out
+}
+
+func configureACPHTTP(bridge ports.ACPBridge, id string, policy *resilience.Policy) ports.ACPBridge {
+	switch b := bridge.(type) {
+	case acp.Client:
+		b.HTTP = policy.HTTPClient("acp."+id+".opencode_http", 60*time.Second)
+		return b
+	case *acp.Client:
+		b.HTTP = policy.HTTPClient("acp."+id+".opencode_http", 60*time.Second)
+	case acp.StrictClient:
+		b.HTTP = policy.HTTPClient("acp."+id+".strict_http", 60*time.Second)
+		return b
+	case *acp.StrictClient:
+		b.HTTP = policy.HTTPClient("acp."+id+".strict_http", 60*time.Second)
+	case acp.ParmesanClient:
+		b.HTTP = policy.HTTPClient("acp."+id+".parmesan_http", 60*time.Second)
+		return b
+	case *acp.ParmesanClient:
+		b.HTTP = policy.HTTPClient("acp."+id+".parmesan_http", 60*time.Second)
+	}
+	return bridge
+}
+
+func firstNonEmptyStrings(primary, fallback []string) []string {
+	if len(primary) > 0 {
+		return append([]string(nil), primary...)
+	}
+	return append([]string(nil), fallback...)
+}
+
 func New(ctx context.Context, cfg config.Config) (*App, error) {
 	repo, err := db.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -336,19 +453,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	webPushAdapter.GetSubscription = repo.GetWebPushSubscriptionForSession
 	telegramAdapter := telegram.New(cfg.TelegramBotToken, cfg.TelegramWebhookSecret)
 	telegramAdapter.HTTP = policy.HTTPClient("telegram.api", 10*time.Second)
-	router := services.PolicyRouter{
-		Repo:                  repo,
-		DefaultAgentProfileID: cfg.DefaultAgentProfileID,
-		DefaultACPAgentName:   cfg.DefaultACPAgentName,
-		FallbackPolicy: domain.TrustPolicy{
-			TenantID:                          cfg.DefaultTenantID,
-			AgentProfileID:                    cfg.DefaultAgentProfileID,
-			RequireLinkedIdentityForExecution: false,
-			RequireLinkedIdentityForApproval:  cfg.RequireLinkedIdentity,
-			RequireRecentStepUpForApproval:    cfg.RequireRecentStepUp,
-			AllowedApprovalChannels:           append([]string(nil), cfg.AllowedApprovalChannels...),
-		},
-	}
+	router := services.NewPolicyRouter(repo, cfg)
 	renderers := map[string]ports.Renderer{
 		"slack":    services.SlackRenderer{},
 		"whatsapp": services.WhatsAppRenderer{},
@@ -369,30 +474,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		renderers["whatsapp_web"] = services.WhatsAppWebRenderer{}
 		channels["whatsapp_web"] = whatsappWebAdapter
 	}
-	acpClient := acp.NewBridge(acp.BridgeConfig{
-		Implementation:   cfg.ACPImplementation,
-		BaseURL:          cfg.ACPBaseURL,
-		Token:            cfg.ACPToken,
-		Command:          cfg.ACPCommand,
-		Args:             cfg.ACPArgs,
-		Env:              cfg.ACPEnv,
-		Workdir:          cfg.ACPWorkdir,
-		DefaultAgentName: cfg.DefaultACPAgentName,
-		StartupTimeout:   cfg.ACPStartupTimeout,
-		RPCTimeout:       cfg.ACPRPCTimeout,
-	})
-	switch bridge := acpClient.(type) {
-	case acp.Client:
-		bridge.HTTP = policy.HTTPClient("acp.opencode_http", 60*time.Second)
-		acpClient = bridge
-	case *acp.Client:
-		bridge.HTTP = policy.HTTPClient("acp.opencode_http", 60*time.Second)
-	case acp.StrictClient:
-		bridge.HTTP = policy.HTTPClient("acp.strict_http", 60*time.Second)
-		acpClient = bridge
-	case *acp.StrictClient:
-		bridge.HTTP = policy.HTTPClient("acp.strict_http", 60*time.Second)
-	}
+	resolver := buildACPResolver(cfg, policy)
+	acpClient := services.ResolvingACPBridge{Resolver: resolver}
 	objectStore := storage.New(cfg.ObjectStorageBaseURL)
 	artifactSvc := services.ArtifactService{Store: objectStore}
 	catalog := &services.AgentCatalog{
@@ -416,9 +499,12 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		Repo:   repo,
 		DB:     repo,
 		Inbound: services.InboundService{
-			Repo:     repo,
-			Router:   router,
-			Identity: repo,
+			Repo:                   repo,
+			Router:                 router,
+			Identity:               repo,
+			MultipleAgentMode:      cfg.ACPMode == "multiple",
+			AgentProfiles:          router.AgentProfiles,
+			AllowedAgentsByChannel: router.AllowedAgentsByChannel,
 		},
 		Await: services.AwaitService{
 			Repo: repo,
@@ -461,6 +547,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 			Observer: runtime,
 		},
 		ACP:                acpClient,
+		ACPResolver:        resolver,
 		WebAuth:            repo,
 		Identity:           repo,
 		Slack:              slackAdapter,
@@ -480,7 +567,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 }
 
 func (a *App) Close() {
-	if closer, ok := a.ACP.(interface{ Close() error }); ok {
+	if a.ACPResolver != nil {
+		_ = a.ACPResolver.Close()
+	} else if closer, ok := a.ACP.(interface{ Close() error }); ok {
 		_ = closer.Close()
 	}
 	if a.DB != nil {
@@ -567,6 +656,8 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/acp/validate", a.handleValidateACPAgent)
 	mux.HandleFunc("/admin/acp/summary", a.handleACPAdminSummary)
 	mux.HandleFunc("/admin/acp/bridge-blocks", a.handleListACPBridgeBlocks)
+	mux.HandleFunc("/admin/agents/routes", a.handleAgentRoutes)
+	mux.HandleFunc("/admin/agents/effective", a.handleAgentEffectiveRoute)
 	mux.HandleFunc("/admin/runs", a.handleListRuns)
 	mux.HandleFunc("/admin/runs/detail", a.handleRunDetail)
 	mux.HandleFunc("/admin/awaits", a.handleListAwaits)

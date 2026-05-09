@@ -112,6 +112,11 @@ func (r Reconciler) repairStuckQueueItems(ctx context.Context, now time.Time, li
 			errs = append(errs, err)
 			continue
 		}
+		if route, routeErr := r.Repo.GetRouteDecision(ctx, item.ID); routeErr == nil {
+			session.ACPConnectionID = route.ACPConnectionID
+			session.ACPAgentName = route.ACPAgentName
+			session.ACPProfileID = route.AgentProfileID
+		}
 		snapshot, found, err := r.ACP.FindRunByIdempotencyKey(ctx, session, idempotencyKey)
 		if err != nil {
 			tracex.Logger(ctx).Error("reconciler.find_run_by_idempotency_failed", "queue_item_id", item.ID, "idempotency_key", idempotencyKey, "error", err.Error())
@@ -198,6 +203,12 @@ func (r Reconciler) refreshStaleRuns(ctx context.Context, now time.Time, limit i
 			tracex.Logger(ctx).Error("reconciler.load_stale_run_session_failed", "run_id", run.ID, "error", err.Error())
 			errs = append(errs, err)
 			continue
+		}
+		session.ACPConnectionID = run.ACPConnectionID
+		session.ACPAgentName = run.ACPAgentName
+		session.ACPProfileID = session.AgentProfileID
+		if run.ACPConnectionID == "" {
+			session.ACPProfileID = ""
 		}
 		var snapshot domain.RunStatusSnapshot
 		if scoped, ok := r.ACP.(interface {

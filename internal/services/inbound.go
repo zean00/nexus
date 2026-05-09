@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,9 +19,12 @@ import (
 var ErrDuplicateEvent = errors.New("duplicate inbound event")
 
 type InboundService struct {
-	Repo     ports.Repository
-	Router   ports.Router
-	Identity ports.IdentityRepository
+	Repo                   ports.Repository
+	Router                 ports.Router
+	Identity               ports.IdentityRepository
+	MultipleAgentMode      bool
+	AgentProfiles          map[string]domain.AgentProfile
+	AllowedAgentsByChannel map[string][]string
 }
 
 type InboundResult struct {
@@ -38,6 +42,9 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 	)
 	defer func() { end(err) }()
 	err = s.Repo.InTx(ctx, func(ctx context.Context, repo ports.Repository) error {
+		if evt.Metadata.Command == "" {
+			evt.Metadata.Command = commandFromText(evt.Message.Text)
+		}
 		inserted, err := repo.RecordInboundReceipt(ctx, evt)
 		if err != nil {
 			return err
@@ -50,11 +57,17 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 		if err != nil {
 			return err
 		}
-		session, _, err := repo.ResolveSession(ctx, evt, route.AgentProfileID)
+		session, _, err := resolveSessionForRoute(ctx, repo, evt, route, s.MultipleAgentMode)
 		if err != nil {
 			return err
 		}
 		if handled, commandResult, err := s.handleIdentityCommand(ctx, evt); err != nil {
+			return err
+		} else if handled {
+			result = commandResult
+			return nil
+		}
+		if handled, commandResult, err := s.handleAgentCommand(ctx, repo, evt, session, route); err != nil {
 			return err
 		} else if handled {
 			result = commandResult
@@ -120,6 +133,17 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 	}
 	tracex.Logger(ctx).Info("inbound.accepted", "event_id", evt.EventID, "session_id", result.SessionID, "queue_id", result.QueueID, "status", result.Status)
 	return result, nil
+}
+
+type routeSessionResolver interface {
+	ResolveSessionForRoute(ctx context.Context, evt domain.CanonicalInboundEvent, route domain.RouteDecision, multipleMode bool) (domain.Session, bool, error)
+}
+
+func resolveSessionForRoute(ctx context.Context, repo ports.Repository, evt domain.CanonicalInboundEvent, route domain.RouteDecision, multipleMode bool) (domain.Session, bool, error) {
+	if resolver, ok := repo.(routeSessionResolver); ok {
+		return resolver.ResolveSessionForRoute(ctx, evt, route, multipleMode)
+	}
+	return repo.ResolveSession(ctx, evt, route.AgentProfileID)
 }
 
 func (s InboundService) resolveCanonicalUser(ctx context.Context, identityRepo ports.IdentityRepository, evt domain.CanonicalInboundEvent) (domain.User, error) {
@@ -305,6 +329,14 @@ func parseIdentityCommand(text string) (string, string) {
 	return command, fields[1]
 }
 
+func commandFromText(text string) string {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(fields[0]))
+}
+
 func parseLinkToken(token string) (string, string) {
 	parts := strings.SplitN(strings.TrimSpace(token), ".", 2)
 	if len(parts) != 2 {
@@ -323,7 +355,7 @@ func trustAuditID(parts ...string) string {
 }
 
 func (s InboundService) handleSessionCommand(ctx context.Context, repo ports.Repository, evt domain.CanonicalInboundEvent, session domain.Session) (bool, InboundResult, error) {
-	if evt.Channel != "telegram" || evt.Metadata.Command == "" || strings.HasPrefix(evt.Conversation.ChannelSurfaceKey, "-") {
+	if !sessionCommandsSupported(evt) || evt.Metadata.Command == "" || strings.HasPrefix(evt.Conversation.ChannelSurfaceKey, "-") {
 		return false, InboundResult{}, nil
 	}
 	command := evt.Metadata.Command
@@ -332,9 +364,13 @@ func (s InboundService) handleSessionCommand(ctx context.Context, repo ports.Rep
 	if len(args) > 1 {
 		alias = args[1]
 	}
+	surfaceKey := evt.Conversation.ChannelSurfaceKey
+	if s.MultipleAgentMode && session.AgentProfileID != "" {
+		surfaceKey = scopedAgentSurfaceKey(surfaceKey, session.AgentProfileID)
+	}
 	switch command {
 	case "/new":
-		newSession, err := repo.CreateVirtualSession(ctx, evt.TenantID, evt.Channel, evt.Conversation.ChannelSurfaceKey, evt.Sender.ChannelUserID, session.AgentProfileID, alias)
+		newSession, err := repo.CreateVirtualSession(ctx, evt.TenantID, evt.Channel, surfaceKey, evt.Sender.ChannelUserID, session.AgentProfileID, alias)
 		if err != nil {
 			return false, InboundResult{}, err
 		}
@@ -347,7 +383,7 @@ func (s InboundService) handleSessionCommand(ctx context.Context, repo ports.Rep
 		if target == "" {
 			return true, InboundResult{SessionID: session.ID, Status: "accepted"}, repo.EnqueueDelivery(ctx, buildControlDelivery(evt, session.ID, "Usage: /switch <alias-or-id>", "telegram"))
 		}
-		switched, err := repo.SwitchActiveSession(ctx, evt.TenantID, evt.Channel, evt.Conversation.ChannelSurfaceKey, evt.Sender.ChannelUserID, target)
+		switched, err := repo.SwitchActiveSession(ctx, evt.TenantID, evt.Channel, surfaceKey, evt.Sender.ChannelUserID, target)
 		if err != nil {
 			return false, InboundResult{}, err
 		}
@@ -356,7 +392,7 @@ func (s InboundService) handleSessionCommand(ctx context.Context, repo ports.Rep
 		}
 		return true, InboundResult{SessionID: switched.ID, Status: "accepted"}, nil
 	case "/sessions":
-		sessions, err := repo.ListSurfaceSessions(ctx, evt.TenantID, evt.Channel, evt.Conversation.ChannelSurfaceKey, evt.Sender.ChannelUserID, 10)
+		sessions, err := repo.ListSurfaceSessions(ctx, evt.TenantID, evt.Channel, surfaceKey, evt.Sender.ChannelUserID, 10)
 		if err != nil {
 			return false, InboundResult{}, err
 		}
@@ -377,7 +413,7 @@ func (s InboundService) handleSessionCommand(ctx context.Context, repo ports.Rep
 		}
 		return true, InboundResult{SessionID: session.ID, Status: "accepted"}, nil
 	case "/close":
-		closed, err := repo.CloseActiveSession(ctx, evt.TenantID, evt.Channel, evt.Conversation.ChannelSurfaceKey, evt.Sender.ChannelUserID)
+		closed, err := repo.CloseActiveSession(ctx, evt.TenantID, evt.Channel, surfaceKey, evt.Sender.ChannelUserID)
 		if err != nil {
 			return false, InboundResult{}, err
 		}
@@ -390,13 +426,125 @@ func (s InboundService) handleSessionCommand(ctx context.Context, repo ports.Rep
 	}
 }
 
+type agentRouteOverrideStore interface {
+	SetAgentRouteOverride(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID, agentProfileID string) error
+	GetAgentRouteOverride(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID string) (string, error)
+}
+
+func (s InboundService) handleAgentCommand(ctx context.Context, repo ports.Repository, evt domain.CanonicalInboundEvent, session domain.Session, route domain.RouteDecision) (bool, InboundResult, error) {
+	if evt.Metadata.Command != "/agent" || !agentCommandsSupported(evt.Channel) {
+		return false, InboundResult{}, nil
+	}
+	if !s.MultipleAgentMode {
+		return true, InboundResult{SessionID: session.ID, Status: "accepted"}, s.sendControl(ctx, repo, evt, session, "Active agent: "+route.AgentProfileID)
+	}
+	args := strings.Fields(strings.TrimSpace(evt.Message.Text))
+	if len(args) == 1 {
+		return true, InboundResult{SessionID: session.ID, Status: "accepted"}, s.sendControl(ctx, repo, evt, session, s.agentListText(evt.Channel, route.AgentProfileID))
+	}
+	target := strings.TrimSpace(args[1])
+	if _, ok := s.AgentProfiles[target]; !ok {
+		return true, InboundResult{SessionID: session.ID, Status: "accepted"}, s.sendControl(ctx, repo, evt, session, "Agent "+target+" is not configured.")
+	}
+	if !s.agentAllowedOnChannel(evt.Channel, target) {
+		return true, InboundResult{SessionID: session.ID, Status: "accepted"}, s.sendControl(ctx, repo, evt, session, "Agent "+target+" is not available on this channel.")
+	}
+	store, ok := repo.(agentRouteOverrideStore)
+	if !ok {
+		return false, InboundResult{}, fmt.Errorf("agent route overrides are not supported by repository")
+	}
+	if err := store.SetAgentRouteOverride(ctx, evt.TenantID, evt.Channel, evt.Conversation.ChannelSurfaceKey, evt.Sender.ChannelUserID, target); err != nil {
+		return false, InboundResult{}, err
+	}
+	return true, InboundResult{SessionID: session.ID, Status: "accepted"}, s.sendControl(ctx, repo, evt, session, "Switched agent to "+target)
+}
+
+func (s InboundService) sendControl(ctx context.Context, repo ports.Repository, evt domain.CanonicalInboundEvent, session domain.Session, text string) error {
+	if evt.Channel == "webchat" {
+		raw, _ := json.Marshal(map[string]any{"status": "completed", "text": text, "message_key": "control_" + evt.EventID})
+		_, err := repo.StoreOutboundMessage(ctx, session, "control_"+evt.EventID, "control_"+evt.EventID, text, raw)
+		return err
+	}
+	return repo.EnqueueDelivery(ctx, buildControlDelivery(evt, session.ID, text, evt.Channel))
+}
+
+func (s InboundService) agentListText(channel, active string) string {
+	ids := s.availableAgents(channel)
+	lines := []string{"Agents:"}
+	for _, id := range ids {
+		line := id
+		if id == active {
+			line += " (active)"
+		}
+		lines = append(lines, line)
+	}
+	if len(ids) == 0 {
+		lines = append(lines, "No agents available.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (s InboundService) availableAgents(channel string) []string {
+	allowed := s.AllowedAgentsByChannel[strings.ToLower(strings.TrimSpace(channel))]
+	if len(allowed) > 0 {
+		return append([]string(nil), allowed...)
+	}
+	out := make([]string, 0, len(s.AgentProfiles))
+	for id := range s.AgentProfiles {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (s InboundService) agentAllowedOnChannel(channel, profileID string) bool {
+	for _, id := range s.availableAgents(channel) {
+		if id == profileID {
+			return true
+		}
+	}
+	return false
+}
+
+func agentCommandsSupported(channel string) bool {
+	switch channel {
+	case "telegram", "webchat", "slack", "whatsapp", "whatsapp_web":
+		return true
+	default:
+		return false
+	}
+}
+
+func sessionCommandsSupported(evt domain.CanonicalInboundEvent) bool {
+	return evt.Channel == "telegram" || evt.Channel == "webchat"
+}
+
+func scopedAgentSurfaceKey(surfaceKey, agentProfileID string) string {
+	if agentProfileID == "" {
+		return surfaceKey
+	}
+	return surfaceKey + ":agent:" + agentProfileID
+}
+
 func buildControlDelivery(evt domain.CanonicalInboundEvent, sessionID, text, channelType string) domain.OutboundDelivery {
 	payload := map[string]any{"text": text}
-	if channelType == "telegram" {
+	switch channelType {
+	case "telegram":
 		payload["chat_id"] = evt.Conversation.ChannelConversationID
-	} else {
+	case "slack":
 		payload["channel"] = evt.Conversation.ChannelConversationID
 		payload["thread_ts"] = evt.Conversation.ChannelThreadID
+	case "whatsapp":
+		payload["messaging_product"] = "whatsapp"
+		payload["to"] = evt.Sender.ChannelUserID
+		payload["type"] = "text"
+		payload["text"] = map[string]any{"body": text}
+	case "whatsapp_web":
+		payload["chatId"] = evt.Conversation.ChannelConversationID
+		if payload["chatId"] == "" {
+			payload["chatId"] = evt.Sender.ChannelUserID
+		}
+		payload["text"] = text
 	}
 	raw, _ := json.Marshal(payload)
 	return domain.OutboundDelivery{

@@ -1619,6 +1619,7 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 			Artifacts:   artifacts,
 		},
 		Metadata: domain.Metadata{
+			Command:       webChatCommandFromText(text),
 			ArtifactTrust: "first-party-webchat",
 			ResponderBinding: domain.ResponderBinding{
 				Mode:                  "same-user-only",
@@ -1627,6 +1628,14 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 			RawPayload: rawPayload,
 		},
 	}
+}
+
+func webChatCommandFromText(text string) string {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+		return ""
+	}
+	return strings.ToLower(fields[0])
 }
 
 func parseWebChatReplyTo(r *http.Request) map[string]any {

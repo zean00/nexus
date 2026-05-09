@@ -17,6 +17,7 @@ type StrictClient struct {
 	BaseURL string
 	Token   string
 	HTTP    *http.Client
+	Headers map[string]string
 }
 
 type strictManifest struct {
@@ -619,6 +620,11 @@ func (c StrictClient) newRequest(ctx context.Context, method, path string, query
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	for key, value := range c.Headers {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			req.Header.Set(key, value)
+		}
 	}
 	return req, nil
 }

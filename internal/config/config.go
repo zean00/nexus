@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -115,6 +118,48 @@ type Config struct {
 	TelegramAllowedUserIDs                []string
 	DefaultTenantID                       string
 	DefaultAgentProfileID                 string
+	ConfigPath                            string
+	ACPMode                               string
+	ACPConnections                        []ACPConnectionConfig
+	ACPAgentProfiles                      []ACPAgentProfileConfig
+	AgentRouting                          AgentRoutingConfig
+}
+
+type ACPConnectionConfig struct {
+	ID             string            `json:"id" yaml:"id"`
+	Implementation string            `json:"implementation" yaml:"implementation"`
+	BaseURL        string            `json:"base_url" yaml:"base_url"`
+	Token          string            `json:"token" yaml:"token"`
+	Command        string            `json:"command" yaml:"command"`
+	Args           []string          `json:"args" yaml:"args"`
+	Env            []string          `json:"env" yaml:"env"`
+	Workdir        string            `json:"workdir" yaml:"workdir"`
+	Headers        map[string]string `json:"headers" yaml:"headers"`
+	PathPrefix     string            `json:"path_prefix" yaml:"path_prefix"`
+	Enabled        *bool             `json:"enabled" yaml:"enabled"`
+}
+
+type ACPAgentProfileConfig struct {
+	ID           string            `json:"id" yaml:"id"`
+	ConnectionID string            `json:"connection_id" yaml:"connection_id"`
+	AgentName    string            `json:"agent_name" yaml:"agent_name"`
+	Description  string            `json:"description" yaml:"description"`
+	Headers      map[string]string `json:"headers" yaml:"headers"`
+	PathPrefix   string            `json:"path_prefix" yaml:"path_prefix"`
+}
+
+type AgentRoutingConfig struct {
+	DefaultAgentByChannel  map[string]string        `json:"default_agent_by_channel" yaml:"default_agent_by_channel"`
+	AllowedAgentsByChannel map[string][]string      `json:"allowed_agents_by_channel" yaml:"allowed_agents_by_channel"`
+	Rules                  []AgentRoutingRuleConfig `json:"rules" yaml:"rules"`
+}
+
+type AgentRoutingRuleConfig struct {
+	ID             string         `json:"id" yaml:"id"`
+	Priority       int            `json:"priority" yaml:"priority"`
+	Enabled        *bool          `json:"enabled" yaml:"enabled"`
+	Match          map[string]any `json:"match" yaml:"match"`
+	AgentProfileID string         `json:"agent_profile_id" yaml:"agent_profile_id"`
 }
 
 func Load() (Config, error) {
@@ -200,7 +245,13 @@ func Load() (Config, error) {
 		ObjectStorageBaseURL:                  env("OBJECT_STORAGE_BASE_URL", "file:///tmp/nexus-objects"),
 		DefaultTenantID:                       env("DEFAULT_TENANT_ID", "tenant_default"),
 		DefaultAgentProfileID:                 env("DEFAULT_AGENT_PROFILE_ID", "agent_profile_default"),
+		ConfigPath:                            strings.TrimSpace(os.Getenv("NEXUS_CONFIG_PATH")),
+		ACPMode:                               env("ACP_MODE", "single"),
 	}
+	if err := loadConfigFile(&cfg); err != nil {
+		return Config{}, err
+	}
+	applyEnvOverrides(&cfg)
 
 	if cfg.WhatsAppWebMinDelayMS, err = envInt("WHATSAPP_WEB_MIN_DELAY_MS", cfg.WhatsAppWebMinDelayMS); err != nil {
 		return Config{}, fmt.Errorf("parse WHATSAPP_WEB_MIN_DELAY_MS: %w", err)
@@ -368,6 +419,10 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("parse ACP_RPC_TIMEOUT_SECONDS: %w", err)
 	}
 	cfg.ACPRPCTimeout = time.Duration(rpcSeconds) * time.Second
+	normalizeACPConfig(&cfg)
+	if err := validateACPConfig(cfg); err != nil {
+		return Config{}, err
+	}
 	if err := validateProductionConfig(cfg); err != nil {
 		return Config{}, err
 	}
@@ -382,6 +437,346 @@ func Load() (Config, error) {
 	}
 	cfg.WebChatHistoryScope = scope
 	return cfg, nil
+}
+
+type fileConfig struct {
+	ServiceName                  string             `json:"service_name" yaml:"service_name"`
+	Environment                  string             `json:"environment" yaml:"environment"`
+	HTTPAddr                     string             `json:"http_addr" yaml:"http_addr"`
+	AdminAddr                    string             `json:"admin_addr" yaml:"admin_addr"`
+	DatabaseURL                  string             `json:"database_url" yaml:"database_url"`
+	DefaultTenantID              string             `json:"default_tenant_id" yaml:"default_tenant_id"`
+	DefaultAgentProfileID        string             `json:"default_agent_profile_id" yaml:"default_agent_profile_id"`
+	ACP                          fileACPConfig      `json:"acp" yaml:"acp"`
+	Routing                      AgentRoutingConfig `json:"routing" yaml:"routing"`
+	WebChatHistoryScope          string             `json:"webchat_history_scope" yaml:"webchat_history_scope"`
+	WebChatInteractionVisibility string             `json:"webchat_interaction_visibility" yaml:"webchat_interaction_visibility"`
+}
+
+type fileACPConfig struct {
+	Mode             string                  `json:"mode" yaml:"mode"`
+	Single           *ACPConnectionConfig    `json:"single" yaml:"single"`
+	Connections      []ACPConnectionConfig   `json:"connections" yaml:"connections"`
+	AgentProfiles    []ACPAgentProfileConfig `json:"agent_profiles" yaml:"agent_profiles"`
+	DefaultAgentName string                  `json:"default_agent_name" yaml:"default_agent_name"`
+}
+
+func loadConfigFile(cfg *Config) error {
+	path := strings.TrimSpace(cfg.ConfigPath)
+	if path == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read NEXUS_CONFIG_PATH: %w", err)
+	}
+	var file fileConfig
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yaml", ".yml":
+		if err := yaml.Unmarshal(raw, &file); err != nil {
+			return fmt.Errorf("parse NEXUS_CONFIG_PATH yaml: %w", err)
+		}
+	case ".json":
+		if err := json.Unmarshal(raw, &file); err != nil {
+			return fmt.Errorf("parse NEXUS_CONFIG_PATH json: %w", err)
+		}
+	default:
+		return fmt.Errorf("NEXUS_CONFIG_PATH must end with .yaml, .yml, or .json")
+	}
+	mergeFileConfig(cfg, file)
+	return nil
+}
+
+func mergeFileConfig(cfg *Config, file fileConfig) {
+	if file.ServiceName != "" {
+		cfg.ServiceName = file.ServiceName
+	}
+	if file.Environment != "" {
+		cfg.Environment = file.Environment
+	}
+	if file.HTTPAddr != "" {
+		cfg.HTTPAddr = file.HTTPAddr
+	}
+	if file.AdminAddr != "" {
+		cfg.AdminAddr = file.AdminAddr
+	}
+	if file.DatabaseURL != "" {
+		cfg.DatabaseURL = file.DatabaseURL
+	}
+	if file.DefaultTenantID != "" {
+		cfg.DefaultTenantID = file.DefaultTenantID
+	}
+	if file.DefaultAgentProfileID != "" {
+		cfg.DefaultAgentProfileID = file.DefaultAgentProfileID
+	}
+	if file.WebChatHistoryScope != "" {
+		cfg.WebChatHistoryScope = file.WebChatHistoryScope
+	}
+	if file.WebChatInteractionVisibility != "" {
+		cfg.WebChatInteractionVisibility = file.WebChatInteractionVisibility
+	}
+	if file.ACP.Mode != "" {
+		cfg.ACPMode = file.ACP.Mode
+	}
+	if file.ACP.DefaultAgentName != "" {
+		cfg.DefaultACPAgentName = file.ACP.DefaultAgentName
+	}
+	if file.ACP.Single != nil {
+		mergeSingleACPConnection(cfg, *file.ACP.Single)
+	}
+	if len(file.ACP.Connections) > 0 {
+		cfg.ACPConnections = append([]ACPConnectionConfig(nil), file.ACP.Connections...)
+	}
+	if len(file.ACP.AgentProfiles) > 0 {
+		cfg.ACPAgentProfiles = append([]ACPAgentProfileConfig(nil), file.ACP.AgentProfiles...)
+	}
+	if len(file.Routing.DefaultAgentByChannel) > 0 {
+		cfg.AgentRouting.DefaultAgentByChannel = cloneStringMap(file.Routing.DefaultAgentByChannel)
+	}
+	if len(file.Routing.AllowedAgentsByChannel) > 0 {
+		cfg.AgentRouting.AllowedAgentsByChannel = cloneStringSliceMap(file.Routing.AllowedAgentsByChannel)
+	}
+	if len(file.Routing.Rules) > 0 {
+		cfg.AgentRouting.Rules = append([]AgentRoutingRuleConfig(nil), file.Routing.Rules...)
+	}
+}
+
+func mergeSingleACPConnection(cfg *Config, conn ACPConnectionConfig) {
+	if conn.Implementation != "" {
+		cfg.ACPImplementation = conn.Implementation
+	}
+	if conn.BaseURL != "" {
+		cfg.ACPBaseURL = conn.BaseURL
+	}
+	if conn.Token != "" {
+		cfg.ACPToken = conn.Token
+	}
+	if conn.Command != "" {
+		cfg.ACPCommand = conn.Command
+	}
+	if len(conn.Args) > 0 {
+		cfg.ACPArgs = append([]string(nil), conn.Args...)
+	}
+	if len(conn.Env) > 0 {
+		cfg.ACPEnv = append([]string(nil), conn.Env...)
+	}
+	if conn.Workdir != "" {
+		cfg.ACPWorkdir = conn.Workdir
+	}
+	if conn.ID != "" || len(conn.Headers) > 0 || conn.PathPrefix != "" || conn.Enabled != nil {
+		if conn.ID == "" {
+			conn.ID = "acp_default"
+		}
+		cfg.ACPConnections = []ACPConnectionConfig{conn}
+	}
+}
+
+func applyEnvOverrides(cfg *Config) {
+	cfg.ConfigPath = strings.TrimSpace(os.Getenv("NEXUS_CONFIG_PATH"))
+	cfg.ServiceName = env("SERVICE_NAME", cfg.ServiceName)
+	cfg.Environment = env("NEXUS_ENV", cfg.Environment)
+	cfg.HTTPAddr = env("HTTP_ADDR", cfg.HTTPAddr)
+	cfg.AdminAddr = env("ADMIN_ADDR", cfg.AdminAddr)
+	cfg.AdminBearerToken = strings.TrimSpace(env("ADMIN_BEARER_TOKEN", cfg.AdminBearerToken))
+	cfg.DatabaseURL = env("DATABASE_URL", cfg.DatabaseURL)
+	cfg.ACPMode = env("ACP_MODE", cfg.ACPMode)
+	cfg.ACPImplementation = env("ACP_IMPLEMENTATION", cfg.ACPImplementation)
+	cfg.ACPBaseURL = env("ACP_BASE_URL", cfg.ACPBaseURL)
+	if value := os.Getenv("ACP_TOKEN"); value != "" {
+		cfg.ACPToken = value
+	}
+	cfg.ACPCommand = env("ACP_COMMAND", cfg.ACPCommand)
+	if value := csvEnv("ACP_ARGS"); len(value) > 0 {
+		cfg.ACPArgs = value
+	}
+	if value := prefixedEnv("ACP_ENV_"); len(value) > 0 {
+		cfg.ACPEnv = value
+	}
+	cfg.ACPWorkdir = env("ACP_WORKDIR", cfg.ACPWorkdir)
+	cfg.DefaultACPAgentName = env("DEFAULT_ACP_AGENT_NAME", cfg.DefaultACPAgentName)
+	cfg.DefaultTenantID = env("DEFAULT_TENANT_ID", cfg.DefaultTenantID)
+	cfg.DefaultAgentProfileID = env("DEFAULT_AGENT_PROFILE_ID", cfg.DefaultAgentProfileID)
+	cfg.WebChatInteractionVisibility = env("WEBCHAT_INTERACTION_VISIBILITY", cfg.WebChatInteractionVisibility)
+	cfg.WebChatHistoryScope = env("WEBCHAT_HISTORY_SCOPE", cfg.WebChatHistoryScope)
+	cfg.SlackSigningSecret = env("SLACK_SIGNING_SECRET", cfg.SlackSigningSecret)
+	if value := os.Getenv("SLACK_BOT_TOKEN"); value != "" {
+		cfg.SlackBotToken = value
+	}
+	cfg.WhatsAppVerifyToken = env("WHATSAPP_VERIFY_TOKEN", cfg.WhatsAppVerifyToken)
+	if value := os.Getenv("WHATSAPP_ACCESS_TOKEN"); value != "" {
+		cfg.WhatsAppAccessToken = value
+	}
+	if value := os.Getenv("WHATSAPP_APP_SECRET"); value != "" {
+		cfg.WhatsAppAppSecret = value
+	}
+	if value := os.Getenv("WHATSAPP_PHONE_NUMBER_ID"); value != "" {
+		cfg.WhatsAppPhoneNumberID = value
+	}
+	cfg.WhatsAppAPIBaseURL = env("WHATSAPP_API_BASE_URL", cfg.WhatsAppAPIBaseURL)
+	cfg.EmailWebhookSecret = env("EMAIL_WEBHOOK_SECRET", cfg.EmailWebhookSecret)
+	if value := os.Getenv("EMAIL_SMTP_ADDR"); value != "" {
+		cfg.EmailSMTPAddr = value
+	}
+	if value := os.Getenv("EMAIL_SMTP_USERNAME"); value != "" {
+		cfg.EmailSMTPUsername = value
+	}
+	if value := os.Getenv("EMAIL_SMTP_PASSWORD"); value != "" {
+		cfg.EmailSMTPPassword = value
+	}
+	cfg.EmailFromAddress = env("EMAIL_FROM_ADDRESS", cfg.EmailFromAddress)
+	if value := os.Getenv("TELEGRAM_BOT_TOKEN"); value != "" {
+		cfg.TelegramBotToken = value
+	}
+	cfg.TelegramWebhookSecret = env("TELEGRAM_WEBHOOK_SECRET", cfg.TelegramWebhookSecret)
+	if value := csvEnv("TELEGRAM_ALLOWED_USER_IDS"); len(value) > 0 {
+		cfg.TelegramAllowedUserIDs = value
+	}
+	cfg.ObjectStorageBaseURL = env("OBJECT_STORAGE_BASE_URL", cfg.ObjectStorageBaseURL)
+}
+
+func normalizeACPConfig(cfg *Config) {
+	cfg.ACPMode = strings.ToLower(strings.TrimSpace(cfg.ACPMode))
+	if cfg.ACPMode == "" {
+		cfg.ACPMode = "single"
+	}
+	if cfg.ACPMode == "single" {
+		cfg.ACPConnections = []ACPConnectionConfig{{
+			ID:             "acp_default",
+			Implementation: cfg.ACPImplementation,
+			BaseURL:        cfg.ACPBaseURL,
+			Token:          cfg.ACPToken,
+			Command:        cfg.ACPCommand,
+			Args:           append([]string(nil), cfg.ACPArgs...),
+			Env:            append([]string(nil), cfg.ACPEnv...),
+			Workdir:        cfg.ACPWorkdir,
+			Enabled:        boolPtr(true),
+		}}
+		cfg.ACPAgentProfiles = []ACPAgentProfileConfig{{
+			ID:           cfg.DefaultAgentProfileID,
+			ConnectionID: "acp_default",
+			AgentName:    cfg.DefaultACPAgentName,
+		}}
+		if cfg.AgentRouting.DefaultAgentByChannel == nil {
+			cfg.AgentRouting.DefaultAgentByChannel = map[string]string{}
+		}
+		return
+	}
+	for i := range cfg.ACPConnections {
+		cfg.ACPConnections[i].ID = strings.TrimSpace(cfg.ACPConnections[i].ID)
+		cfg.ACPConnections[i].Implementation = strings.TrimSpace(cfg.ACPConnections[i].Implementation)
+		cfg.ACPConnections[i].BaseURL = strings.TrimRight(strings.TrimSpace(cfg.ACPConnections[i].BaseURL), "/")
+		cfg.ACPConnections[i].PathPrefix = strings.Trim(cfg.ACPConnections[i].PathPrefix, "/")
+		if cfg.ACPConnections[i].Enabled == nil {
+			cfg.ACPConnections[i].Enabled = boolPtr(true)
+		}
+	}
+	for i := range cfg.ACPAgentProfiles {
+		cfg.ACPAgentProfiles[i].ID = strings.TrimSpace(cfg.ACPAgentProfiles[i].ID)
+		cfg.ACPAgentProfiles[i].ConnectionID = strings.TrimSpace(cfg.ACPAgentProfiles[i].ConnectionID)
+		cfg.ACPAgentProfiles[i].AgentName = strings.TrimSpace(cfg.ACPAgentProfiles[i].AgentName)
+		cfg.ACPAgentProfiles[i].PathPrefix = strings.Trim(cfg.ACPAgentProfiles[i].PathPrefix, "/")
+	}
+}
+
+func validateACPConfig(cfg Config) error {
+	switch cfg.ACPMode {
+	case "single", "multiple":
+	default:
+		return fmt.Errorf("invalid ACP_MODE %q", cfg.ACPMode)
+	}
+	if cfg.ACPMode == "single" {
+		return nil
+	}
+	enabledConnections := map[string]bool{}
+	for _, conn := range cfg.ACPConnections {
+		if conn.ID == "" {
+			return fmt.Errorf("acp.connections[].id is required")
+		}
+		if conn.Enabled != nil && !*conn.Enabled {
+			continue
+		}
+		enabledConnections[conn.ID] = true
+	}
+	if len(enabledConnections) == 0 {
+		return fmt.Errorf("multiple ACP mode requires at least one enabled connection")
+	}
+	profiles := map[string]ACPAgentProfileConfig{}
+	for _, profile := range cfg.ACPAgentProfiles {
+		if profile.ID == "" || profile.ConnectionID == "" || profile.AgentName == "" {
+			return fmt.Errorf("acp.agent_profiles require id, connection_id, and agent_name")
+		}
+		if !enabledConnections[profile.ConnectionID] {
+			return fmt.Errorf("agent profile %q references disabled or missing connection %q", profile.ID, profile.ConnectionID)
+		}
+		profiles[profile.ID] = profile
+	}
+	if len(profiles) == 0 {
+		return fmt.Errorf("multiple ACP mode requires at least one agent profile")
+	}
+	for channel, profileID := range cfg.AgentRouting.DefaultAgentByChannel {
+		if _, ok := profiles[profileID]; !ok {
+			return fmt.Errorf("routing.default_agent_by_channel[%s] references missing profile %q", channel, profileID)
+		}
+	}
+	for channel, ids := range cfg.AgentRouting.AllowedAgentsByChannel {
+		for _, id := range ids {
+			if _, ok := profiles[id]; !ok {
+				return fmt.Errorf("routing.allowed_agents_by_channel[%s] references missing profile %q", channel, id)
+			}
+		}
+	}
+	for _, rule := range cfg.AgentRouting.Rules {
+		if rule.AgentProfileID == "" {
+			return fmt.Errorf("routing.rules[].agent_profile_id is required")
+		}
+		if _, ok := profiles[rule.AgentProfileID]; !ok {
+			return fmt.Errorf("routing rule references missing profile %q", rule.AgentProfileID)
+		}
+	}
+	for _, channel := range enabledRoutingChannels(cfg) {
+		if cfg.AgentRouting.DefaultAgentByChannel[strings.ToLower(channel)] == "" {
+			return fmt.Errorf("multiple ACP mode requires routing.default_agent_by_channel[%s]", channel)
+		}
+	}
+	return nil
+}
+
+func enabledRoutingChannels(cfg Config) []string {
+	channels := []string{"webchat"}
+	if strings.TrimSpace(cfg.TelegramBotToken) != "" {
+		channels = append(channels, "telegram")
+	}
+	if strings.TrimSpace(cfg.SlackBotToken) != "" {
+		channels = append(channels, "slack")
+	}
+	if strings.TrimSpace(cfg.WhatsAppAccessToken) != "" || strings.TrimSpace(cfg.WhatsAppPhoneNumberID) != "" {
+		channels = append(channels, "whatsapp")
+	}
+	if cfg.WhatsAppWebEnabled {
+		channels = append(channels, "whatsapp_web")
+	}
+	return channels
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
+	}
+	return out
+}
+
+func cloneStringSliceMap(in map[string][]string) map[string][]string {
+	out := make(map[string][]string, len(in))
+	for k, values := range in {
+		key := strings.ToLower(strings.TrimSpace(k))
+		out[key] = append([]string(nil), values...)
+	}
+	return out
 }
 
 func NormalizeWebChatInteractionVisibility(value string) (string, error) {

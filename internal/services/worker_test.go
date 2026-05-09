@@ -29,6 +29,7 @@ type workerRepo struct {
 	storedArtifactsDir  string
 	storedAwaits        []domain.Await
 	updatedACPSessionID string
+	run                 domain.Run
 	auditEvents         []domain.AuditEvent
 	runStatusUpdated    bool
 	queueStatusUpdated  bool
@@ -145,7 +146,7 @@ func (r *workerRepo) UpsertTrustPolicy(context.Context, domain.TrustPolicy) erro
 func (r *workerRepo) GetInboundMessage(context.Context, string) (domain.Message, error) {
 	return r.message, nil
 }
-func (r *workerRepo) GetRun(context.Context, string) (domain.Run, error) { return domain.Run{}, nil }
+func (r *workerRepo) GetRun(context.Context, string) (domain.Run, error) { return r.run, nil }
 func (r *workerRepo) GetRunByACP(context.Context, string) (domain.Run, error) {
 	return domain.Run{}, nil
 }
@@ -526,6 +527,37 @@ func (resumeWorkerACP) FindLatestRunForSession(context.Context, domain.Session) 
 }
 func (resumeWorkerACP) CancelRun(context.Context, domain.Run) error { return nil }
 
+type scopedResumeWorkerACP struct {
+	session domain.Session
+}
+
+func (a *scopedResumeWorkerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
+	return []domain.AgentManifest{{Name: "finance", Healthy: true, SupportsAwaitResume: true, SupportsStructuredAwait: true, SupportsSessionReload: true, SupportsStreaming: true, SupportsArtifacts: true}}, nil
+}
+func (a *scopedResumeWorkerACP) EnsureSession(context.Context, domain.Session) (string, error) {
+	return "", nil
+}
+func (a *scopedResumeWorkerACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
+	return domain.Run{}, domain.StaticRunEventStream(), nil
+}
+func (a *scopedResumeWorkerACP) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.RunEventStream{}, errors.New("unscoped resume should not be used")
+}
+func (a *scopedResumeWorkerACP) ResumeRunForSession(_ context.Context, session domain.Session, _ domain.Await, _ []byte) (domain.RunEventStream, error) {
+	a.session = session
+	return domain.StaticRunEventStream(domain.RunEvent{RunID: "run_await_1", Status: "completed", Text: "approved"}), nil
+}
+func (a *scopedResumeWorkerACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
+	return domain.RunStatusSnapshot{}, nil
+}
+func (a *scopedResumeWorkerACP) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (a *scopedResumeWorkerACP) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (a *scopedResumeWorkerACP) CancelRun(context.Context, domain.Run) error { return nil }
+
 type noopRenderer struct{}
 
 func (noopRenderer) RenderRunEvent(context.Context, domain.Session, domain.RunEvent) ([]domain.OutboundDelivery, error) {
@@ -849,6 +881,41 @@ func TestWorkerResumeUsesDistinctOutboundMessageKeyAndNotifies(t *testing.T) {
 	}
 	if len(notified) != 1 || notified[0] != "session_1" {
 		t.Fatalf("expected one resume notification for session_1, got %+v", notified)
+	}
+}
+
+func TestWorkerResumeUsesRunACPConnection(t *testing.T) {
+	payload, err := json.Marshal(domain.ResumeRequest{
+		AwaitID: "await_run_await_1",
+		Payload: []byte(`{"choice":"approve"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{
+			ID:          "outbox_resume_1",
+			EventType:   "await.resume",
+			AggregateID: "await_run_await_1",
+			PayloadJSON: payload,
+		}},
+		session: domain.Session{ID: "session_1", TenantID: "tenant_default", AgentProfileID: "finance_profile", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
+		await:   domain.Await{ID: "await_run_await_1", RunID: "run_await_1", SessionID: "session_1"},
+		run:     domain.Run{ID: "run_await_1", SessionID: "session_1", ACPConnectionID: "finance_conn", ACPAgentName: "finance"},
+	}
+	acp := &scopedResumeWorkerACP{}
+	worker := WorkerService{
+		Repo:     repo,
+		ACP:      acp,
+		Catalog:  &AgentCatalog{Bridge: acp, TTL: time.Hour},
+		Renderer: WebChatRenderer{},
+		Channel:  noopChannel{},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if acp.session.ACPConnectionID != "finance_conn" || acp.session.ACPProfileID != "finance_profile" {
+		t.Fatalf("expected resume to use run connection/profile, got %+v", acp.session)
 	}
 }
 

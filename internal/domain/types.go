@@ -86,6 +86,10 @@ type Session struct {
 	ChannelScopeKey string
 	State           string
 	LastActiveAt    time.Time
+	ACPConnectionID string
+	ACPServerURL    string
+	ACPAgentName    string
+	ACPProfileID    string
 	ACPSessionID    string
 }
 
@@ -93,6 +97,7 @@ type RouteDecision struct {
 	AgentProfileID                    string
 	ACPConnectionID                   string
 	ACPAgentName                      string
+	ACPProfileID                      string
 	Mode                              string
 	RequiresApproval                  bool
 	RequiresLinkedIdentity            bool
@@ -101,6 +106,27 @@ type RouteDecision struct {
 	RequireLinkedIdentityForExecution bool
 	RequireLinkedIdentityForApproval  bool
 	RequireRecentStepUpForApproval    bool
+	Source                            string
+}
+
+type AgentProfile struct {
+	ID           string            `json:"id"`
+	ConnectionID string            `json:"connection_id"`
+	AgentName    string            `json:"agent_name"`
+	Description  string            `json:"description,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	PathPrefix   string            `json:"path_prefix,omitempty"`
+}
+
+type AgentRoutingRule struct {
+	ID             string         `json:"id"`
+	TenantID       string         `json:"tenant_id"`
+	Priority       int            `json:"priority"`
+	Enabled        bool           `json:"enabled"`
+	Match          map[string]any `json:"match"`
+	AgentProfileID string         `json:"agent_profile_id"`
+	CreatedAt      time.Time      `json:"created_at,omitempty"`
+	UpdatedAt      time.Time      `json:"updated_at,omitempty"`
 }
 
 type QueueItem struct {

@@ -1,6 +1,6 @@
 # Configuration
 
-Nexus is configured entirely through environment variables.
+Nexus is configured through environment variables and, optionally, a YAML or JSON config file.
 
 This document describes every configuration group, the defaults loaded in code, and the important behavior behind each setting.
 
@@ -20,6 +20,8 @@ Configuration is loaded from `internal/config/config.go`.
 Important rules:
 
 - defaults are applied when an environment variable is missing
+- `NEXUS_CONFIG_PATH` may point to a `.yaml`, `.yml`, or `.json` file
+- when both file and environment define a setting, environment variables win for env-backed settings such as `DATABASE_URL`, `HTTP_ADDR`, `ADMIN_ADDR`, `WEBCHAT_HISTORY_SCOPE`, and ACP settings
 - `NEXUS_ENV=production` enables stricter validation
 - `ADMIN_BEARER_TOKEN` is trimmed before use
 - `WEBCHAT_INTERACTION_VISIBILITY` is validated against a fixed set of modes
@@ -33,6 +35,7 @@ Important rules:
 | `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/nexus?sslmode=disable` | Postgres connection string | Required in most real deployments |
 | `DEFAULT_TENANT_ID` | `tenant_default` | Default tenant ID | The codebase currently assumes a single default tenant |
 | `DEFAULT_AGENT_PROFILE_ID` | `agent_profile_default` | Default gateway agent profile ID | Used by routing and session bootstrap |
+| `NEXUS_CONFIG_PATH` | empty | Optional YAML/JSON config file | Environment variables override file values |
 
 ## HTTP Servers
 
@@ -70,8 +73,65 @@ This is easy to miss when hardening HTTP servers. The admin server can use a nor
 | `ACP_MANIFEST_CACHE_TTL_SECONDS` | `60` | Catalog cache TTL | Used by the agent catalog |
 | `ACP_STARTUP_TIMEOUT_SECONDS` | `15` | stdio bridge startup timeout | Only relevant to `stdio` |
 | `ACP_RPC_TIMEOUT_SECONDS` | `120` | ACP RPC timeout | Used by ACP clients and stdio RPC calls |
+| `ACP_MODE` | `single` | ACP routing mode | `single` preserves legacy behavior; `multiple` enables agent profiles and routing |
 
 Choose `ACP_IMPLEMENTATION` based on the runtime you are actually talking to, not by preference alone. The bridge affects await semantics, compatibility validation, artifact behavior, and local test ergonomics.
+
+### File-Based ACP Routing
+
+In `single` mode Nexus builds one implicit `acp_default` connection from the existing environment variables.
+
+In `multiple` mode the config file can define multiple ACP connections and agent profiles. Profiles may point to the same server with different headers/path prefixes, or to different servers. Channel defaults and allowed agents are configured under `routing`.
+
+```yaml
+acp:
+  mode: multiple
+  connections:
+    - id: primary
+      implementation: strict
+      base_url: http://localhost:8090
+      enabled: true
+    - id: finance
+      implementation: strict
+      base_url: http://localhost:8091
+      headers:
+        X-Agent-Instance-ID: finance-1
+      enabled: true
+  agent_profiles:
+    - id: support
+      connection_id: primary
+      agent_name: support
+    - id: finance
+      connection_id: finance
+      agent_name: finance
+      headers:
+        X-Agent-Instance-ID: finance-profile
+      path_prefix: tenants/finance
+routing:
+  default_agent_by_channel:
+    webchat: support
+    telegram: support
+    slack: support
+    whatsapp: support
+    whatsapp_web: support
+  allowed_agents_by_channel:
+    whatsapp: [support, finance]
+  rules:
+    - priority: 10
+      enabled: true
+      match:
+        channel: whatsapp
+        channel_user_id: "628123456789"
+      agent_profile_id: finance
+```
+
+Routing precedence in multiple mode is: active `/agent` surface override, DB-backed rule, file rule, then channel default. DB-backed rules are managed through `/admin/agents/routes`; `/admin/agents/effective` reports the selected override/default for a surface.
+
+Connection-level headers and `path_prefix` are applied to every request for that connection. Profile-level headers override connection headers with the same key, and profile-level `path_prefix` is appended after the connection prefix. Manifest validation, run start, run refresh, and await resume use the selected connection/profile bridge, so an agent profile may exist only on its configured backend.
+
+The `/agent` command is available on Telegram, webchat, Slack, official WhatsApp, WhatsApp Web, and the CLI through webchat. `/agent` lists available profiles for the current channel; `/agent <agent_profile_id>` switches the active profile for that surface. Email does not support `/agent`.
+
+In single mode `/sessions` and `/switch` keep their existing behavior. In multiple mode those commands only list and switch sessions scoped to the currently active agent profile for that channel/surface.
 
 ## Laju Integration
 

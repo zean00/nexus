@@ -129,6 +129,60 @@ func (r *PostgresRepository) ResolveSession(ctx context.Context, evt domain.Cano
 	return s, true, err
 }
 
+func (r *PostgresRepository) ResolveSessionForRoute(ctx context.Context, evt domain.CanonicalInboundEvent, route domain.RouteDecision, multipleMode bool) (domain.Session, bool, error) {
+	if !multipleMode {
+		session, created, err := r.ResolveSession(ctx, evt, route.AgentProfileID)
+		session.ACPConnectionID = route.ACPConnectionID
+		session.ACPAgentName = route.ACPAgentName
+		return session, created, err
+	}
+	agentProfileID := strings.TrimSpace(route.AgentProfileID)
+	if (evt.Channel == "telegram" && !strings.HasPrefix(evt.Conversation.ChannelSurfaceKey, "-")) || evt.Channel == "webchat" {
+		scoped := evt
+		scoped.Conversation.ChannelSurfaceKey = scopedAgentSurfaceKey(keyForSurface(evt), agentProfileID)
+		session, created, err := r.resolveVirtualSurfaceSession(ctx, scoped, agentProfileID)
+		session.ACPConnectionID = route.ACPConnectionID
+		session.ACPAgentName = route.ACPAgentName
+		return session, created, err
+	}
+	key := evt.Conversation.ChannelSurfaceKey
+	row := r.queryRow(ctx, `
+		select id, tenant_id, coalesce(owner_user_id,''), coalesce(agent_profile_id,''), channel_type,
+		       channel_scope_key, state, last_active_at, coalesce(acp_connection_id,''), coalesce(acp_server_url,''), coalesce(acp_agent_name,''), coalesce(acp_session_id,'')
+		from sessions
+		where tenant_id=$1 and channel_type=$2 and channel_scope_key=$3 and agent_profile_id=$4 and state in ('open','paused')
+		limit 1
+	`, evt.TenantID, evt.Channel, key, agentProfileID)
+	var s domain.Session
+	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPConnectionID, &s.ACPServerURL, &s.ACPAgentName, &s.ACPSessionID)
+	if err == nil {
+		return s, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return domain.Session{}, false, err
+	}
+	s = domain.Session{
+		ID:              evt.EventID + "_session",
+		TenantID:        evt.TenantID,
+		OwnerUserID:     evt.Sender.ChannelUserID,
+		AgentProfileID:  agentProfileID,
+		ChannelType:     evt.Channel,
+		ChannelScopeKey: key,
+		State:           "open",
+		LastActiveAt:    time.Now().UTC(),
+		ACPConnectionID: route.ACPConnectionID,
+		ACPAgentName:    route.ACPAgentName,
+		ACPProfileID:    route.AgentProfileID,
+	}
+	_, err = r.exec(ctx, `
+		insert into sessions (
+			id, tenant_id, owner_user_id, agent_profile_id, channel_type, channel_scope_key,
+			acp_connection_id, acp_server_url, acp_agent_name, acp_session_id, mode, state, last_active_at, created_at, updated_at
+		) values ($1,$2,$3,$4,$5,$6,$7,'',$8,'', 'per-thread','open',now(),now(),now())
+	`, s.ID, s.TenantID, s.OwnerUserID, s.AgentProfileID, s.ChannelType, s.ChannelScopeKey, s.ACPConnectionID, s.ACPAgentName)
+	return s, true, err
+}
+
 func (r *PostgresRepository) resolveVirtualSurfaceSession(ctx context.Context, evt domain.CanonicalInboundEvent, agentProfileID string) (domain.Session, bool, error) {
 	row := r.queryRow(ctx, `
 		select s.id, s.tenant_id, coalesce(s.owner_user_id,''), coalesce(s.agent_profile_id,''), s.channel_type,
@@ -1020,9 +1074,9 @@ func (r *PostgresRepository) EnqueueMessage(ctx context.Context, evt domain.Cano
 func (r *PostgresRepository) CreateRun(ctx context.Context, run domain.Run) error {
 	_, err := r.exec(ctx, `
 		insert into runs (
-			id, session_id, acp_run_id, agent_name, mode, status, started_at, completed_at, last_event_at
-		) values ($1,$2,$3,$4,'async',$5,$6,null,$7)
-	`, run.ID, run.SessionID, run.ACPRunID, run.ACPAgentName, run.Status, run.StartedAt, run.LastEventAt)
+			id, session_id, acp_run_id, agent_name, mode, status, started_at, completed_at, last_event_at, acp_connection_id
+		) values ($1,$2,$3,$4,'async',$5,$6,null,$7,$8)
+	`, run.ID, run.SessionID, run.ACPRunID, run.ACPAgentName, run.Status, run.StartedAt, run.LastEventAt, run.ACPConnectionID)
 	return err
 }
 
@@ -1355,6 +1409,123 @@ func (r *PostgresRepository) GetRouteDecision(ctx context.Context, queueItemID s
 	}
 	var route domain.RouteDecision
 	return route, json.Unmarshal(raw, &route)
+}
+
+func (r *PostgresRepository) ListAgentRoutingRules(ctx context.Context, tenantID string) ([]domain.AgentRoutingRule, error) {
+	rows, err := r.query(ctx, `
+		select id, tenant_id, priority, enabled, condition_json, agent_profile_id, created_at, updated_at
+		from agent_routing_rules
+		where tenant_id=$1 and enabled=true
+		order by priority asc, id asc
+	`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.AgentRoutingRule
+	for rows.Next() {
+		var rule domain.AgentRoutingRule
+		var raw []byte
+		if err := rows.Scan(&rule.ID, &rule.TenantID, &rule.Priority, &rule.Enabled, &raw, &rule.AgentProfileID, &rule.CreatedAt, &rule.UpdatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(raw, &rule.Match)
+		out = append(out, rule)
+	}
+	return out, rows.Err()
+}
+
+func (r *PostgresRepository) ListAgentRoutingRulesPage(ctx context.Context, tenantID string, includeDisabled bool, limit int) ([]domain.AgentRoutingRule, error) {
+	clauses := []string{"tenant_id=$1"}
+	args := []any{tenantID}
+	if !includeDisabled {
+		clauses = append(clauses, "enabled=true")
+	}
+	args = append(args, normalizeLimit(limit))
+	rows, err := r.query(ctx, fmt.Sprintf(`
+		select id, tenant_id, priority, enabled, condition_json, agent_profile_id, created_at, updated_at
+		from agent_routing_rules
+		where %s
+		order by priority asc, id asc
+		limit $%d
+	`, strings.Join(clauses, " and "), len(args)), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.AgentRoutingRule
+	for rows.Next() {
+		var rule domain.AgentRoutingRule
+		var raw []byte
+		if err := rows.Scan(&rule.ID, &rule.TenantID, &rule.Priority, &rule.Enabled, &raw, &rule.AgentProfileID, &rule.CreatedAt, &rule.UpdatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(raw, &rule.Match)
+		out = append(out, rule)
+	}
+	return out, rows.Err()
+}
+
+func (r *PostgresRepository) UpsertAgentRoutingRule(ctx context.Context, rule domain.AgentRoutingRule) (domain.AgentRoutingRule, error) {
+	if rule.ID == "" {
+		rule.ID = fmt.Sprintf("agent_route_%d", time.Now().UTC().UnixNano())
+	}
+	raw, err := json.Marshal(rule.Match)
+	if err != nil {
+		return domain.AgentRoutingRule{}, err
+	}
+	row := r.queryRow(ctx, `
+		insert into agent_routing_rules (id, tenant_id, priority, enabled, condition_json, agent_profile_id, created_at, updated_at)
+		values ($1,$2,$3,$4,$5,$6,now(),now())
+		on conflict (id)
+		do update set tenant_id=excluded.tenant_id, priority=excluded.priority, enabled=excluded.enabled,
+			condition_json=excluded.condition_json, agent_profile_id=excluded.agent_profile_id, updated_at=now()
+		returning id, tenant_id, priority, enabled, condition_json, agent_profile_id, created_at, updated_at
+	`, rule.ID, rule.TenantID, rule.Priority, rule.Enabled, raw, rule.AgentProfileID)
+	var stored domain.AgentRoutingRule
+	var storedRaw []byte
+	if err := row.Scan(&stored.ID, &stored.TenantID, &stored.Priority, &stored.Enabled, &storedRaw, &stored.AgentProfileID, &stored.CreatedAt, &stored.UpdatedAt); err != nil {
+		return domain.AgentRoutingRule{}, err
+	}
+	_ = json.Unmarshal(storedRaw, &stored.Match)
+	return stored, nil
+}
+
+func (r *PostgresRepository) DeleteAgentRoutingRule(ctx context.Context, tenantID, ruleID string) error {
+	_, err := r.exec(ctx, `delete from agent_routing_rules where tenant_id=$1 and id=$2`, tenantID, ruleID)
+	return err
+}
+
+func (r *PostgresRepository) GetAgentRouteOverride(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID string) (string, error) {
+	var profileID string
+	err := r.queryRow(ctx, `
+		select agent_profile_id
+		from agent_route_overrides
+		where tenant_id=$1 and channel_type=$2 and surface_key=$3 and owner_user_id=$4
+	`, tenantID, channelType, surfaceKey, ownerUserID).Scan(&profileID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return profileID, err
+}
+
+func (r *PostgresRepository) SetAgentRouteOverride(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID, agentProfileID string) error {
+	id := "agent_route_override_" + hashText(strings.Join([]string{tenantID, channelType, surfaceKey, ownerUserID}, "|"))
+	_, err := r.exec(ctx, `
+		insert into agent_route_overrides (id, tenant_id, channel_type, surface_key, owner_user_id, agent_profile_id, created_at, updated_at)
+		values ($1,$2,$3,$4,$5,$6,now(),now())
+		on conflict (tenant_id, channel_type, surface_key, owner_user_id)
+		do update set agent_profile_id=excluded.agent_profile_id, updated_at=now()
+	`, id, tenantID, channelType, surfaceKey, ownerUserID, agentProfileID)
+	return err
+}
+
+func (r *PostgresRepository) ResetAgentRouteOverride(ctx context.Context, tenantID, channelType, surfaceKey, ownerUserID string) error {
+	_, err := r.exec(ctx, `
+		delete from agent_route_overrides
+		where tenant_id=$1 and channel_type=$2 and surface_key=$3 and owner_user_id=$4
+	`, tenantID, channelType, surfaceKey, ownerUserID)
+	return err
 }
 
 func (r *PostgresRepository) GetInboundMessage(ctx context.Context, messageID string) (domain.Message, error) {
@@ -1959,7 +2130,7 @@ func (r *PostgresRepository) ListRuns(ctx context.Context, query domain.RunListQ
 	}
 	args = append(args, limit+1)
 	rows, err := r.query(ctx, fmt.Sprintf(`
-		select r.id, r.session_id, r.agent_name, r.acp_run_id, r.status, r.started_at, r.last_event_at
+		select r.id, r.session_id, r.agent_name, r.acp_run_id, r.status, r.started_at, r.last_event_at, coalesce(r.acp_connection_id, '')
 		from runs r join sessions s on s.id = r.session_id
 		where %s order by r.started_at desc, r.id desc limit $%d
 	`, strings.Join(clauses, " and "), len(args)), args...)
@@ -1971,7 +2142,7 @@ func (r *PostgresRepository) ListRuns(ctx context.Context, query domain.RunListQ
 	var cursor []cursorValue
 	for rows.Next() {
 		var run domain.Run
-		if err := rows.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt); err != nil {
+		if err := rows.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt, &run.ACPConnectionID); err != nil {
 			return domain.PagedResult[domain.Run]{}, err
 		}
 		out = append(out, run)
@@ -2176,16 +2347,16 @@ func (r *PostgresRepository) CountAuditEvents(ctx context.Context, query domain.
 }
 
 func (r *PostgresRepository) GetRun(ctx context.Context, runID string) (domain.Run, error) {
-	row := r.queryRow(ctx, `select id, session_id, agent_name, acp_run_id, status, started_at, last_event_at from runs where id=$1`, runID)
+	row := r.queryRow(ctx, `select id, session_id, agent_name, acp_run_id, status, started_at, last_event_at, coalesce(acp_connection_id, '') from runs where id=$1`, runID)
 	var run domain.Run
-	err := row.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt)
+	err := row.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt, &run.ACPConnectionID)
 	return run, err
 }
 
 func (r *PostgresRepository) GetRunByACP(ctx context.Context, acpRunID string) (domain.Run, error) {
-	row := r.queryRow(ctx, `select id, session_id, agent_name, acp_run_id, status, started_at, last_event_at from runs where acp_run_id=$1`, acpRunID)
+	row := r.queryRow(ctx, `select id, session_id, agent_name, acp_run_id, status, started_at, last_event_at, coalesce(acp_connection_id, '') from runs where acp_run_id=$1`, acpRunID)
 	var run domain.Run
-	err := row.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt)
+	err := row.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt, &run.ACPConnectionID)
 	return run, err
 }
 
@@ -2430,7 +2601,7 @@ func (r *PostgresRepository) ListStuckQueueItems(ctx context.Context, before tim
 
 func (r *PostgresRepository) ListStaleRuns(ctx context.Context, before time.Time, limit int) ([]domain.Run, error) {
 	rows, err := r.query(ctx, `
-		select id, session_id, agent_name, acp_run_id, status, started_at, last_event_at
+		select id, session_id, agent_name, acp_run_id, status, started_at, last_event_at, coalesce(acp_connection_id, '')
 		from runs
 		where status in ('queued','starting','running','awaiting') and last_event_at < $1
 		order by last_event_at asc
@@ -2443,7 +2614,7 @@ func (r *PostgresRepository) ListStaleRuns(ctx context.Context, before time.Time
 	var out []domain.Run
 	for rows.Next() {
 		var run domain.Run
-		if err := rows.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt); err != nil {
+		if err := rows.Scan(&run.ID, &run.SessionID, &run.ACPAgentName, &run.ACPRunID, &run.Status, &run.StartedAt, &run.LastEventAt, &run.ACPConnectionID); err != nil {
 			return nil, err
 		}
 		out = append(out, run)
@@ -3662,6 +3833,13 @@ func nonZeroTime(ts time.Time) time.Time {
 
 func keyForSurface(evt domain.CanonicalInboundEvent) string {
 	return evt.Conversation.ChannelSurfaceKey
+}
+
+func scopedAgentSurfaceKey(surfaceKey, agentProfileID string) string {
+	if strings.TrimSpace(agentProfileID) == "" {
+		return surfaceKey
+	}
+	return surfaceKey + ":agent:" + agentProfileID
 }
 
 func nullableTime(ts time.Time) any {

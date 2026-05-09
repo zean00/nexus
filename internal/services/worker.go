@@ -141,9 +141,12 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	if err != nil {
 		return err
 	}
+	session.ACPConnectionID = route.ACPConnectionID
+	session.ACPAgentName = route.ACPAgentName
+	session.ACPProfileID = route.AgentProfileID
 	var currentCompat *domain.AgentCompatibility
 	if s.Catalog != nil {
-		compat, err := s.Catalog.Validate(ctx, route.ACPAgentName, false)
+		compat, err := s.Catalog.ValidateForRoute(ctx, route, false)
 		if err != nil {
 			return err
 		}
@@ -179,6 +182,8 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	if err != nil {
 		return err
 	}
+	run.ACPConnectionID = route.ACPConnectionID
+	run.ACPAgentName = route.ACPAgentName
 	tracex.Logger(ctx).Info("worker.run_started", "queue_item_id", queued.ID, "run_id", run.ID, "acp_run_id", run.ACPRunID)
 	if err := s.Repo.CreateRun(ctx, run); err != nil {
 		return err
@@ -374,8 +379,9 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 		return err
 	}
 	var currentCompat *domain.AgentCompatibility
+	var run domain.Run
 	if s.Catalog != nil {
-		run, err := s.Repo.GetRun(ctx, await.RunID)
+		run, err = s.Repo.GetRun(ctx, await.RunID)
 		if err != nil {
 			return err
 		}
@@ -383,7 +389,7 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 		// only enforce resume-time compatibility once the real agent name is
 		// available on the run record.
 		if name := strings.TrimSpace(run.ACPAgentName); name != "" && name != "default-agent" {
-			compat, err := s.Catalog.Validate(ctx, name, false)
+			compat, err := s.Catalog.ValidateForConnection(ctx, run.ACPConnectionID, name, false)
 			if err != nil {
 				return err
 			}
@@ -392,6 +398,14 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 			}
 			currentCompat = &compat
 		}
+	} else if run, err = s.Repo.GetRun(ctx, await.RunID); err != nil {
+		return err
+	}
+	session.ACPConnectionID = run.ACPConnectionID
+	session.ACPAgentName = run.ACPAgentName
+	session.ACPProfileID = session.AgentProfileID
+	if run.ACPConnectionID == "" {
+		session.ACPProfileID = ""
 	}
 	var runEvents domain.RunEventStream
 	if scoped, ok := s.ACP.(interface {

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -137,5 +139,78 @@ func TestLoadProductionRejectsDevWebhookSecrets(t *testing.T) {
 	_, err := Load()
 	if err == nil || !strings.Contains(err.Error(), "TELEGRAM_WEBHOOK_SECRET") {
 		t.Fatalf("expected TELEGRAM_WEBHOOK_SECRET error, got %v", err)
+	}
+}
+
+func TestLoadYAMLConfigFileWithEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nexus.yaml")
+	if err := os.WriteFile(path, []byte(`
+default_tenant_id: tenant_file
+database_url: postgres://file-db
+webchat_history_scope: linked_channels
+acp:
+  mode: multiple
+  connections:
+    - id: primary
+      implementation: strict
+      base_url: http://file-acp
+      enabled: true
+  agent_profiles:
+    - id: support
+      connection_id: primary
+      agent_name: support-agent
+routing:
+  default_agent_by_channel:
+    webchat: support
+  allowed_agents_by_channel:
+    webchat: [support]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS_CONFIG_PATH", path)
+	t.Setenv("DEFAULT_TENANT_ID", "tenant_env")
+	t.Setenv("DATABASE_URL", "postgres://env-db")
+	t.Setenv("WEBCHAT_HISTORY_SCOPE", "session")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultTenantID != "tenant_env" {
+		t.Fatalf("expected env override, got %q", cfg.DefaultTenantID)
+	}
+	if cfg.DatabaseURL != "postgres://env-db" || cfg.WebChatHistoryScope != "session" {
+		t.Fatalf("expected env-backed fields to override file, got db=%q scope=%q", cfg.DatabaseURL, cfg.WebChatHistoryScope)
+	}
+	if cfg.ACPMode != "multiple" || len(cfg.ACPConnections) != 1 || cfg.ACPConnections[0].BaseURL != "http://file-acp" {
+		t.Fatalf("unexpected acp config: %+v", cfg)
+	}
+	if cfg.AgentRouting.DefaultAgentByChannel["webchat"] != "support" {
+		t.Fatalf("expected webchat default route, got %+v", cfg.AgentRouting.DefaultAgentByChannel)
+	}
+}
+
+func TestLoadJSONConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nexus.json")
+	if err := os.WriteFile(path, []byte(`{
+		"acp": {
+			"mode": "multiple",
+			"connections": [{"id":"primary","implementation":"strict","base_url":"http://acp","enabled":true}],
+			"agent_profiles": [{"id":"support","connection_id":"primary","agent_name":"support-agent"}]
+		},
+		"routing": {"default_agent_by_channel": {"webchat":"support","telegram":"support"}}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS_CONFIG_PATH", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ACPMode != "multiple" || cfg.AgentRouting.DefaultAgentByChannel["telegram"] != "support" {
+		t.Fatalf("unexpected json config: %+v", cfg)
 	}
 }

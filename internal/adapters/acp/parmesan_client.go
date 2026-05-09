@@ -20,6 +20,7 @@ type ParmesanClient struct {
 	HTTP        *http.Client
 	WaitTimeout time.Duration
 	PollEvery   time.Duration
+	Headers     map[string]string
 }
 
 type parmesanAgentProfile struct {
@@ -655,6 +656,11 @@ func (c ParmesanClient) newRequest(ctx context.Context, method, path string, que
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	for key, value := range c.Headers {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			req.Header.Set(key, value)
+		}
 	}
 	return req, nil
 }

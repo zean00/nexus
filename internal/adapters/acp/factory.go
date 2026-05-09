@@ -18,6 +18,7 @@ type BridgeConfig struct {
 	DefaultAgentName string
 	StartupTimeout   time.Duration
 	RPCTimeout       time.Duration
+	Headers          map[string]string
 }
 
 func NewBridge(cfg BridgeConfig) ports.ACPBridge {
@@ -33,10 +34,16 @@ func NewBridge(cfg BridgeConfig) ports.ACPBridge {
 			RPCTimeout:       cfg.RPCTimeout,
 		})
 	case "parmesan":
-		return NewParmesanClient(cfg.BaseURL, cfg.Token, cfg.RPCTimeout)
+		client := NewParmesanClient(cfg.BaseURL, cfg.Token, cfg.RPCTimeout)
+		client.Headers = cfg.Headers
+		return client
 	case "strict", "acp", "native":
-		return NewStrictClient(cfg.BaseURL, cfg.Token)
+		client := NewStrictClient(cfg.BaseURL, cfg.Token)
+		client.Headers = cfg.Headers
+		return client
 	default:
-		return New(cfg.BaseURL, cfg.Token)
+		client := New(cfg.BaseURL, cfg.Token)
+		client.Headers = cfg.Headers
+		return client
 	}
 }

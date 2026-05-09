@@ -108,7 +108,7 @@ func newChatComponent(client chatClient) *chatComponent {
 		tui.WithInputAutoFocus(true),
 		tui.WithInputBorder(tui.BorderRounded),
 		tui.WithInputFocusColor(tui.Cyan),
-		tui.WithInputPlaceholder("Message Nexus. /new starts a chat, /respond <await_id> <reply> answers an await."),
+		tui.WithInputPlaceholder("Message Nexus. /agent lists agents, /new starts a chat, /respond <await_id> <reply> answers an await."),
 		tui.WithInputOnSubmit(c.submit),
 	)
 	return c
