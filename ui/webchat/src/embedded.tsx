@@ -19,6 +19,8 @@ if (rootElement) {
       <WebChat
         baseUrl={config.baseUrl}
         interactionVisibility={config.interactionVisibility}
+        title={config.title}
+        subtitle={config.subtitle}
         labels={config.labels}
         theme={config.theme}
         features={config.features}

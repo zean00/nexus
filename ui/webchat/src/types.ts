@@ -119,6 +119,8 @@ export interface WebChatFeatures {
 export interface EmbeddedWebChatConfig {
   baseUrl?: string;
   interactionVisibility?: WebChatInteractionVisibility;
+  title?: string;
+  subtitle?: string;
   labels?: WebChatLabels;
   theme?: WebChatTheme;
   features?: WebChatFeatures;

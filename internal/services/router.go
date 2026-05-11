@@ -21,6 +21,7 @@ type PolicyRouter struct {
 	DefaultAgentByChannel  map[string]string
 	AllowedAgentsByChannel map[string][]string
 	FileRules              []domain.AgentRoutingRule
+	WebChatAgentByIdentity map[string]string
 	FallbackPolicy         domain.TrustPolicy
 }
 
@@ -40,6 +41,7 @@ func NewPolicyRouter(repo ports.Repository, cfg config.Config) PolicyRouter {
 		AgentProfiles:          map[string]domain.AgentProfile{},
 		DefaultAgentByChannel:  cloneStringMap(cfg.AgentRouting.DefaultAgentByChannel),
 		AllowedAgentsByChannel: cloneStringSliceMap(cfg.AgentRouting.AllowedAgentsByChannel),
+		WebChatAgentByIdentity: map[string]string{},
 		FallbackPolicy: domain.TrustPolicy{
 			TenantID:                          cfg.DefaultTenantID,
 			AgentProfileID:                    cfg.DefaultAgentProfileID,
@@ -79,6 +81,9 @@ func NewPolicyRouter(repo ports.Repository, cfg config.Config) PolicyRouter {
 			Match:          rule.Match,
 			AgentProfileID: rule.AgentProfileID,
 		})
+	}
+	for _, identity := range cfg.WebChatIdentities {
+		router.WebChatAgentByIdentity[identity.ID] = identity.AgentProfileID
 	}
 	sort.SliceStable(router.FileRules, func(i, j int) bool { return router.FileRules[i].Priority < router.FileRules[j].Priority })
 	return router
@@ -146,6 +151,14 @@ func (r PolicyRouter) resolveAgentProfile(ctx context.Context, evt domain.Canoni
 		}
 		return profileID, "file_rule", nil
 	}
+	if strings.EqualFold(evt.Channel, "webchat") && strings.TrimSpace(evt.Metadata.WebChatIdentityID) != "" {
+		if profileID := r.WebChatAgentByIdentity[evt.Metadata.WebChatIdentityID]; profileID != "" {
+			if err := r.ensureAllowed(evt.Channel, profileID); err != nil {
+				return "", "", err
+			}
+			return profileID, "webchat_identity", nil
+		}
+	}
 	profileID := r.DefaultAgentByChannel[strings.ToLower(strings.TrimSpace(evt.Channel))]
 	if profileID == "" {
 		profileID = r.DefaultAgentProfileID
@@ -199,6 +212,8 @@ func ruleMatches(evt domain.CanonicalInboundEvent, match map[string]any) bool {
 			got = evt.Channel
 		case "surface_key":
 			got = evt.Conversation.ChannelSurfaceKey
+		case "webchat_identity", "webchat_identity_id":
+			got = evt.Metadata.WebChatIdentityID
 		case "account_key", "provider_account_id":
 			got = evt.Metadata.AccountKey
 		case "owner_user_id", "channel_user_id":

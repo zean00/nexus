@@ -123,13 +123,27 @@ routing:
         channel: whatsapp
         channel_user_id: "628123456789"
       agent_profile_id: finance
+webchat:
+  identities:
+    - id: support
+      path: support
+      agent_profile_id: support
+      title: Support
+      subtitle: Talk to support
+      allow_agent_switch: false
+    - id: product
+      path: product
+      agent_profile_id: finance
+      title: Product Inquiry
+      subtitle: Ask about products
+      allow_agent_switch: false
 ```
 
-Routing precedence in multiple mode is: active `/agent` surface override, DB-backed rule, file rule, then channel default. DB-backed rules are managed through `/admin/agents/routes`; `/admin/agents/effective` reports the selected override/default for a surface.
+Routing precedence in multiple mode is: active `/agent` surface override, DB-backed rule, file rule, dedicated webchat identity default, then channel default. DB-backed rules are managed through `/admin/agents/routes`; `/admin/agents/effective` reports the selected override/default for a surface.
 
 Connection-level headers and `path_prefix` are applied to every request for that connection. Profile-level headers override connection headers with the same key, and profile-level `path_prefix` is appended after the connection prefix. Manifest validation, run start, run refresh, and await resume use the selected connection/profile bridge, so an agent profile may exist only on its configured backend.
 
-The `/agent` command is available on Telegram, webchat, Slack, official WhatsApp, WhatsApp Web, and the CLI through webchat. `/agent` lists available profiles for the current channel; `/agent <agent_profile_id>` switches the active profile for that surface. Email does not support `/agent`.
+The `/agent` command is available on Telegram, default webchat, Slack, official WhatsApp, WhatsApp Web, and the CLI through webchat. `/agent` lists available profiles for the current channel; `/agent <agent_profile_id>` switches the active profile for that surface. Email does not support `/agent`. Dedicated webchat identities disable `/agent` by default; set `allow_agent_switch: true` on that identity to expose switching.
 
 In single mode `/sessions` and `/switch` keep their existing behavior. In multiple mode those commands only list and switch sessions scoped to the currently active agent profile for that channel/surface.
 
@@ -296,11 +310,35 @@ Supported values:
 
 In `user` and `linked_channels` modes, external-channel items are read-only inside webchat. Sending from webchat still writes to the active webchat session only, while inbound messages and agent responses from linked external sessions can refresh the webchat SSE timeline.
 
+### Dedicated Webchat Identities
+
+`webchat.identities` exposes dedicated webchat URLs under `/webchat/{path}` while keeping one Nexus instance and one webchat UI bundle. Each identity has its own stable surface per authenticated user, so `/webchat/support` and `/webchat/product` keep separate sessions and history even when the same email signs in to both.
+
+Each identity requires:
+
+- `id`: stable routing identity, also available to rules as `webchat_identity`
+- `path`: single URL segment under `/webchat`
+- `agent_profile_id`: default profile for messages sent from that identity
+
+Optional `title`, `subtitle`, `labels`, `theme`, and `features` are passed to the embedded webchat UI. Reserved paths such as `messages`, `history`, `events`, `auth`, `app.js`, and `app.css` are rejected.
+
+Routing rules can target all users of a dedicated webchat identity:
+
+```json
+{
+  "id": "product-webchat-to-sales",
+  "priority": 10,
+  "enabled": true,
+  "match": {"channel": "webchat", "webchat_identity": "product"},
+  "agent_profile_id": "sales"
+}
+```
+
 ### Trusted Webchat Session Provisioning
 
 Trusted admin callers can provision a webchat auth session with `POST /admin/webchat/sessions`. The endpoint is protected by the admin API bearer token when `ADMIN_BEARER_TOKEN` is configured.
 
-The request accepts an `email`, optional `session_id`, and optional `linked_channel_type` / `linked_channel_user_id`. It creates or refreshes the webchat auth session, ensures the Nexus user exists, links the email/webchat identities, and can link a trusted external channel identity. Reusing a `session_id` clears any previous CSRF hash so a caller must bootstrap the webchat session before making CSRF-protected requests.
+The request accepts an `email`, optional `session_id`, optional `webchat_identity_id`, and optional `linked_channel_type` / `linked_channel_user_id`. It creates or refreshes the webchat auth session, ensures the Nexus user exists, links the email/webchat identities, and can link a trusted external channel identity. Reusing a `session_id` clears any previous CSRF hash so a caller must bootstrap the webchat session before making CSRF-protected requests.
 
 ### `WEBCHAT_DEV_AUTH`
 

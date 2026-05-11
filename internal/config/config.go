@@ -74,6 +74,7 @@ type Config struct {
 	WebChatDevAuth                        bool
 	WebChatInteractionVisibility          string
 	WebChatHistoryScope                   string
+	WebChatIdentities                     []WebChatIdentityConfig
 	WebChatSessionHours                   int
 	WebChatOTPMinutes                     int
 	WebPushEnabled                        bool
@@ -160,6 +161,18 @@ type AgentRoutingRuleConfig struct {
 	Enabled        *bool          `json:"enabled" yaml:"enabled"`
 	Match          map[string]any `json:"match" yaml:"match"`
 	AgentProfileID string         `json:"agent_profile_id" yaml:"agent_profile_id"`
+}
+
+type WebChatIdentityConfig struct {
+	ID               string         `json:"id" yaml:"id"`
+	Path             string         `json:"path" yaml:"path"`
+	AgentProfileID   string         `json:"agent_profile_id" yaml:"agent_profile_id"`
+	Title            string         `json:"title" yaml:"title"`
+	Subtitle         string         `json:"subtitle" yaml:"subtitle"`
+	AllowAgentSwitch *bool          `json:"allow_agent_switch" yaml:"allow_agent_switch"`
+	Labels           map[string]any `json:"labels" yaml:"labels"`
+	Theme            map[string]any `json:"theme" yaml:"theme"`
+	Features         map[string]any `json:"features" yaml:"features"`
 }
 
 func Load() (Config, error) {
@@ -423,6 +436,9 @@ func Load() (Config, error) {
 	if err := validateACPConfig(cfg); err != nil {
 		return Config{}, err
 	}
+	if err := validateWebChatIdentities(cfg); err != nil {
+		return Config{}, err
+	}
 	if err := validateProductionConfig(cfg); err != nil {
 		return Config{}, err
 	}
@@ -449,8 +465,15 @@ type fileConfig struct {
 	DefaultAgentProfileID        string             `json:"default_agent_profile_id" yaml:"default_agent_profile_id"`
 	ACP                          fileACPConfig      `json:"acp" yaml:"acp"`
 	Routing                      AgentRoutingConfig `json:"routing" yaml:"routing"`
+	WebChat                      fileWebChatConfig  `json:"webchat" yaml:"webchat"`
 	WebChatHistoryScope          string             `json:"webchat_history_scope" yaml:"webchat_history_scope"`
 	WebChatInteractionVisibility string             `json:"webchat_interaction_visibility" yaml:"webchat_interaction_visibility"`
+}
+
+type fileWebChatConfig struct {
+	HistoryScope          string                  `json:"history_scope" yaml:"history_scope"`
+	InteractionVisibility string                  `json:"interaction_visibility" yaml:"interaction_visibility"`
+	Identities            []WebChatIdentityConfig `json:"identities" yaml:"identities"`
 }
 
 type fileACPConfig struct {
@@ -514,6 +537,15 @@ func mergeFileConfig(cfg *Config, file fileConfig) {
 	}
 	if file.WebChatInteractionVisibility != "" {
 		cfg.WebChatInteractionVisibility = file.WebChatInteractionVisibility
+	}
+	if file.WebChat.HistoryScope != "" {
+		cfg.WebChatHistoryScope = file.WebChat.HistoryScope
+	}
+	if file.WebChat.InteractionVisibility != "" {
+		cfg.WebChatInteractionVisibility = file.WebChat.InteractionVisibility
+	}
+	if len(file.WebChat.Identities) > 0 {
+		cfg.WebChatIdentities = append([]WebChatIdentityConfig(nil), file.WebChat.Identities...)
 	}
 	if file.ACP.Mode != "" {
 		cfg.ACPMode = file.ACP.Mode
@@ -676,6 +708,11 @@ func normalizeACPConfig(cfg *Config) {
 		cfg.ACPAgentProfiles[i].AgentName = strings.TrimSpace(cfg.ACPAgentProfiles[i].AgentName)
 		cfg.ACPAgentProfiles[i].PathPrefix = strings.Trim(cfg.ACPAgentProfiles[i].PathPrefix, "/")
 	}
+	for i := range cfg.WebChatIdentities {
+		cfg.WebChatIdentities[i].ID = strings.TrimSpace(cfg.WebChatIdentities[i].ID)
+		cfg.WebChatIdentities[i].Path = strings.Trim(strings.TrimSpace(cfg.WebChatIdentities[i].Path), "/")
+		cfg.WebChatIdentities[i].AgentProfileID = strings.TrimSpace(cfg.WebChatIdentities[i].AgentProfileID)
+	}
 }
 
 func validateACPConfig(cfg Config) error {
@@ -736,6 +773,49 @@ func validateACPConfig(cfg Config) error {
 	for _, channel := range enabledRoutingChannels(cfg) {
 		if cfg.AgentRouting.DefaultAgentByChannel[strings.ToLower(channel)] == "" {
 			return fmt.Errorf("multiple ACP mode requires routing.default_agent_by_channel[%s]", channel)
+		}
+	}
+	return nil
+}
+
+func validateWebChatIdentities(cfg Config) error {
+	if len(cfg.WebChatIdentities) == 0 {
+		return nil
+	}
+	profiles := map[string]bool{}
+	for _, profile := range cfg.ACPAgentProfiles {
+		profiles[profile.ID] = true
+	}
+	seenIDs := map[string]bool{}
+	seenPaths := map[string]bool{}
+	reserved := map[string]bool{
+		"app.css": true, "app.js": true, "artifacts": true, "auth": true, "awaits": true,
+		"bootstrap": true, "chats": true, "dev": true, "events": true, "history": true,
+		"identity": true, "messages": true, "step-up": true,
+	}
+	for _, identity := range cfg.WebChatIdentities {
+		id := strings.TrimSpace(identity.ID)
+		path := strings.Trim(strings.TrimSpace(identity.Path), "/")
+		if id == "" || path == "" || strings.TrimSpace(identity.AgentProfileID) == "" {
+			return fmt.Errorf("webchat.identities require id, path, and agent_profile_id")
+		}
+		if strings.Contains(path, "/") {
+			return fmt.Errorf("webchat identity %q path must be a single path segment", id)
+		}
+		key := strings.ToLower(path)
+		if reserved[key] {
+			return fmt.Errorf("webchat identity %q uses reserved path %q", id, path)
+		}
+		if seenIDs[id] {
+			return fmt.Errorf("duplicate webchat identity id %q", id)
+		}
+		if seenPaths[key] {
+			return fmt.Errorf("duplicate webchat identity path %q", path)
+		}
+		seenIDs[id] = true
+		seenPaths[key] = true
+		if strings.EqualFold(cfg.ACPMode, "multiple") && !profiles[identity.AgentProfileID] {
+			return fmt.Errorf("webchat identity %q references missing profile %q", id, identity.AgentProfileID)
 		}
 	}
 	return nil

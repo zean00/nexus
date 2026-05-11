@@ -31,6 +31,8 @@ type webChatArtifactRepository interface {
 	GetArtifactForSession(ctx context.Context, tenantID, sessionID, artifactID string) (domain.Artifact, error)
 }
 
+type webChatIdentityContextKey struct{}
+
 var webChatPageTemplate = template.Must(template.New("webchat-page").Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -46,22 +48,40 @@ var webChatPageTemplate = template.Must(template.New("webchat-page").Parse(`<!do
 </body>
 </html>`))
 
-func (a *App) handleWebChatIndex(w http.ResponseWriter, _ *http.Request) {
+func (a *App) handleWebChatIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	configJSON, _ := json.Marshal(map[string]any{
-		"baseUrl":               "/webchat",
-		"interactionVisibility": a.webChatInteractionVisibilityMode(),
-		"features": map[string]bool{
-			"auth":    true,
-			"uploads": true,
-			"newChat": true,
-			"logout":  true,
-			"sse":     true,
-		},
-	})
+	configJSON, _ := json.Marshal(a.webChatPageConfig(r))
 	_ = webChatPageTemplate.Execute(w, map[string]any{
 		"Config": template.JS(string(configJSON)),
 	})
+}
+
+func (a *App) webChatPageConfig(r *http.Request) map[string]any {
+	features := map[string]bool{"auth": true, "uploads": true, "newChat": true, "logout": true, "sse": true}
+	out := map[string]any{
+		"baseUrl":               "/webchat",
+		"interactionVisibility": a.webChatInteractionVisibilityMode(),
+		"features":              features,
+	}
+	if identity := webChatIdentityFromRequest(r); identity != nil {
+		out["baseUrl"] = "/webchat/" + strings.Trim(identity.Path, "/")
+		if identity.Title != "" {
+			out["title"] = identity.Title
+		}
+		if identity.Subtitle != "" {
+			out["subtitle"] = identity.Subtitle
+		}
+		if len(identity.Labels) > 0 {
+			out["labels"] = identity.Labels
+		}
+		if len(identity.Theme) > 0 {
+			out["theme"] = identity.Theme
+		}
+		if len(identity.Features) > 0 {
+			out["features"] = identity.Features
+		}
+	}
+	return out
 }
 
 func (a *App) handleWebChatJS(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +90,96 @@ func (a *App) handleWebChatJS(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleWebChatCSS(w http.ResponseWriter, r *http.Request) {
 	a.serveWebChatAsset(w, r, "app.css", "text/css; charset=utf-8")
+}
+
+func (a *App) handleWebChatScoped(w http.ResponseWriter, r *http.Request) {
+	identity, rest, ok := a.webChatIdentityForPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	r = r.WithContext(context.WithValue(r.Context(), webChatIdentityContextKey{}, identity))
+	switch rest {
+	case "", "/":
+		a.handleWebChatIndex(w, r)
+	case "/bootstrap":
+		a.handleWebChatBootstrap(w, r)
+	case "/history":
+		a.handleWebChatHistory(w, r)
+	case "/events":
+		a.handleWebChatEvents(w, r)
+	case "/messages":
+		a.handleWebChatMessage(w, r)
+	case "/awaits/respond":
+		a.handleWebChatAwaitRespond(w, r)
+	case "/chats/new":
+		a.handleWebChatNewChat(w, r)
+	case "/chats/close":
+		a.handleWebChatCloseChat(w, r)
+	case "/identity/profile":
+		a.handleWebChatIdentityProfile(w, r)
+	case "/identity/phone":
+		a.handleWebChatIdentityPhone(w, r)
+	case "/identity/phone/delete":
+		a.handleWebChatIdentityPhoneDelete(w, r)
+	case "/identity/links":
+		a.handleWebChatIdentityLinks(w, r)
+	case "/identity/link-code":
+		a.handleWebChatIdentityLinkCode(w, r)
+	case "/identity/unlink":
+		a.handleWebChatIdentityUnlink(w, r)
+	case "/step-up/request":
+		a.handleWebChatStepUpRequest(w, r)
+	case "/step-up/verify":
+		a.handleWebChatStepUpVerify(w, r)
+	case "/auth/request":
+		a.handleWebChatAuthRequest(w, r)
+	case "/auth/verify":
+		a.handleWebChatAuthVerify(w, r)
+	case "/auth/callback":
+		a.handleWebChatAuthCallback(w, r)
+	case "/auth/logout":
+		a.handleWebChatAuthLogout(w, r)
+	case "/dev/session":
+		a.handleWebChatDevSession(w, r)
+	default:
+		if strings.HasPrefix(rest, "/artifacts/") {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/webchat/artifacts/" + strings.TrimPrefix(rest, "/artifacts/")
+			a.handleWebChatArtifact(w, r2)
+			return
+		}
+		http.NotFound(w, r)
+	}
+}
+
+func (a *App) webChatIdentityForPath(path string) (*config.WebChatIdentityConfig, string, bool) {
+	rest := strings.TrimPrefix(path, "/webchat/")
+	segment, suffix, _ := strings.Cut(rest, "/")
+	for i := range a.Config.WebChatIdentities {
+		identity := &a.Config.WebChatIdentities[i]
+		if strings.EqualFold(strings.Trim(identity.Path, "/"), segment) {
+			if suffix != "" {
+				suffix = "/" + suffix
+			}
+			return identity, suffix, true
+		}
+	}
+	return nil, "", false
+}
+
+func (a *App) webChatIdentityByID(id string) (*config.WebChatIdentityConfig, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil
+	}
+	for i := range a.Config.WebChatIdentities {
+		identity := &a.Config.WebChatIdentities[i]
+		if identity.ID == id {
+			return identity, nil
+		}
+	}
+	return nil, fmt.Errorf("webchat identity %q is not configured", id)
 }
 
 func (a *App) serveWebChatAsset(w http.ResponseWriter, _ *http.Request, name, contentType string) {
@@ -122,7 +232,7 @@ func (a *App) handleWebChatAuthRequest(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	link := absoluteURL(r, "/webchat/auth/callback?token="+linkToken)
+	link := absoluteURL(r, webChatBasePath(r)+"/auth/callback?token="+linkToken)
 	text := fmt.Sprintf("Your Nexus verification code is %s.\n\nOr open this link:\n%s", otp, link)
 	if _, err := a.Email.SendMail(r.Context(), email, "Your Nexus sign-in code", text, ""); err != nil {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
@@ -267,7 +377,7 @@ func (a *App) handleWebChatAuthCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	setWebChatCookie(w, r, a.Config.WebChatCookieName, authSession.ID, authSession.ExpiresAt)
-	http.Redirect(w, r, "/webchat", http.StatusSeeOther)
+	http.Redirect(w, r, webChatBasePath(r), http.StatusSeeOther)
 }
 
 func (a *App) handleWebChatAuthLogout(w http.ResponseWriter, r *http.Request) {
@@ -432,7 +542,7 @@ func (a *App) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	var notifyCh chan struct{}
 	if a.WebChatHub != nil && session.ID != "" {
-		if a.webChatHistoryScope() == "session" {
+		if webChatIdentityFromRequest(r) != nil || a.webChatHistoryScope() == "session" {
 			notifyCh = a.WebChatHub.Subscribe(session.ID)
 			defer a.WebChatHub.Unsubscribe(session.ID, notifyCh)
 		} else {
@@ -516,7 +626,13 @@ func (a *App) handleWebChatMessage(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "missing message body")
 		return
 	}
-	evt := buildWebChatMessageEvent(a.Config.DefaultTenantID, authSession, text, artifacts, replyTo)
+	identity := webChatIdentityFromRequest(r)
+	surfaceKey, ownerUserID, err := a.webChatSurface(r.Context(), authSession, identity)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	evt := buildWebChatMessageEvent(a.Config.DefaultTenantID, authSession, identity, surfaceKey, ownerUserID, text, artifacts, replyTo)
 	result, err := a.Inbound.Handle(r.Context(), evt)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -550,6 +666,12 @@ func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	payload, _ := json.Marshal(map[string]string{"reply": body.Reply})
+	identity := webChatIdentityFromRequest(r)
+	surfaceKey, ownerUserID, err := a.webChatSurface(r.Context(), authSession, identity)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	evt := domain.CanonicalInboundEvent{
 		TenantID: a.Config.DefaultTenantID,
 		Channel:  "webchat",
@@ -574,16 +696,16 @@ func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) 
 		ProviderEventID: "webchat_await_" + randomToken(4),
 		ReceivedAt:      time.Now().UTC(),
 		Sender: domain.Sender{
-			ChannelUserID:       authSession.Email,
+			ChannelUserID:       ownerUserID,
 			DisplayName:         authSession.Email,
 			IsAuthenticated:     true,
 			IdentityAssurance:   "first_party_session",
-			AllowedResponderIDs: []string{authSession.Email},
+			AllowedResponderIDs: []string{ownerUserID, authSession.Email},
 		},
 		Conversation: domain.Conversation{
 			ChannelConversationID: authSession.Email,
-			ChannelThreadID:       authSession.ID,
-			ChannelSurfaceKey:     authSession.ID,
+			ChannelThreadID:       surfaceKey,
+			ChannelSurfaceKey:     surfaceKey,
 		},
 		Message: domain.Message{
 			MessageID:   "webchat_await_msg_" + randomToken(6),
@@ -592,9 +714,10 @@ func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) 
 			Parts:       []domain.Part{{ContentType: "application/json", Content: string(payload)}},
 		},
 		Metadata: domain.Metadata{
-			AwaitID:       body.AwaitID,
-			ResumePayload: payload,
-			ActorUserID:   evt.Metadata.ActorUserID,
+			AwaitID:           body.AwaitID,
+			ResumePayload:     payload,
+			ActorUserID:       evt.Metadata.ActorUserID,
+			WebChatIdentityID: webChatIdentityID(identity),
 		},
 	}
 	err = a.Await.HandleResponse(r.Context(), evt)
@@ -994,7 +1117,13 @@ func (a *App) handleWebChatNewChat(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusForbidden, err.Error())
 		return
 	}
-	session, err := a.Repo.CreateVirtualSession(r.Context(), a.Config.DefaultTenantID, "webchat", authSession.ID, authSession.Email, a.Config.DefaultAgentProfileID, "")
+	identity := webChatIdentityFromRequest(r)
+	surfaceKey, ownerUserID, err := a.webChatSurface(r.Context(), authSession, identity)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	session, err := a.Repo.CreateVirtualSession(r.Context(), a.Config.DefaultTenantID, "webchat", surfaceKey, ownerUserID, a.webChatAgentProfileID(identity), "")
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1016,7 +1145,13 @@ func (a *App) handleWebChatCloseChat(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusForbidden, err.Error())
 		return
 	}
-	session, err := a.Repo.CloseActiveSession(r.Context(), a.Config.DefaultTenantID, "webchat", authSession.ID, authSession.Email)
+	identity := webChatIdentityFromRequest(r)
+	surfaceKey, ownerUserID, err := a.webChatSurface(r.Context(), authSession, identity)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	session, err := a.Repo.CloseActiveSession(r.Context(), a.Config.DefaultTenantID, "webchat", surfaceKey, ownerUserID)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1090,21 +1225,76 @@ func (a *App) currentWebChatSession(r *http.Request) (domain.WebAuthSession, err
 }
 
 func (a *App) resolveWebChatSession(ctx context.Context, authSession domain.WebAuthSession) (domain.Session, error) {
+	identity := webChatIdentityFromContext(ctx)
+	surfaceKey, ownerUserID, err := a.webChatSurface(ctx, authSession, identity)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	agentProfileID := a.webChatAgentProfileID(identity)
 	session, _, err := a.Repo.ResolveSession(ctx, domain.CanonicalInboundEvent{
 		EventID:  "webchat_bootstrap_" + authSession.ID,
 		TenantID: a.Config.DefaultTenantID,
 		Channel:  "webchat",
 		Sender: domain.Sender{
-			ChannelUserID: authSession.Email,
+			ChannelUserID: ownerUserID,
 			DisplayName:   authSession.Email,
 		},
 		Conversation: domain.Conversation{
 			ChannelConversationID: authSession.Email,
-			ChannelThreadID:       authSession.ID,
-			ChannelSurfaceKey:     authSession.ID,
+			ChannelThreadID:       surfaceKey,
+			ChannelSurfaceKey:     surfaceKey,
 		},
-	}, a.Config.DefaultAgentProfileID)
+		Metadata: domain.Metadata{WebChatIdentityID: webChatIdentityID(identity)},
+	}, agentProfileID)
 	return session, err
+}
+
+func webChatIdentityFromRequest(r *http.Request) *config.WebChatIdentityConfig {
+	return webChatIdentityFromContext(r.Context())
+}
+
+func webChatIdentityFromContext(ctx context.Context) *config.WebChatIdentityConfig {
+	identity, _ := ctx.Value(webChatIdentityContextKey{}).(*config.WebChatIdentityConfig)
+	return identity
+}
+
+func webChatIdentityID(identity *config.WebChatIdentityConfig) string {
+	if identity == nil {
+		return ""
+	}
+	return strings.TrimSpace(identity.ID)
+}
+
+func webChatBasePath(r *http.Request) string {
+	if identity := webChatIdentityFromRequest(r); identity != nil {
+		return "/webchat/" + strings.Trim(identity.Path, "/")
+	}
+	return "/webchat"
+}
+
+func (a *App) webChatAgentProfileID(identity *config.WebChatIdentityConfig) string {
+	if identity != nil && strings.TrimSpace(identity.AgentProfileID) != "" {
+		return strings.TrimSpace(identity.AgentProfileID)
+	}
+	return a.Config.DefaultAgentProfileID
+}
+
+func (a *App) webChatSurface(ctx context.Context, authSession domain.WebAuthSession, identity *config.WebChatIdentityConfig) (string, string, error) {
+	if identity == nil {
+		return authSession.ID, authSession.Email, nil
+	}
+	userID := ""
+	if a.Identity != nil {
+		user, err := a.Identity.EnsureUserByEmail(ctx, a.Config.DefaultTenantID, authSession.Email)
+		if err != nil {
+			return "", "", err
+		}
+		userID = user.ID
+	}
+	if strings.TrimSpace(userID) == "" {
+		userID = "user_" + sha256Hex(strings.ToLower(strings.TrimSpace(authSession.Email)))[:24]
+	}
+	return "webchat:" + strings.TrimSpace(identity.ID) + ":" + userID, userID, nil
 }
 
 func (a *App) issueWebChatCSRF(ctx context.Context, sessionID string) (string, error) {
@@ -1157,7 +1347,7 @@ func (a *App) loadWebChatState(ctx context.Context, authSession domain.WebAuthSe
 	if err != nil {
 		return domain.Session{}, nil, err
 	}
-	if a.webChatHistoryScope() == "session" {
+	if webChatIdentityFromContext(ctx) != nil || a.webChatHistoryScope() == "session" {
 		detail, err := a.Repo.GetSessionDetail(ctx, session.ID, limit)
 		if err != nil {
 			return domain.Session{}, nil, err
@@ -1558,7 +1748,7 @@ func webChatActivityTime(run domain.Run) time.Time {
 	return run.StartedAt
 }
 
-func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession, text string, artifacts []domain.Artifact, replyTo map[string]any) domain.CanonicalInboundEvent {
+func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession, identity *config.WebChatIdentityConfig, surfaceKey, ownerUserID, text string, artifacts []domain.Artifact, replyTo map[string]any) domain.CanonicalInboundEvent {
 	eventID := "webchat_evt_" + randomToken(8)
 	messageType := "text"
 	switch {
@@ -1572,8 +1762,9 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 		parts = append(parts, domain.Part{ContentType: "text/plain", Content: text})
 	}
 	raw := map[string]any{
-		"event_id": eventID,
-		"text":     text,
+		"event_id":            eventID,
+		"text":                text,
+		"webchat_identity_id": webChatIdentityID(identity),
 		"artifacts": func() []map[string]any {
 			out := make([]map[string]any, 0, len(artifacts))
 			for _, artifact := range artifacts {
@@ -1600,16 +1791,16 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 		ProviderEventID: eventID,
 		ReceivedAt:      time.Now().UTC(),
 		Sender: domain.Sender{
-			ChannelUserID:       authSession.Email,
+			ChannelUserID:       ownerUserID,
 			DisplayName:         authSession.Email,
 			IsAuthenticated:     true,
 			IdentityAssurance:   "first_party_session",
-			AllowedResponderIDs: []string{authSession.Email},
+			AllowedResponderIDs: []string{ownerUserID, authSession.Email},
 		},
 		Conversation: domain.Conversation{
 			ChannelConversationID: authSession.Email,
-			ChannelThreadID:       authSession.ID,
-			ChannelSurfaceKey:     authSession.ID,
+			ChannelThreadID:       surfaceKey,
+			ChannelSurfaceKey:     surfaceKey,
 		},
 		Message: domain.Message{
 			MessageID:   eventID + "_msg",
@@ -1619,23 +1810,43 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 			Artifacts:   artifacts,
 		},
 		Metadata: domain.Metadata{
-			Command:       webChatCommandFromText(text),
-			ArtifactTrust: "first-party-webchat",
+			Command:           webChatCommandFromText(text, identity),
+			ArtifactTrust:     "first-party-webchat",
+			WebChatIdentityID: webChatIdentityID(identity),
+			DisabledCommands:  webChatDisabledCommands(identity),
 			ResponderBinding: domain.ResponderBinding{
 				Mode:                  "same-user-only",
-				AllowedChannelUserIDs: []string{authSession.Email},
+				AllowedChannelUserIDs: []string{ownerUserID, authSession.Email},
 			},
 			RawPayload: rawPayload,
 		},
 	}
 }
 
-func webChatCommandFromText(text string) string {
+func webChatCommandFromText(text string, identity *config.WebChatIdentityConfig) string {
 	fields := strings.Fields(strings.TrimSpace(text))
 	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
 		return ""
 	}
-	return strings.ToLower(fields[0])
+	command := strings.ToLower(fields[0])
+	if command == "/agent" && !webChatAllowAgentSwitch(identity) {
+		return ""
+	}
+	return command
+}
+
+func webChatAllowAgentSwitch(identity *config.WebChatIdentityConfig) bool {
+	if identity == nil {
+		return true
+	}
+	return identity.AllowAgentSwitch != nil && *identity.AllowAgentSwitch
+}
+
+func webChatDisabledCommands(identity *config.WebChatIdentityConfig) []string {
+	if webChatAllowAgentSwitch(identity) {
+		return nil
+	}
+	return []string{"/agent"}
 }
 
 func parseWebChatReplyTo(r *http.Request) map[string]any {

@@ -62,15 +62,17 @@ type Artifact struct {
 }
 
 type Metadata struct {
-	MentionsBot      bool
-	Command          string
-	AccountKey       string
-	ArtifactTrust    string
-	ResponderBinding ResponderBinding
-	RawPayload       []byte
-	AwaitID          string
-	ResumePayload    []byte
-	ActorUserID      string
+	MentionsBot       bool
+	Command           string
+	AccountKey        string
+	ArtifactTrust     string
+	ResponderBinding  ResponderBinding
+	RawPayload        []byte
+	AwaitID           string
+	ResumePayload     []byte
+	ActorUserID       string
+	WebChatIdentityID string
+	DisabledCommands  []string
 }
 
 type ResponderBinding struct {

@@ -22,6 +22,7 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		Email               string   `json:"email"`
 		SessionID           string   `json:"session_id"`
+		WebChatIdentityID   string   `json:"webchat_identity_id"`
 		LinkedChannelType   string   `json:"linked_channel_type"`
 		LinkedChannelUserID string   `json:"linked_channel_user_id"`
 		SendGreeting        bool     `json:"send_greeting"`
@@ -37,6 +38,15 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusBadRequest, "email is required")
 		return
 	}
+	ctx := r.Context()
+	webIdentity, err := a.webChatIdentityByID(strings.TrimSpace(body.WebChatIdentityID))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if webIdentity != nil {
+		ctx = context.WithValue(ctx, webChatIdentityContextKey{}, webIdentity)
+	}
 	sessionID := strings.TrimSpace(body.SessionID)
 	if sessionID == "" {
 		sessionID = "websess_" + randomToken(16)
@@ -50,11 +60,11 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 		LastSeenAt: now,
 		CreatedAt:  now,
 	}
-	if err := a.WebAuth.CreateWebAuthSession(r.Context(), session); err != nil {
+	if err := a.WebAuth.CreateWebAuthSession(ctx, session); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, email)
+	user, err := a.Identity.EnsureUserByEmail(ctx, a.Config.DefaultTenantID, email)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -63,13 +73,13 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 		{TenantID: a.Config.DefaultTenantID, UserID: user.ID, ChannelType: "webchat", ChannelUserID: email, Status: "linked", LinkedAt: now, LastVerifiedAt: now},
 		{TenantID: a.Config.DefaultTenantID, UserID: user.ID, ChannelType: "email", ChannelUserID: email, Status: "linked", LinkedAt: now, LastVerifiedAt: now},
 	} {
-		if err := a.Identity.UpsertLinkedIdentity(r.Context(), identity); err != nil {
+		if err := a.Identity.UpsertLinkedIdentity(ctx, identity); err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
 	for _, linked := range adminWebChatLinkedIdentities(body.LinkedChannelType, body.LinkedChannelUserID) {
-		if err := a.Identity.UpsertLinkedIdentity(r.Context(), domain.LinkedIdentity{
+		if err := a.Identity.UpsertLinkedIdentity(ctx, domain.LinkedIdentity{
 			TenantID:       a.Config.DefaultTenantID,
 			UserID:         user.ID,
 			ChannelType:    linked.ChannelType,
@@ -83,16 +93,17 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	out := map[string]any{
-		"session_id":  session.ID,
-		"expires_at":  session.ExpiresAt,
-		"cookie_name": a.Config.WebChatCookieName,
-		"user_id":     user.ID,
+		"session_id":          session.ID,
+		"expires_at":          session.ExpiresAt,
+		"cookie_name":         a.Config.WebChatCookieName,
+		"user_id":             user.ID,
+		"webchat_identity_id": webChatIdentityID(webIdentity),
 	}
-	if resolved, err := a.ensureAdminWebChatACPSession(r.Context(), session); err == nil && strings.TrimSpace(resolved) != "" {
+	if resolved, err := a.ensureAdminWebChatACPSession(ctx, session); err == nil && strings.TrimSpace(resolved) != "" {
 		out["acp_session_id"] = resolved
 	}
 	if body.SendGreeting {
-		greeting, err := a.ensureWebChatGreeting(r.Context(), session, domain.SessionGreetingOptions{SendGreeting: true, GreetingChannels: body.GreetingChannels, Nickname: body.Nickname, PreferredLanguage: body.PreferredLanguage})
+		greeting, err := a.ensureWebChatGreeting(ctx, session, domain.SessionGreetingOptions{SendGreeting: true, GreetingChannels: body.GreetingChannels, Nickname: body.Nickname, PreferredLanguage: body.PreferredLanguage})
 		if err != nil {
 			httpx.Error(w, http.StatusBadGateway, err.Error())
 			return

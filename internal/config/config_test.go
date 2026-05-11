@@ -165,6 +165,12 @@ routing:
     webchat: support
   allowed_agents_by_channel:
     webchat: [support]
+webchat:
+  identities:
+    - id: support_chat
+      path: support
+      agent_profile_id: support
+      title: Support
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -189,6 +195,9 @@ routing:
 	if cfg.AgentRouting.DefaultAgentByChannel["webchat"] != "support" {
 		t.Fatalf("expected webchat default route, got %+v", cfg.AgentRouting.DefaultAgentByChannel)
 	}
+	if len(cfg.WebChatIdentities) != 1 || cfg.WebChatIdentities[0].ID != "support_chat" || cfg.WebChatIdentities[0].Path != "support" {
+		t.Fatalf("expected webchat identity config, got %+v", cfg.WebChatIdentities)
+	}
 }
 
 func TestLoadJSONConfigFile(t *testing.T) {
@@ -212,5 +221,42 @@ func TestLoadJSONConfigFile(t *testing.T) {
 	}
 	if cfg.ACPMode != "multiple" || cfg.AgentRouting.DefaultAgentByChannel["telegram"] != "support" {
 		t.Fatalf("unexpected json config: %+v", cfg)
+	}
+}
+
+func TestLoadRejectsDuplicateWebChatIdentityPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nexus.yaml")
+	if err := os.WriteFile(path, []byte(`
+acp:
+  mode: multiple
+  connections:
+    - id: primary
+      implementation: strict
+      base_url: http://acp
+      enabled: true
+  agent_profiles:
+    - id: support
+      connection_id: primary
+      agent_name: support-agent
+routing:
+  default_agent_by_channel:
+    webchat: support
+webchat:
+  identities:
+    - id: support
+      path: help
+      agent_profile_id: support
+    - id: product
+      path: help
+      agent_profile_id: support
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS_CONFIG_PATH", path)
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "duplicate webchat identity path") {
+		t.Fatalf("expected duplicate path error, got %v", err)
 	}
 }

@@ -43,7 +43,10 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 	defer func() { end(err) }()
 	err = s.Repo.InTx(ctx, func(ctx context.Context, repo ports.Repository) error {
 		if evt.Metadata.Command == "" {
-			evt.Metadata.Command = commandFromText(evt.Message.Text)
+			command := commandFromText(evt.Message.Text)
+			if !commandDisabled(evt.Metadata.DisabledCommands, command) {
+				evt.Metadata.Command = command
+			}
 		}
 		inserted, err := repo.RecordInboundReceipt(ctx, evt)
 		if err != nil {
@@ -335,6 +338,19 @@ func commandFromText(text string) string {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(fields[0]))
+}
+
+func commandDisabled(disabled []string, command string) bool {
+	command = strings.ToLower(strings.TrimSpace(command))
+	if command == "" {
+		return false
+	}
+	for _, item := range disabled {
+		if strings.EqualFold(strings.TrimSpace(item), command) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseLinkToken(token string) (string, string) {

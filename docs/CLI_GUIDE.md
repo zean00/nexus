@@ -10,7 +10,7 @@ The Nexus CLI is a dev-only wrapper around the existing webchat HTTP API. It is 
 6. webchat history
 
 It is not a standalone ACP client and does not add a separate backend `cli` channel.
-Because the CLI posts through webchat, multiple-agent mode uses the same `/agent` command as webchat:
+Because the CLI posts through the default webchat surface, multiple-agent mode uses the same `/agent` command as default webchat:
 
 ```bash
 go run ./cmd/nexuscli send "/agent"
@@ -18,6 +18,7 @@ go run ./cmd/nexuscli send "/agent finance"
 ```
 
 The rich console also accepts `/agent` commands in the input box.
+Dedicated webchat identity URLs such as `/webchat/support` can disable `/agent`; that does not affect the CLI unless the CLI is pointed at that scoped base URL.
 
 ## Start The Gateway
 

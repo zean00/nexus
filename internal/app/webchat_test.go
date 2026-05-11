@@ -88,6 +88,8 @@ type webchatRepoStub struct {
 	appRepoStub
 	session             domain.Session
 	updatedACPSessionID string
+	lastResolveEvent    domain.CanonicalInboundEvent
+	lastResolveAgent    string
 }
 
 func (r *webchatRepoStub) InTx(ctx context.Context, fn func(context.Context, ports.Repository) error) error {
@@ -241,9 +243,11 @@ func (s *identityStub) CountLinkedIdentitiesByChannel(_ context.Context, tenantI
 	return out, nil
 }
 
-func (r *webchatRepoStub) ResolveSession(context.Context, domain.CanonicalInboundEvent, string) (domain.Session, bool, error) {
+func (r *webchatRepoStub) ResolveSession(_ context.Context, evt domain.CanonicalInboundEvent, agentProfileID string) (domain.Session, bool, error) {
+	r.lastResolveEvent = evt
+	r.lastResolveAgent = agentProfileID
 	if r.session.ID == "" {
-		r.session = domain.Session{ID: "session_webchat_1", TenantID: "tenant_default", OwnerUserID: "user@example.com", ChannelType: "webchat", ChannelScopeKey: "websess_1:session_webchat_1", State: "open"}
+		r.session = domain.Session{ID: "session_webchat_1", TenantID: "tenant_default", OwnerUserID: evt.Sender.ChannelUserID, AgentProfileID: agentProfileID, ChannelType: "webchat", ChannelScopeKey: evt.Conversation.ChannelSurfaceKey + ":session_webchat_1", State: "open"}
 	}
 	return r.session, false, nil
 }
@@ -1352,11 +1356,72 @@ func TestWebChatStaticAssetsServed(t *testing.T) {
 	}
 }
 
+func TestDedicatedWebChatIndexUsesIdentityConfig(t *testing.T) {
+	allow := false
+	app := &App{Config: config.Config{WebChatIdentities: []config.WebChatIdentityConfig{{
+		ID:               "support",
+		Path:             "support",
+		AgentProfileID:   "agent_support",
+		Title:            "Support",
+		Subtitle:         "Talk to support",
+		AllowAgentSwitch: &allow,
+	}}}}
+	req := httptest.NewRequest(http.MethodGet, "/webchat/support", nil)
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatScoped(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"baseUrl":"/webchat/support"`) || !strings.Contains(rec.Body.String(), `"title":"Support"`) {
+		t.Fatalf("expected scoped webchat config, got %s", rec.Body.String())
+	}
+}
+
+func TestDedicatedWebChatSessionUsesSeparateSurfaceAndAgent(t *testing.T) {
+	identity := config.WebChatIdentityConfig{ID: "support", Path: "support", AgentProfileID: "agent_support"}
+	authSession := domain.WebAuthSession{ID: "websess_1", TenantID: "tenant_default", Email: "user@example.com", ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	repo := &webchatRepoStub{}
+	app := &App{
+		Config:   config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_default"},
+		Repo:     repo,
+		Identity: &identityStub{},
+	}
+	ctx := context.WithValue(context.Background(), webChatIdentityContextKey{}, &identity)
+
+	session, err := app.resolveWebChatSession(ctx, authSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.lastResolveAgent != "agent_support" || session.AgentProfileID != "agent_support" {
+		t.Fatalf("expected support agent, session=%+v agent=%q", session, repo.lastResolveAgent)
+	}
+	if repo.lastResolveEvent.Metadata.WebChatIdentityID != "support" || !strings.HasPrefix(repo.lastResolveEvent.Conversation.ChannelSurfaceKey, "webchat:support:user_") {
+		t.Fatalf("unexpected scoped event: %+v", repo.lastResolveEvent)
+	}
+}
+
+func TestDedicatedWebChatDisablesAgentCommand(t *testing.T) {
+	identity := config.WebChatIdentityConfig{ID: "support", Path: "support", AgentProfileID: "agent_support"}
+	evt := buildWebChatMessageEvent("tenant_default", domain.WebAuthSession{
+		ID:    "websess_1",
+		Email: "user@example.com",
+	}, &identity, "webchat:support:user_1", "user_1", "/agent finance", nil, nil)
+
+	if evt.Metadata.Command != "" {
+		t.Fatalf("expected /agent command to be suppressed, got %q", evt.Metadata.Command)
+	}
+	if len(evt.Metadata.DisabledCommands) != 1 || evt.Metadata.DisabledCommands[0] != "/agent" {
+		t.Fatalf("expected disabled /agent metadata, got %+v", evt.Metadata.DisabledCommands)
+	}
+}
+
 func TestBuildWebChatMessageEventIncludesRawPayload(t *testing.T) {
 	evt := buildWebChatMessageEvent("tenant_default", domain.WebAuthSession{
 		ID:    "websess_1",
 		Email: "user@example.com",
-	}, "hello from webchat", nil, map[string]any{"message_id": "msg-1", "artifact_ids": []string{"cap-1"}})
+	}, nil, "websess_1", "user@example.com", "hello from webchat", nil, map[string]any{"message_id": "msg-1", "artifact_ids": []string{"cap-1"}})
 	if len(evt.Metadata.RawPayload) == 0 {
 		t.Fatal("expected raw payload to be populated")
 	}
