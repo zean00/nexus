@@ -272,6 +272,7 @@ func (a Adapter) ParseInboundBatch(ctx context.Context, _ *http.Request, body []
 			ChannelSurfaceKey:     surfaceKey,
 		},
 		Metadata: domain.Metadata{
+			AccountKey:    firstNonEmpty(env.Session, a.Session, surfaceKey),
 			ArtifactTrust: "trusted-channel-ingress",
 			ResponderBinding: domain.ResponderBinding{
 				Mode:                  "same-user-only",

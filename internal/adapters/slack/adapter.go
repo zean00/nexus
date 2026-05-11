@@ -144,6 +144,7 @@ func (a Adapter) ParseInbound(_ context.Context, r *http.Request, body []byte, t
 			Artifacts: artifacts,
 		},
 		Metadata: domain.Metadata{
+			AccountKey:    evt.Channel,
 			Command:       command,
 			MentionsBot:   strings.Contains(evt.Text, "<@"),
 			ArtifactTrust: "trusted-channel-ingress",
@@ -237,6 +238,7 @@ func (a Adapter) parseInteractive(body []byte, tenantID string) (domain.Canonica
 			}},
 		},
 		Metadata: domain.Metadata{
+			AccountKey:    callback.Channel.ID,
 			ArtifactTrust: "trusted-channel-ingress",
 			AwaitID:       action.AwaitID,
 			ResumePayload: resumePayload,

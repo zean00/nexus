@@ -30,6 +30,7 @@ type lajuChannelContext struct {
 	IdentityLinked        bool           `json:"identityLinked"`
 	IdentityAssurance     string         `json:"identityAssurance"`
 	AllowedResponderIDs   []string       `json:"allowedResponderIds"`
+	AccountKey            string         `json:"accountKey"`
 	PolicySnapshot        map[string]any `json:"policySnapshot"`
 	Metadata              map[string]any `json:"metadata"`
 	LiveStatus            map[string]any `json:"liveStatus"`
@@ -78,6 +79,7 @@ func lajuInboundPayload(evt domain.CanonicalInboundEvent, result services.Inboun
 		IdentityLinked:        evt.Sender.IsAuthenticated || evt.Metadata.ActorUserID != "",
 		IdentityAssurance:     evt.Sender.IdentityAssurance,
 		AllowedResponderIDs:   evt.Sender.AllowedResponderIDs,
+		AccountKey:            evt.Metadata.AccountKey,
 		PolicySnapshot: map[string]any{
 			"artifact_trust":    evt.Metadata.ArtifactTrust,
 			"responder_binding": evt.Metadata.ResponderBinding,
@@ -95,6 +97,7 @@ func lajuInboundPayload(evt domain.CanonicalInboundEvent, result services.Inboun
 			"channel_conversation": evt.Conversation.ChannelConversationID,
 			"channel_thread":       evt.Conversation.ChannelThreadID,
 			"surface_key":          evt.Conversation.ChannelSurfaceKey,
+			"account_key":          evt.Metadata.AccountKey,
 		},
 		LiveStatus: map[string]any{
 			"queue_id": result.QueueID,
@@ -114,6 +117,7 @@ func lajuInboundPayload(evt domain.CanonicalInboundEvent, result services.Inboun
 		"channelType":           chctx.ChannelType,
 		"channelUserId":         chctx.ChannelUserID,
 		"surfaceKey":            chctx.SurfaceKey,
+		"accountKey":            chctx.AccountKey,
 		"channelConversationId": chctx.ChannelConversationID,
 		"channelThreadId":       chctx.ChannelThreadID,
 		"providerEventId":       chctx.ProviderEventID,

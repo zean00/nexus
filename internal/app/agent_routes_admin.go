@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -91,6 +92,7 @@ func (a *App) handleAgentEffectiveRoute(w http.ResponseWriter, r *http.Request) 
 	channel := strings.TrimSpace(r.URL.Query().Get("channel_type"))
 	surface := strings.TrimSpace(r.URL.Query().Get("surface_key"))
 	owner := strings.TrimSpace(r.URL.Query().Get("owner_user_id"))
+	accountKey := strings.TrimSpace(r.URL.Query().Get("account_key"))
 	if channel == "" || surface == "" || owner == "" {
 		httpx.Error(w, http.StatusBadRequest, "channel_type, surface_key, and owner_user_id are required")
 		return
@@ -109,6 +111,11 @@ func (a *App) handleAgentEffectiveRoute(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if active == "" {
+		if rules, err := repo.ListAgentRoutingRulesPage(r.Context(), tenantID, false, 500); err == nil {
+			active = firstMatchingAdminRule(channel, surface, owner, accountKey, rules)
+		}
+	}
+	if active == "" {
 		active = a.Config.AgentRouting.DefaultAgentByChannel[strings.ToLower(channel)]
 	}
 	httpx.OK(w, map[string]any{
@@ -116,7 +123,46 @@ func (a *App) handleAgentEffectiveRoute(w http.ResponseWriter, r *http.Request) 
 		"channel_type":     channel,
 		"surface_key":      surface,
 		"owner_user_id":    owner,
+		"account_key":      accountKey,
 		"agent_profile_id": active,
 		"available_agents": a.Config.AgentRouting.AllowedAgentsByChannel[strings.ToLower(channel)],
 	}, nil)
+}
+
+func firstMatchingAdminRule(channel, surface, owner, accountKey string, rules []domain.AgentRoutingRule) string {
+	for _, rule := range rules {
+		if !rule.Enabled || rule.AgentProfileID == "" {
+			continue
+		}
+		matched := true
+		for key, value := range rule.Match {
+			want := strings.TrimSpace(fmt.Sprint(value))
+			if want == "" {
+				continue
+			}
+			var got string
+			switch strings.ToLower(strings.TrimSpace(key)) {
+			case "channel":
+				got = channel
+			case "surface_key":
+				got = surface
+			case "owner_user_id", "channel_user_id":
+				got = owner
+			case "account_key", "provider_account_id":
+				got = accountKey
+			case "tenant_id", "managed_by", "channel_name":
+				continue
+			default:
+				continue
+			}
+			if !strings.EqualFold(strings.TrimSpace(got), want) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return rule.AgentProfileID
+		}
+	}
+	return ""
 }

@@ -47,6 +47,9 @@ func (Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, ten
 			ChannelThreadID:       payload.SurfaceKey,
 			ChannelSurfaceKey:     payload.SurfaceKey,
 		},
+		Metadata: domain.Metadata{
+			AccountKey: payload.SurfaceKey,
+		},
 		Message: domain.Message{
 			MessageID:   "webchat_msg_" + payload.EventID,
 			MessageType: "text",

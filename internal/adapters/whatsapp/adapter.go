@@ -252,6 +252,7 @@ func parseMessage(raw []byte, tenantID, displayName, phoneNumberID string, msg s
 			ChannelSurfaceKey:     msg.From,
 		},
 		Metadata: domain.Metadata{
+			AccountKey:    firstNonEmpty(phoneNumberID, msg.From),
 			ArtifactTrust: "trusted-channel-ingress",
 			ResponderBinding: domain.ResponderBinding{
 				Mode:                  "same-user-only",
@@ -470,6 +471,15 @@ func messageType(text string, artifacts []domain.Artifact) string {
 	default:
 		return "text"
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (a Adapter) SendMessage(ctx context.Context, delivery domain.OutboundDelivery) (domain.DeliveryResult, error) {

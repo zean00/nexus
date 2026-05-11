@@ -199,6 +199,8 @@ func ruleMatches(evt domain.CanonicalInboundEvent, match map[string]any) bool {
 			got = evt.Channel
 		case "surface_key":
 			got = evt.Conversation.ChannelSurfaceKey
+		case "account_key", "provider_account_id":
+			got = evt.Metadata.AccountKey
 		case "owner_user_id", "channel_user_id":
 			got = evt.Sender.ChannelUserID
 		default:

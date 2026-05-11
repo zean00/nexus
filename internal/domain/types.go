@@ -64,6 +64,7 @@ type Artifact struct {
 type Metadata struct {
 	MentionsBot      bool
 	Command          string
+	AccountKey       string
 	ArtifactTrust    string
 	ResponderBinding ResponderBinding
 	RawPayload       []byte

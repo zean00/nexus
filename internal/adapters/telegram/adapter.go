@@ -166,7 +166,7 @@ func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, t
 				Parts:       parts,
 				Artifacts:   artifacts,
 			},
-			Metadata: domain.Metadata{RawPayload: body, Command: command},
+			Metadata: domain.Metadata{AccountKey: "telegram", RawPayload: body, Command: command},
 		}, nil
 	case update.CallbackQuery != nil:
 		var action struct {
@@ -207,6 +207,7 @@ func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, t
 				Parts:       []domain.Part{{ContentType: "application/json", Content: string(payload)}},
 			},
 			Metadata: domain.Metadata{
+				AccountKey:    "telegram",
 				AwaitID:       action.AwaitID,
 				ResumePayload: payload,
 				RawPayload:    body,
