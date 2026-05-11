@@ -1249,6 +1249,13 @@ func (a *App) resolveWebChatSession(ctx context.Context, authSession domain.WebA
 	return session, err
 }
 
+func webChatScopedAgentSurfaceKey(surfaceKey, agentProfileID string) string {
+	if strings.TrimSpace(agentProfileID) == "" {
+		return surfaceKey
+	}
+	return surfaceKey + ":agent:" + agentProfileID
+}
+
 func webChatIdentityFromRequest(r *http.Request) *config.WebChatIdentityConfig {
 	return webChatIdentityFromContext(r.Context())
 }
@@ -1280,8 +1287,9 @@ func (a *App) webChatAgentProfileID(identity *config.WebChatIdentityConfig) stri
 }
 
 func (a *App) webChatSurface(ctx context.Context, authSession domain.WebAuthSession, identity *config.WebChatIdentityConfig) (string, string, error) {
+	agentProfileID := a.webChatAgentProfileID(identity)
 	if identity == nil {
-		return authSession.ID, authSession.Email, nil
+		return a.webChatScopedSurface(authSession.ID, agentProfileID), authSession.Email, nil
 	}
 	userID := ""
 	if a.Identity != nil {
@@ -1294,7 +1302,14 @@ func (a *App) webChatSurface(ctx context.Context, authSession domain.WebAuthSess
 	if strings.TrimSpace(userID) == "" {
 		userID = "user_" + sha256Hex(strings.ToLower(strings.TrimSpace(authSession.Email)))[:24]
 	}
-	return "webchat:" + strings.TrimSpace(identity.ID) + ":" + userID, userID, nil
+	return a.webChatScopedSurface("webchat:"+strings.TrimSpace(identity.ID)+":"+userID, agentProfileID), userID, nil
+}
+
+func (a *App) webChatScopedSurface(surfaceKey, agentProfileID string) string {
+	if a.Config.ACPMode != "multiple" {
+		return surfaceKey
+	}
+	return webChatScopedAgentSurfaceKey(surfaceKey, agentProfileID)
 }
 
 func (a *App) issueWebChatCSRF(ctx context.Context, sessionID string) (string, error) {

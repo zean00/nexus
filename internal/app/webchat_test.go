@@ -1384,7 +1384,7 @@ func TestDedicatedWebChatSessionUsesSeparateSurfaceAndAgent(t *testing.T) {
 	authSession := domain.WebAuthSession{ID: "websess_1", TenantID: "tenant_default", Email: "user@example.com", ExpiresAt: time.Now().UTC().Add(time.Hour)}
 	repo := &webchatRepoStub{}
 	app := &App{
-		Config:   config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_default"},
+		Config:   config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_default", ACPMode: "multiple"},
 		Repo:     repo,
 		Identity: &identityStub{},
 	}
@@ -1397,8 +1397,33 @@ func TestDedicatedWebChatSessionUsesSeparateSurfaceAndAgent(t *testing.T) {
 	if repo.lastResolveAgent != "agent_support" || session.AgentProfileID != "agent_support" {
 		t.Fatalf("expected support agent, session=%+v agent=%q", session, repo.lastResolveAgent)
 	}
-	if repo.lastResolveEvent.Metadata.WebChatIdentityID != "support" || !strings.HasPrefix(repo.lastResolveEvent.Conversation.ChannelSurfaceKey, "webchat:support:user_") {
+	if repo.lastResolveEvent.Metadata.WebChatIdentityID != "support" || !strings.Contains(repo.lastResolveEvent.Conversation.ChannelSurfaceKey, ":agent:agent_support") {
 		t.Fatalf("unexpected scoped event: %+v", repo.lastResolveEvent)
+	}
+}
+
+func TestWebChatSurfaceScopesAllMultipleModePaths(t *testing.T) {
+	identity := config.WebChatIdentityConfig{ID: "support", Path: "support", AgentProfileID: "agent_support"}
+	authSession := domain.WebAuthSession{ID: "websess_1", TenantID: "tenant_default", Email: "user@example.com", ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	app := &App{
+		Config:   config.Config{DefaultTenantID: "tenant_default", DefaultAgentProfileID: "agent_default", ACPMode: "multiple"},
+		Identity: &identityStub{},
+	}
+
+	surfaceKey, ownerUserID, err := app.webChatSurface(context.Background(), authSession, &identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownerUserID == "" || !strings.Contains(surfaceKey, ":agent:agent_support") {
+		t.Fatalf("expected identity surface to be agent-scoped, surface=%q owner=%q", surfaceKey, ownerUserID)
+	}
+
+	surfaceKey, ownerUserID, err = app.webChatSurface(context.Background(), authSession, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownerUserID != authSession.Email || surfaceKey != "websess_1:agent:agent_default" {
+		t.Fatalf("expected default surface to be agent-scoped, surface=%q owner=%q", surfaceKey, ownerUserID)
 	}
 }
 

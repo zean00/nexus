@@ -324,11 +324,14 @@ func buildACPResolver(cfg config.Config, policy *resilience.Policy) *services.AC
 		}
 	}
 	for _, profile := range cfg.ACPAgentProfiles {
-		if len(profile.Headers) == 0 && strings.TrimSpace(profile.PathPrefix) == "" {
-			continue
-		}
 		conn, ok := connectionByID[profile.ConnectionID]
 		if !ok {
+			continue
+		}
+		if len(profile.Headers) == 0 && strings.TrimSpace(profile.PathPrefix) == "" {
+			if bridge := bridges[profile.ConnectionID]; bridge != nil {
+				profileBridges[profile.ID] = bridge
+			}
 			continue
 		}
 		conn.Headers = mergeHeaders(conn.Headers, profile.Headers)

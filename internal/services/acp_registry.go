@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"nexus/internal/domain"
@@ -88,7 +89,11 @@ func (r *ACPRegistry) Close() error {
 		return nil
 	}
 	var firstErr error
+	closedPointers := map[uintptr]bool{}
 	for _, bridge := range r.Bridges {
+		if bridgeAlreadyClosed(bridge, closedPointers) {
+			continue
+		}
 		if closer, ok := bridge.(interface{ Close() error }); ok {
 			if err := closer.Close(); err != nil && firstErr == nil {
 				firstErr = err
@@ -96,6 +101,9 @@ func (r *ACPRegistry) Close() error {
 		}
 	}
 	for _, bridge := range r.ProfileBridges {
+		if bridgeAlreadyClosed(bridge, closedPointers) {
+			continue
+		}
 		if closer, ok := bridge.(interface{ Close() error }); ok {
 			if err := closer.Close(); err != nil && firstErr == nil {
 				firstErr = err
@@ -103,6 +111,22 @@ func (r *ACPRegistry) Close() error {
 		}
 	}
 	return firstErr
+}
+
+func bridgeAlreadyClosed(bridge ports.ACPBridge, closedPointers map[uintptr]bool) bool {
+	if bridge == nil {
+		return true
+	}
+	value := reflect.ValueOf(bridge)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		return false
+	}
+	pointer := value.Pointer()
+	if closedPointers[pointer] {
+		return true
+	}
+	closedPointers[pointer] = true
+	return false
 }
 
 type ResolvingACPBridge struct {
@@ -183,6 +207,19 @@ func (b ResolvingACPBridge) GetRun(ctx context.Context, acpRunID string) (domain
 	bridge := b.Resolver.DefaultBridge()
 	if bridge == nil {
 		return domain.RunStatusSnapshot{}, fmt.Errorf("default acp bridge unavailable")
+	}
+	return bridge.GetRun(ctx, acpRunID)
+}
+
+func (b ResolvingACPBridge) GetRunForSession(ctx context.Context, session domain.Session, acpRunID string) (domain.RunStatusSnapshot, error) {
+	bridge, err := b.Resolver.BridgeForSession(session)
+	if err != nil {
+		return domain.RunStatusSnapshot{}, err
+	}
+	if scoped, ok := bridge.(interface {
+		GetRunForSession(context.Context, domain.Session, string) (domain.RunStatusSnapshot, error)
+	}); ok {
+		return scoped.GetRunForSession(ctx, session, acpRunID)
 	}
 	return bridge.GetRun(ctx, acpRunID)
 }

@@ -382,6 +382,37 @@ func TestStrictGetRunAndFindLatest(t *testing.T) {
 	}
 }
 
+func TestStrictGetRunForSessionUsesACPRunIDHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runs/acp_run_1" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("X-Run-ID"); got != "acp_run_1" {
+			t.Fatalf("expected ACP run id header, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"acp_run_1","session_id":"ses_1","status":"completed","output":"done"}`)
+	}))
+	defer server.Close()
+
+	client := NewStrictClient(server.URL, "")
+	client.HTTP = server.Client()
+
+	snapshot, err := client.GetRunForSession(context.Background(), domain.Session{
+		ID:             "session_1",
+		TenantID:       "tenant_default",
+		OwnerUserID:    "user_1",
+		AgentProfileID: "support",
+		ACPSessionID:   "ses_1",
+	}, "acp_run_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ACPRunID != "acp_run_1" || snapshot.Status != "completed" {
+		t.Fatalf("unexpected strict snapshot: %+v", snapshot)
+	}
+}
+
 func TestBridgeFactorySelectsStrict(t *testing.T) {
 	bridge := NewBridge(BridgeConfig{Implementation: "strict", BaseURL: "http://example.invalid"})
 	if _, ok := bridge.(StrictClient); !ok {

@@ -396,7 +396,7 @@ func (c StrictClient) GetRun(ctx context.Context, acpRunID string) (domain.RunSt
 
 func (c StrictClient) GetRunForSession(ctx context.Context, session domain.Session, acpRunID string) (domain.RunStatusSnapshot, error) {
 	var response strictRun
-	if err := c.getJSON(ctx, "/runs/"+url.PathEscape(acpRunID), nil, &response, sessionHeaders(session, "", "run_"+acpRunID)); err != nil {
+	if err := c.getJSON(ctx, "/runs/"+url.PathEscape(acpRunID), nil, &response, sessionHeaders(session, "", acpRunID)); err != nil {
 		return domain.RunStatusSnapshot{}, err
 	}
 	return c.mapSnapshot(response)

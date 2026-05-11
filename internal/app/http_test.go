@@ -77,6 +77,30 @@ func (b testACPBridge) RuntimeStatus() acpadapter.StdioRuntimeStatus {
 
 var _ ports.ACPBridge = testACPBridge{}
 
+func TestBuildACPResolverRegistersPlainAgentProfiles(t *testing.T) {
+	enabled := true
+	cfg := config.Config{
+		ACPConnections: []config.ACPConnectionConfig{{
+			ID:             "primary",
+			Implementation: "strict",
+			BaseURL:        "http://example.invalid/acp",
+			Enabled:        &enabled,
+		}},
+		ACPAgentProfiles: []config.ACPAgentProfileConfig{{
+			ID:           "support",
+			ConnectionID: "primary",
+			AgentName:    "duraclaw",
+		}},
+	}
+	resolver := buildACPResolver(cfg, nil)
+	if resolver.ProfileBridges["support"] == nil {
+		t.Fatalf("expected plain profile to resolve through its connection bridge")
+	}
+	if _, err := resolver.BridgeForRoute(domain.RouteDecision{AgentProfileID: "support", ACPConnectionID: "primary"}); err != nil {
+		t.Fatalf("expected plain profile route to resolve: %v", err)
+	}
+}
+
 func TestWhatsAppWebHandlersReturnNotFoundWhenDisabled(t *testing.T) {
 	app := &App{}
 	req := httptest.NewRequest(http.MethodGet, "/admin/whatsapp-web/session", nil)
