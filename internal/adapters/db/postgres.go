@@ -1297,18 +1297,34 @@ func prepareReplacementDelivery(delivery domain.OutboundDelivery, previous *doma
 func (r *PostgresRepository) ClaimOutbox(ctx context.Context, now time.Time, limit int) ([]domain.OutboxEvent, error) {
 	rows, err := r.query(ctx, `
 		with claimed as (
-			select id
+			select id,
+				case event_type
+					when 'delivery.send' then 0
+					when 'await.resume' then 1
+					when 'laju.inbound.forward' then 2
+					when 'queue.start' then 3
+					else 4
+				end as event_priority,
+				available_at as claimed_available_at
 			from outbox_events
 			where status='queued' and available_at <= $1
-			order by available_at
+			order by
+				event_priority,
+				available_at,
+				id
 			limit $2
 			for update skip locked
+		), updated as (
+			update outbox_events o
+			set status='processing', claimed_at=now(), attempt_count = attempt_count + 1
+			from claimed
+			where o.id = claimed.id
+			returning o.id, o.tenant_id, o.event_type, o.aggregate_type, o.aggregate_id, o.idempotency_key, o.payload_json, o.status, o.available_at, o.attempt_count
 		)
-		update outbox_events o
-		set status='processing', claimed_at=now(), attempt_count = attempt_count + 1
-		from claimed
-		where o.id = claimed.id
-		returning o.id, o.tenant_id, o.event_type, o.aggregate_type, o.aggregate_id, o.idempotency_key, o.payload_json, o.status, o.available_at, o.attempt_count
+		select u.id, u.tenant_id, u.event_type, u.aggregate_type, u.aggregate_id, u.idempotency_key, u.payload_json, u.status, u.available_at, u.attempt_count
+		from updated u
+		join claimed c on c.id = u.id
+		order by c.event_priority, c.claimed_available_at, c.id
 	`, now, limit)
 	if err != nil {
 		return nil, err

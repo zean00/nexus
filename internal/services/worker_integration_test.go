@@ -161,6 +161,23 @@ func TestWorkerServiceIntegrationWithPostgres(t *testing.T) {
 		}
 	})
 
+	t.Run("claims-delivery-before-older-queue-starts", func(t *testing.T) {
+		seedWorkerOutboxPriorityFixture(t, ctx, pool)
+		events, err := repo.ClaimOutbox(ctx, time.Now().UTC(), 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 2 {
+			t.Fatalf("expected two claimed events, got %+v", events)
+		}
+		if events[0].EventType != "delivery.send" || events[0].ID != "outbox_priority_delivery" {
+			t.Fatalf("expected delivery to be claimed first, got %+v", events)
+		}
+		if events[1].EventType != "laju.inbound.forward" || events[1].ID != "outbox_priority_laju_forward" {
+			t.Fatalf("expected laju forward to be claimed second, got %+v", events)
+		}
+	})
+
 	t.Run("queue-start", func(t *testing.T) {
 		seedWorkerQueueStartFixture(t, ctx, pool)
 		worker := WorkerService{
@@ -421,6 +438,20 @@ func seedWorkerAwaitResumeFixture(t *testing.T, ctx context.Context, pool *pgxpo
 		insert into outbox_events (id, tenant_id, event_type, aggregate_type, aggregate_id, idempotency_key, payload_json, status, available_at, attempt_count)
 		values ('outbox_await_resume_worker_1','tenant_default','await.resume','await','await_resume_worker_1','await_resume_worker_1',$1,'queued',$2,0)
 	`, mustJSONBytes(domain.ResumeRequest{AwaitID: "await_resume_worker_1", Payload: []byte(`{"choice":"yes"}`)}), t2)
+}
+
+func seedWorkerOutboxPriorityFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	workerMustExec(t, ctx, pool, `truncate table outbox_events, outbound_deliveries, audit_events, await_responses, awaits, runs, session_queue_items, artifacts, messages, channel_surface_state, session_aliases, telegram_user_access, sessions restart identity cascade`)
+	oldest := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+	newer := time.Now().UTC().Add(-1 * time.Minute).Truncate(time.Second)
+	workerMustExec(t, ctx, pool, `
+		insert into outbox_events (id, tenant_id, event_type, aggregate_type, aggregate_id, idempotency_key, payload_json, status, available_at, attempt_count)
+		values
+			('outbox_priority_queue','tenant_default','queue.start','session_queue_item','queue_priority_1','queue_priority_1',$1,'queued',$2,0),
+			('outbox_priority_delivery','tenant_default','delivery.send','outbound_delivery','delivery_priority_1','delivery_priority_1',$1,'queued',$3,0),
+			('outbox_priority_laju_forward','tenant_default','laju.inbound.forward','message','message_priority_1','message_priority_1',$1,'queued',$3,0)
+	`, []byte(`{}`), oldest, newer)
 }
 
 func seedWorkerQueueStartFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
