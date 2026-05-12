@@ -172,8 +172,12 @@ webchat:
       agent_profile_id: support
       title: Support
 whatsapp_web:
+  group_mode: reply_when_mentioned
+  group_bot_ids: ["628111222333@c.us"]
   group_allowlist: ["120363111@g.us"]
   group_blocklist: ["120363222@g.us"]
+  group_context_limit: 0
+  group_context_max_chars: 0
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +210,45 @@ whatsapp_web:
 	}
 	if len(cfg.WhatsAppWebGroupBlocklist) != 1 || cfg.WhatsAppWebGroupBlocklist[0] != "120363222@g.us" {
 		t.Fatalf("expected whatsapp group blocklist, got %+v", cfg.WhatsAppWebGroupBlocklist)
+	}
+	if cfg.WhatsAppWebGroupMode != "reply_when_mentioned" {
+		t.Fatalf("expected whatsapp group mode from file, got %q", cfg.WhatsAppWebGroupMode)
+	}
+	if len(cfg.WhatsAppWebGroupBotIDs) != 1 || cfg.WhatsAppWebGroupBotIDs[0] != "628111222333@c.us" {
+		t.Fatalf("expected whatsapp group bot IDs, got %+v", cfg.WhatsAppWebGroupBotIDs)
+	}
+	if cfg.WhatsAppWebGroupContextLimit != 0 || cfg.WhatsAppWebGroupContextMaxChars != 0 {
+		t.Fatalf("expected zero group context limits from file, got limit=%d max_chars=%d", cfg.WhatsAppWebGroupContextLimit, cfg.WhatsAppWebGroupContextMaxChars)
+	}
+}
+
+func TestLoadWhatsAppGroupEnvOverridesFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nexus.yaml")
+	if err := os.WriteFile(path, []byte(`
+whatsapp_web:
+  group_mode: ignore
+  group_bot_ids: ["file-bot@c.us"]
+  group_allowlist: ["file-group@g.us"]
+  group_blocklist: ["file-block@g.us"]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS_CONFIG_PATH", path)
+	t.Setenv("WHATSAPP_WEB_GROUP_MODE", "reply_when_mentioned")
+	t.Setenv("WHATSAPP_WEB_GROUP_BOT_IDS", "env-bot@c.us")
+	t.Setenv("WHATSAPP_WEB_GROUP_ALLOWLIST", "env-group@g.us")
+	t.Setenv("WHATSAPP_WEB_GROUP_BLOCKLIST", "env-block@g.us")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WhatsAppWebGroupMode != "reply_when_mentioned" {
+		t.Fatalf("expected env group mode override, got %q", cfg.WhatsAppWebGroupMode)
+	}
+	if cfg.WhatsAppWebGroupBotIDs[0] != "env-bot@c.us" || cfg.WhatsAppWebGroupAllowlist[0] != "env-group@g.us" || cfg.WhatsAppWebGroupBlocklist[0] != "env-block@g.us" {
+		t.Fatalf("expected env group list overrides, got bots=%+v allow=%+v block=%+v", cfg.WhatsAppWebGroupBotIDs, cfg.WhatsAppWebGroupAllowlist, cfg.WhatsAppWebGroupBlocklist)
 	}
 }
 

@@ -249,6 +249,21 @@ Behavior notes:
 - Nexus exposes admin session lifecycle endpoints for the configured WAHA session
 - phone-based identity linking is shared with the official WhatsApp channel
 
+The same group controls can be loaded from `NEXUS_CONFIG_PATH`:
+
+```yaml
+whatsapp_web:
+  group_mode: reply_when_mentioned
+  group_bot_ids:
+    - "628111222333@c.us"
+  group_allowlist:
+    - "120363111@g.us"
+  group_blocklist:
+    - "120363222@g.us"
+  group_context_limit: 30
+  group_context_max_chars: 6000
+```
+
 ## Email
 
 | Variable | Default | Purpose | Notes |

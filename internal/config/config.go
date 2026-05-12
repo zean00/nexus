@@ -499,8 +499,12 @@ type fileWebChatConfig struct {
 }
 
 type fileWhatsAppWebConfig struct {
-	GroupAllowlist []string `json:"group_allowlist" yaml:"group_allowlist"`
-	GroupBlocklist []string `json:"group_blocklist" yaml:"group_blocklist"`
+	GroupMode            string   `json:"group_mode" yaml:"group_mode"`
+	GroupBotIDs          []string `json:"group_bot_ids" yaml:"group_bot_ids"`
+	GroupAllowlist       []string `json:"group_allowlist" yaml:"group_allowlist"`
+	GroupBlocklist       []string `json:"group_blocklist" yaml:"group_blocklist"`
+	GroupContextLimit    *int     `json:"group_context_limit" yaml:"group_context_limit"`
+	GroupContextMaxChars *int     `json:"group_context_max_chars" yaml:"group_context_max_chars"`
 }
 
 type fileACPConfig struct {
@@ -574,11 +578,23 @@ func mergeFileConfig(cfg *Config, file fileConfig) {
 	if len(file.WebChat.Identities) > 0 {
 		cfg.WebChatIdentities = append([]WebChatIdentityConfig(nil), file.WebChat.Identities...)
 	}
+	if file.WhatsAppWeb.GroupMode != "" {
+		cfg.WhatsAppWebGroupMode = file.WhatsAppWeb.GroupMode
+	}
+	if len(file.WhatsAppWeb.GroupBotIDs) > 0 {
+		cfg.WhatsAppWebGroupBotIDs = append([]string(nil), file.WhatsAppWeb.GroupBotIDs...)
+	}
 	if len(file.WhatsAppWeb.GroupAllowlist) > 0 {
 		cfg.WhatsAppWebGroupAllowlist = append([]string(nil), file.WhatsAppWeb.GroupAllowlist...)
 	}
 	if len(file.WhatsAppWeb.GroupBlocklist) > 0 {
 		cfg.WhatsAppWebGroupBlocklist = append([]string(nil), file.WhatsAppWeb.GroupBlocklist...)
+	}
+	if file.WhatsAppWeb.GroupContextLimit != nil {
+		cfg.WhatsAppWebGroupContextLimit = *file.WhatsAppWeb.GroupContextLimit
+	}
+	if file.WhatsAppWeb.GroupContextMaxChars != nil {
+		cfg.WhatsAppWebGroupContextMaxChars = *file.WhatsAppWeb.GroupContextMaxChars
 	}
 	if file.ACP.Mode != "" {
 		cfg.ACPMode = file.ACP.Mode
@@ -678,6 +694,10 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.WhatsAppPhoneNumberID = value
 	}
 	cfg.WhatsAppAPIBaseURL = env("WHATSAPP_API_BASE_URL", cfg.WhatsAppAPIBaseURL)
+	cfg.WhatsAppWebGroupMode = env("WHATSAPP_WEB_GROUP_MODE", cfg.WhatsAppWebGroupMode)
+	if value := csvEnv("WHATSAPP_WEB_GROUP_BOT_IDS"); len(value) > 0 {
+		cfg.WhatsAppWebGroupBotIDs = value
+	}
 	if value := csvEnv("WHATSAPP_WEB_GROUP_ALLOWLIST"); len(value) > 0 {
 		cfg.WhatsAppWebGroupAllowlist = value
 	}
