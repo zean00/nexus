@@ -40,6 +40,8 @@ type workerRepo struct {
 	markedOutboxFailed  []string
 	hiddenMessageID     string
 	hiddenMetadata      any
+	listMessages         []domain.Message
+	listMessagesQueries  []domain.MessageListQuery
 }
 
 func (r *workerRepo) InTx(ctx context.Context, fn func(context.Context, ports.Repository) error) error {
@@ -156,8 +158,9 @@ func (r *workerRepo) GetAwaitsForRun(context.Context, string, int) ([]domain.Awa
 func (r *workerRepo) GetAwaitResponses(context.Context, string, int) ([]domain.AwaitResponse, error) {
 	return nil, nil
 }
-func (r *workerRepo) ListMessages(context.Context, domain.MessageListQuery) (domain.PagedResult[domain.Message], error) {
-	return domain.PagedResult[domain.Message]{}, nil
+func (r *workerRepo) ListMessages(_ context.Context, query domain.MessageListQuery) (domain.PagedResult[domain.Message], error) {
+	r.listMessagesQueries = append(r.listMessagesQueries, query)
+	return domain.PagedResult[domain.Message]{Items: r.listMessages}, nil
 }
 func (r *workerRepo) ListArtifacts(context.Context, domain.ArtifactListQuery) (domain.PagedResult[domain.Artifact], error) {
 	return domain.PagedResult[domain.Artifact]{}, nil
