@@ -40,8 +40,8 @@ type workerRepo struct {
 	markedOutboxFailed  []string
 	hiddenMessageID     string
 	hiddenMetadata      any
-	listMessages         []domain.Message
-	listMessagesQueries  []domain.MessageListQuery
+	listMessages        []domain.Message
+	listMessagesQueries []domain.MessageListQuery
 }
 
 func (r *workerRepo) InTx(ctx context.Context, fn func(context.Context, ports.Repository) error) error {
@@ -683,6 +683,68 @@ func TestWorkerPersistsOutboundArtifacts(t *testing.T) {
 	}
 	if len(repo.storedArtifacts) != 1 {
 		t.Fatalf("expected one stored artifact, got %d", len(repo.storedArtifacts))
+	}
+}
+
+func TestWorkerWhatsAppGroupContextHonorsZeroLimit(t *testing.T) {
+	repo := &workerRepo{
+		listMessages: []domain.Message{{MessageID: "older", Text: "do not include"}},
+	}
+	worker := WorkerService{
+		Repo:                 repo,
+		GroupContextLimit:    0,
+		GroupContextMaxChars: 6000,
+	}
+	message := domain.Message{MessageID: "current", Text: "hello"}
+	got := worker.withWhatsAppGroupContext(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "whatsapp_web",
+		ChannelScopeKey: "120363000000000000@g.us",
+	}, message)
+
+	if len(got.Parts) != 0 {
+		t.Fatalf("expected no group context part when limit is zero, got %+v", got.Parts)
+	}
+	if len(repo.listMessagesQueries) != 0 {
+		t.Fatalf("expected no transcript query when limit is zero, got %+v", repo.listMessagesQueries)
+	}
+}
+
+func TestWorkerWhatsAppGroupContextHonorsZeroMaxChars(t *testing.T) {
+	repo := &workerRepo{
+		listMessages: []domain.Message{
+			{MessageID: "older", Text: "do not include"},
+			{MessageID: "current", Text: "current"},
+		},
+	}
+	worker := WorkerService{
+		Repo:                 repo,
+		GroupContextLimit:    5,
+		GroupContextMaxChars: 0,
+	}
+	message := domain.Message{MessageID: "current", Text: "hello"}
+	got := worker.withWhatsAppGroupContext(context.Background(), domain.Session{
+		ID:              "session_1",
+		TenantID:        "tenant_default",
+		ChannelType:     "whatsapp_web",
+		ChannelScopeKey: "120363000000000000@g.us",
+	}, message)
+
+	if len(repo.listMessagesQueries) != 1 || repo.listMessagesQueries[0].CursorPage.Limit != 5 {
+		t.Fatalf("expected capped transcript query, got %+v", repo.listMessagesQueries)
+	}
+	if len(got.Parts) != 1 {
+		t.Fatalf("expected group context part, got %+v", got.Parts)
+	}
+	var payload struct {
+		RecentMessages []map[string]any `json:"recent_messages"`
+	}
+	if err := json.Unmarshal([]byte(got.Parts[0].Content), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.RecentMessages) != 0 {
+		t.Fatalf("expected no recent message text when max chars is zero, got %+v", payload.RecentMessages)
 	}
 }
 
