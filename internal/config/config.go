@@ -71,6 +71,7 @@ type Config struct {
 	NexusPublicBaseURL                    string
 	LajuBaseURL                           string
 	LajuBearerToken                       string
+	EmailLajuForwardOnly                  bool
 	EmailWebhookSecret                    string
 	EmailSMTPAddr                         string
 	EmailSMTPUsername                     string
@@ -234,6 +235,7 @@ func Load() (Config, error) {
 		NexusPublicBaseURL:                    strings.TrimRight(strings.TrimSpace(os.Getenv("NEXUS_PUBLIC_BASE_URL")), "/"),
 		LajuBaseURL:                           strings.TrimRight(strings.TrimSpace(os.Getenv("LAJU_URL")), "/"),
 		LajuBearerToken:                       strings.TrimSpace(os.Getenv("LAJU_TOKEN")),
+		EmailLajuForwardOnly:                  envBool("EMAIL_LAJU_FORWARD_ONLY", false),
 		EmailWebhookSecret:                    env("EMAIL_WEBHOOK_SECRET", "dev-email-secret"),
 		EmailSMTPAddr:                         os.Getenv("EMAIL_SMTP_ADDR"),
 		EmailSMTPUsername:                     os.Getenv("EMAIL_SMTP_USERNAME"),

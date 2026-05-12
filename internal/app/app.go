@@ -509,6 +509,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 			MultipleAgentMode:         cfg.ACPMode == "multiple",
 			AgentProfiles:             router.AgentProfiles,
 			AllowedAgentsByChannel:    router.AllowedAgentsByChannel,
+			EmailLajuForwardOnly:      cfg.EmailLajuForwardOnly,
 			WhatsAppWebGroupMode:      cfg.WhatsAppWebGroupMode,
 			WhatsAppWebGroupAllowlist: cfg.WhatsAppWebGroupAllowlist,
 			WhatsAppWebGroupBlocklist: cfg.WhatsAppWebGroupBlocklist,

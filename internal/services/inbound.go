@@ -25,6 +25,7 @@ type InboundService struct {
 	MultipleAgentMode         bool
 	AgentProfiles             map[string]domain.AgentProfile
 	AllowedAgentsByChannel    map[string][]string
+	EmailLajuForwardOnly      bool
 	WhatsAppWebGroupMode      string
 	WhatsAppWebGroupAllowlist []string
 	WhatsAppWebGroupBlocklist []string
@@ -178,6 +179,13 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 			if err := repo.StoreArtifacts(ctx, inboundMessageID, "inbound", evt.Message.Artifacts); err != nil {
 				return err
 			}
+		}
+		if s.EmailLajuForwardOnly && strings.EqualFold(evt.Channel, "email") {
+			result = InboundResult{
+				SessionID: session.ID,
+				Status:    "forwarded",
+			}
+			return nil
 		}
 		active, err := repo.HasActiveRun(ctx, session.ID)
 		if err != nil {
