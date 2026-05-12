@@ -56,6 +56,10 @@ type Config struct {
 	WhatsAppWebEnableTyping               bool
 	WhatsAppWebSetOfflineAfterSend        bool
 	WhatsAppWebRequireRecentInbound       bool
+	WhatsAppWebGroupMode                  string
+	WhatsAppWebGroupBotIDs                []string
+	WhatsAppWebGroupContextLimit          int
+	WhatsAppWebGroupContextMaxChars       int
 	WhatsAppWebMinDelayMS                 int
 	WhatsAppWebMaxDelayMS                 int
 	WhatsAppWebHourlyMessageCap           int
@@ -213,6 +217,10 @@ func Load() (Config, error) {
 		WhatsAppWebEnableTyping:               envBool("WHATSAPP_WEB_ENABLE_TYPING", true),
 		WhatsAppWebSetOfflineAfterSend:        envBool("WHATSAPP_WEB_SET_OFFLINE_AFTER_SEND", true),
 		WhatsAppWebRequireRecentInbound:       envBool("WHATSAPP_WEB_REQUIRE_RECENT_INBOUND", true),
+		WhatsAppWebGroupMode:                  env("WHATSAPP_WEB_GROUP_MODE", "ignore"),
+		WhatsAppWebGroupBotIDs:                csvEnv("WHATSAPP_WEB_GROUP_BOT_IDS"),
+		WhatsAppWebGroupContextLimit:          mustEnvIntDefault("WHATSAPP_WEB_GROUP_CONTEXT_LIMIT", 30),
+		WhatsAppWebGroupContextMaxChars:       mustEnvIntDefault("WHATSAPP_WEB_GROUP_CONTEXT_MAX_CHARS", 6000),
 		WhatsAppWebMinDelayMS:                 mustEnvIntDefault("WHATSAPP_WEB_MIN_DELAY_MS", 800),
 		WhatsAppWebMaxDelayMS:                 mustEnvIntDefault("WHATSAPP_WEB_MAX_DELAY_MS", 2500),
 		WhatsAppWebHourlyMessageCap:           mustEnvIntDefault("WHATSAPP_WEB_HOURLY_MESSAGE_CAP", 120),
@@ -283,6 +291,12 @@ func Load() (Config, error) {
 	}
 	if cfg.WhatsAppWebBurstMessageCap, err = envInt("WHATSAPP_WEB_BURST_MESSAGE_CAP", cfg.WhatsAppWebBurstMessageCap); err != nil {
 		return Config{}, fmt.Errorf("parse WHATSAPP_WEB_BURST_MESSAGE_CAP: %w", err)
+	}
+	if cfg.WhatsAppWebGroupContextLimit, err = envInt("WHATSAPP_WEB_GROUP_CONTEXT_LIMIT", cfg.WhatsAppWebGroupContextLimit); err != nil {
+		return Config{}, fmt.Errorf("parse WHATSAPP_WEB_GROUP_CONTEXT_LIMIT: %w", err)
+	}
+	if cfg.WhatsAppWebGroupContextMaxChars, err = envInt("WHATSAPP_WEB_GROUP_CONTEXT_MAX_CHARS", cfg.WhatsAppWebGroupContextMaxChars); err != nil {
+		return Config{}, fmt.Errorf("parse WHATSAPP_WEB_GROUP_CONTEXT_MAX_CHARS: %w", err)
 	}
 	if cfg.IdentityLinkMinutes, err = envInt("IDENTITY_LINK_MINUTES", cfg.IdentityLinkMinutes); err != nil {
 		return Config{}, fmt.Errorf("parse IDENTITY_LINK_MINUTES: %w", err)
@@ -434,6 +448,9 @@ func Load() (Config, error) {
 	cfg.ACPRPCTimeout = time.Duration(rpcSeconds) * time.Second
 	normalizeACPConfig(&cfg)
 	if err := validateACPConfig(cfg); err != nil {
+		return Config{}, err
+	}
+	if err := validateWhatsAppWebGroupConfig(cfg); err != nil {
 		return Config{}, err
 	}
 	if err := validateWebChatIdentities(cfg); err != nil {
@@ -817,6 +834,21 @@ func validateWebChatIdentities(cfg Config) error {
 		if strings.EqualFold(cfg.ACPMode, "multiple") && !profiles[identity.AgentProfileID] {
 			return fmt.Errorf("webchat identity %q references missing profile %q", id, identity.AgentProfileID)
 		}
+	}
+	return nil
+}
+
+func validateWhatsAppWebGroupConfig(cfg Config) error {
+	switch strings.ToLower(strings.TrimSpace(cfg.WhatsAppWebGroupMode)) {
+	case "", "ignore", "reply_when_mentioned":
+	default:
+		return fmt.Errorf("WHATSAPP_WEB_GROUP_MODE must be ignore or reply_when_mentioned")
+	}
+	if cfg.WhatsAppWebGroupContextLimit < 0 {
+		return fmt.Errorf("WHATSAPP_WEB_GROUP_CONTEXT_LIMIT must be non-negative")
+	}
+	if cfg.WhatsAppWebGroupContextMaxChars < 0 {
+		return fmt.Errorf("WHATSAPP_WEB_GROUP_CONTEXT_MAX_CHARS must be non-negative")
 	}
 	return nil
 }

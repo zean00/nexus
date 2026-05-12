@@ -306,6 +306,11 @@ func strictMessageParts(parts []domain.Part) []map[string]any {
 		contentType := strings.TrimSpace(part.ContentType)
 		content := part.Content
 		switch {
+		case contentType == "application/vnd.nexus.structured-data+json":
+			var data map[string]any
+			if err := json.Unmarshal([]byte(content), &data); err == nil && len(data) > 0 {
+				out = append(out, map[string]any{"type": "structured_data", "data": data})
+			}
 		case contentType == "", strings.HasPrefix(contentType, "text/"):
 			out = append(out, map[string]any{"type": "text", "text": content})
 		default:

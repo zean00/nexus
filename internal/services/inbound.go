@@ -25,12 +25,25 @@ type InboundService struct {
 	MultipleAgentMode      bool
 	AgentProfiles          map[string]domain.AgentProfile
 	AllowedAgentsByChannel map[string][]string
+	WhatsAppWebGroupMode   string
 }
 
 type InboundResult struct {
 	SessionID string `json:"session_id"`
 	Status    string `json:"status"`
 	QueueID   string `json:"queue_id,omitempty"`
+}
+
+func shouldIgnoreWhatsAppGroup(evt domain.CanonicalInboundEvent, mode string) bool {
+	if evt.Channel != "whatsapp_web" || !evt.Metadata.IsGroup {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "reply_when_mentioned":
+		return !evt.Metadata.MentionsBot
+	default:
+		return true
+	}
 }
 
 func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundEvent) (result InboundResult, err error) {
@@ -63,6 +76,22 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 		session, _, err := resolveSessionForRoute(ctx, repo, evt, route, s.MultipleAgentMode)
 		if err != nil {
 			return err
+		}
+		if shouldIgnoreWhatsAppGroup(evt, s.WhatsAppWebGroupMode) {
+			inboundMessageID, err := repo.StoreInboundMessage(ctx, evt, session.ID)
+			if err != nil {
+				return err
+			}
+			if len(evt.Message.Artifacts) > 0 {
+				if err := repo.StoreArtifacts(ctx, inboundMessageID, "inbound", evt.Message.Artifacts); err != nil {
+					return err
+				}
+			}
+			result = InboundResult{
+				SessionID: session.ID,
+				Status:    "ignored",
+			}
+			return nil
 		}
 		if handled, commandResult, err := s.handleIdentityCommand(ctx, evt); err != nil {
 			return err

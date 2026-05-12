@@ -446,6 +446,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	whatsappWebAdapter.RecentInboundWindow = time.Duration(cfg.WhatsAppWebRecentInboundWindowMinutes) * time.Minute
 	whatsappWebAdapter.BurstWindow = time.Duration(cfg.WhatsAppWebBurstWindowMinutes) * time.Minute
 	whatsappWebAdapter.BurstMessageCap = cfg.WhatsAppWebBurstMessageCap
+	whatsappWebAdapter.GroupBotIDs = cfg.WhatsAppWebGroupBotIDs
 	whatsappWebAdapter.CountSentDeliveriesSince = repo.CountSentDeliveriesSince
 	whatsappWebAdapter.HasRecentInboundMessageSince = repo.HasRecentInboundMessageSince
 	emailAdapter.MaxWebhookSkew = time.Duration(cfg.EmailWebhookMaxSkewSeconds) * time.Second
@@ -508,6 +509,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 			MultipleAgentMode:      cfg.ACPMode == "multiple",
 			AgentProfiles:          router.AgentProfiles,
 			AllowedAgentsByChannel: router.AllowedAgentsByChannel,
+			WhatsAppWebGroupMode:   cfg.WhatsAppWebGroupMode,
 		},
 		Await: services.AwaitService{
 			Repo: repo,
@@ -527,15 +529,17 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		},
 		Catalog: catalog,
 		Worker: services.WorkerService{
-			Repo:            repo,
-			ACP:             acpClient,
-			Catalog:         catalog,
-			Renderer:        renderers["slack"],
-			Channel:         slackAdapter,
-			Renderers:       renderers,
-			Channels:        channels,
-			LajuBaseURL:     cfg.LajuBaseURL,
-			LajuBearerToken: cfg.LajuBearerToken,
+			Repo:                 repo,
+			ACP:                  acpClient,
+			Catalog:              catalog,
+			Renderer:             renderers["slack"],
+			Channel:              slackAdapter,
+			Renderers:            renderers,
+			Channels:             channels,
+			LajuBaseURL:          cfg.LajuBaseURL,
+			LajuBearerToken:      cfg.LajuBearerToken,
+			GroupContextLimit:    cfg.WhatsAppWebGroupContextLimit,
+			GroupContextMaxChars: cfg.WhatsAppWebGroupContextMaxChars,
 		},
 		Reconciler: services.Reconciler{
 			Repo: repo,

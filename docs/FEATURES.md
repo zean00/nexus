@@ -113,6 +113,7 @@ Implemented location features:
 - Telegram `location` and `venue` payloads become canonical location message parts
 - official WhatsApp Cloud `location` payloads become canonical location message parts
 - WhatsApp Web/WAHA `location` payloads become canonical location message parts
+- WhatsApp Web groups can be ignored or routed only when the bot is natively mentioned, while Nexus keeps the full group transcript in session history
 - canonical location parts use `application/vnd.nexus.location+json`
 - when no user-entered text is present, Nexus adds a text fallback with coordinates and a maps link
 - ACP prompt builders render location parts as readable text instead of raw JSON

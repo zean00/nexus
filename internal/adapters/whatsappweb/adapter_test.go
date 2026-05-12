@@ -141,6 +141,44 @@ func TestParseInboundBatchResolvesLIDContact(t *testing.T) {
 	}
 }
 
+func TestParseInboundBatchWhatsAppGroupMention(t *testing.T) {
+	adapter := New("http://waha.example", "", "default", "", "secret", "https://nexus.example")
+	adapter.GroupBotIDs = []string{"628111222333@c.us"}
+	body := []byte(`{
+		"id":"evt_group_1",
+		"event":"message",
+		"session":"default",
+		"payload":{
+			"id":"msg_group_1",
+			"timestamp":1710000000,
+			"from":"120363025555@g.us",
+			"participant":"628999888777@c.us",
+			"body":"@bot bisa bantu?",
+			"mentionedIds":["628111222333@c.us"]
+		}
+	}`)
+	events, err := adapter.ParseInboundBatch(context.Background(), httptest.NewRequest(http.MethodPost, "/webhooks/whatsapp-web", nil), body, "tenant_default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one event, got %+v", events)
+	}
+	evt := events[0]
+	if !evt.Metadata.IsGroup || !evt.Metadata.MentionsBot {
+		t.Fatalf("expected mentioned group metadata, got %+v", evt.Metadata)
+	}
+	if evt.Sender.ChannelUserID != "628999888777" {
+		t.Fatalf("expected participant sender, got %+v", evt.Sender)
+	}
+	if evt.Conversation.ChannelSurfaceKey != "120363025555@g.us" || evt.Conversation.ChannelConversationID != "120363025555@g.us" {
+		t.Fatalf("expected group conversation, got %+v", evt.Conversation)
+	}
+	if len(evt.Message.Parts) < 2 || evt.Message.Parts[1].ContentType != "application/vnd.nexus.structured-data+json" {
+		t.Fatalf("expected structured group part, got %+v", evt.Message.Parts)
+	}
+}
+
 func TestParseInboundBatchLocationMessage(t *testing.T) {
 	adapter := New("http://waha.example", "", "default", "", "secret", "https://nexus.example")
 	body := []byte(`{

@@ -15,6 +15,7 @@ type fakeRepo struct {
 	receipts   map[string]bool
 	sessions   map[string]domain.Session
 	active     bool
+	stored     []string
 	queue      []domain.QueueItem
 	deliveries []domain.OutboundDelivery
 }
@@ -113,6 +114,7 @@ func (r *fakeRepo) ResolveSession(_ context.Context, evt domain.CanonicalInbound
 }
 func (r *fakeRepo) HasActiveRun(context.Context, string) (bool, error) { return r.active, nil }
 func (r *fakeRepo) StoreInboundMessage(_ context.Context, evt domain.CanonicalInboundEvent, _ string) (string, error) {
+	r.stored = append(r.stored, evt.Message.MessageID)
 	return evt.Message.MessageID, nil
 }
 func (r *fakeRepo) StoreOutboundMessage(context.Context, domain.Session, string, string, string, []byte) (string, error) {
@@ -385,6 +387,71 @@ func TestInboundServiceQueuesMessage(t *testing.T) {
 	}
 	if len(repo.queue) != 1 {
 		t.Fatalf("expected one queue item, got %d", len(repo.queue))
+	}
+}
+
+func TestInboundServiceStoresButIgnoresUnmentionedWhatsAppGroup(t *testing.T) {
+	repo := &fakeRepo{
+		receipts: map[string]bool{},
+		sessions: map[string]domain.Session{},
+	}
+	svc := InboundService{
+		Repo:                 repo,
+		Router:               StaticRouter{DefaultAgentProfileID: "agent_profile_default"},
+		WhatsAppWebGroupMode: "reply_when_mentioned",
+	}
+	result, err := svc.Handle(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_group_1",
+		TenantID:        "tenant_default",
+		Channel:         "whatsapp_web",
+		ProviderEventID: "provider_group_1",
+		ReceivedAt:      time.Now(),
+		Conversation:    domain.Conversation{ChannelSurfaceKey: "120363@g.us"},
+		Message:         domain.Message{MessageID: "msg_group_1", Text: "chatting"},
+		Metadata:        domain.Metadata{IsGroup: true, GroupID: "120363@g.us"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "ignored" {
+		t.Fatalf("expected ignored, got %s", result.Status)
+	}
+	if len(repo.stored) != 1 || repo.stored[0] != "msg_group_1" {
+		t.Fatalf("expected group message stored, got %+v", repo.stored)
+	}
+	if len(repo.queue) != 0 {
+		t.Fatalf("expected no queue item, got %+v", repo.queue)
+	}
+}
+
+func TestInboundServiceQueuesMentionedWhatsAppGroup(t *testing.T) {
+	repo := &fakeRepo{
+		receipts: map[string]bool{},
+		sessions: map[string]domain.Session{},
+	}
+	svc := InboundService{
+		Repo:                 repo,
+		Router:               StaticRouter{DefaultAgentProfileID: "agent_profile_default"},
+		WhatsAppWebGroupMode: "reply_when_mentioned",
+	}
+	result, err := svc.Handle(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_group_2",
+		TenantID:        "tenant_default",
+		Channel:         "whatsapp_web",
+		ProviderEventID: "provider_group_2",
+		ReceivedAt:      time.Now(),
+		Conversation:    domain.Conversation{ChannelSurfaceKey: "120363@g.us"},
+		Message:         domain.Message{MessageID: "msg_group_2", Text: "@bot help"},
+		Metadata:        domain.Metadata{IsGroup: true, GroupID: "120363@g.us", MentionsBot: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "accepted" {
+		t.Fatalf("expected accepted, got %s", result.Status)
+	}
+	if len(repo.stored) != 1 || len(repo.queue) != 1 {
+		t.Fatalf("expected stored and queued group message, stored=%+v queue=%+v", repo.stored, repo.queue)
 	}
 }
 

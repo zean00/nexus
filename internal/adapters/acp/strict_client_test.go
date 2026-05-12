@@ -209,6 +209,20 @@ func TestStrictStartRunAddsEmailContextAndArtifactRefs(t *testing.T) {
 	}
 }
 
+func TestStrictMessagePartsMapsNexusStructuredData(t *testing.T) {
+	parts := strictMessageParts([]domain.Part{{
+		ContentType: "application/vnd.nexus.structured-data+json",
+		Content:     `{"kind":"whatsapp_group_context","group_id":"120363@g.us"}`,
+	}})
+	if len(parts) != 1 || parts[0]["type"] != "structured_data" {
+		t.Fatalf("expected structured_data part, got %+v", parts)
+	}
+	data, _ := parts[0]["data"].(map[string]any)
+	if data["kind"] != "whatsapp_group_context" || data["group_id"] != "120363@g.us" {
+		t.Fatalf("unexpected structured data: %+v", data)
+	}
+}
+
 func TestStrictEnsureSessionWithGreeting(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

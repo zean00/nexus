@@ -47,6 +47,7 @@ type Adapter struct {
 	RecentInboundWindow          time.Duration
 	BurstWindow                  time.Duration
 	BurstMessageCap              int
+	GroupBotIDs                  []string
 	Sleep                        func(time.Duration)
 }
 
@@ -167,16 +168,20 @@ type webhookEnvelope struct {
 }
 
 type messagePayload struct {
-	ID        string `json:"id"`
-	Timestamp int64  `json:"timestamp"`
-	From      string `json:"from"`
-	To        string `json:"to"`
-	FromMe    bool   `json:"fromMe"`
-	Body      string `json:"body"`
-	HasMedia  bool   `json:"hasMedia"`
-	Ack       *int   `json:"ack"`
-	ReplyTo   any    `json:"replyTo"`
-	Media     *struct {
+	ID           string   `json:"id"`
+	Timestamp    int64    `json:"timestamp"`
+	From         string   `json:"from"`
+	To           string   `json:"to"`
+	Participant  string   `json:"participant"`
+	Author       string   `json:"author"`
+	FromMe       bool     `json:"fromMe"`
+	Body         string   `json:"body"`
+	MentionedIDs []string `json:"mentionedIds"`
+	Mentions     []string `json:"mentions"`
+	HasMedia     bool     `json:"hasMedia"`
+	Ack          *int     `json:"ack"`
+	ReplyTo      any      `json:"replyTo"`
+	Media        *struct {
 		URL      string `json:"url"`
 		MimeType string `json:"mimetype"`
 		Filename string `json:"filename"`
@@ -188,6 +193,7 @@ type messagePayload struct {
 		Name      string  `json:"name"`
 		Address   string  `json:"address"`
 	} `json:"location"`
+	Raw map[string]any `json:"-"`
 }
 
 func (a Adapter) ParseInbound(ctx context.Context, r *http.Request, body []byte, tenantID string) (domain.CanonicalInboundEvent, error) {
@@ -216,11 +222,16 @@ func (a Adapter) ParseInboundBatch(ctx context.Context, _ *http.Request, body []
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
 		return nil, err
 	}
+	_ = json.Unmarshal(env.Payload, &payload.Raw)
 	if payload.FromMe {
 		return nil, nil
 	}
+	isGroup := strings.HasSuffix(strings.TrimSpace(payload.From), "@g.us")
+	participantJID := firstNonEmpty(payload.Participant, payload.Author, rawStringPath(payload.Raw, "participant"), rawStringPath(payload.Raw, "author"), rawStringPath(payload.Raw, "_data", "author"))
 	channelUserID := normalizeWAHAIdentity(payload.From)
-	if resolved := a.resolveWAHAContactIdentity(ctx, payload.From); resolved != "" {
+	if isGroup && strings.TrimSpace(participantJID) != "" {
+		channelUserID = normalizeWAHAIdentity(participantJID)
+	} else if resolved := a.resolveWAHAContactIdentity(ctx, payload.From); resolved != "" {
 		channelUserID = resolved
 	}
 	conversationID := normalizeWAHAConversation(payload.From)
@@ -253,6 +264,19 @@ func (a Adapter) ParseInboundBatch(ctx context.Context, _ *http.Request, body []
 		}
 	}
 	artifacts := wahaArtifacts(payload)
+	mentionedIDs := normalizeMentionedIDs(append(append([]string{}, payload.MentionedIDs...), payload.Mentions...), payload.Raw)
+	mentionsBot := isGroup && mentionsAnyBot(mentionedIDs, a.GroupBotIDs)
+	if isGroup {
+		if raw, err := json.Marshal(map[string]any{
+			"kind":           "whatsapp_group_message",
+			"group_id":       conversationID,
+			"participant_id": channelUserID,
+			"mentioned_ids":  mentionedIDs,
+			"mentions_bot":   mentionsBot,
+		}); err == nil {
+			parts = append(parts, domain.Part{ContentType: "application/vnd.nexus.structured-data+json", Content: string(raw)})
+		}
+	}
 	evt := domain.CanonicalInboundEvent{
 		EventID:         "waha_" + firstNonEmpty(env.ID, payload.ID),
 		TenantID:        tenantID,
@@ -272,8 +296,13 @@ func (a Adapter) ParseInboundBatch(ctx context.Context, _ *http.Request, body []
 			ChannelSurfaceKey:     surfaceKey,
 		},
 		Metadata: domain.Metadata{
-			AccountKey:    firstNonEmpty(env.Session, a.Session, surfaceKey),
-			ArtifactTrust: "trusted-channel-ingress",
+			MentionsBot:        mentionsBot,
+			IsGroup:            isGroup,
+			GroupID:            conversationID,
+			GroupParticipantID: channelUserID,
+			GroupMentionedIDs:  mentionedIDs,
+			AccountKey:         firstNonEmpty(env.Session, a.Session, surfaceKey),
+			ArtifactTrust:      "trusted-channel-ingress",
 			ResponderBinding: domain.ResponderBinding{
 				Mode:                  "same-user-only",
 				AllowedChannelUserIDs: []string{channelUserID},
@@ -429,6 +458,87 @@ func normalizeWAHAConversation(in string) string {
 		return in
 	default:
 		return normalizeWAHAIdentity(in)
+	}
+}
+
+func normalizeMentionedIDs(ids []string, raw map[string]any) []string {
+	for _, key := range []string{"mentionedIds", "mentioned_ids", "mentions"} {
+		ids = append(ids, stringSliceFromAny(raw[key])...)
+	}
+	for _, path := range [][]string{{"_data", "mentionedJidList"}, {"_data", "mentionedIds"}, {"message", "extendedTextMessage", "contextInfo", "mentionedJid"}} {
+		ids = append(ids, stringSliceFromAny(rawPath(raw, path...))...)
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		for _, candidate := range []string{strings.TrimSpace(id), normalizeWAHAIdentity(id)} {
+			if candidate == "" {
+				continue
+			}
+			key := strings.ToLower(candidate)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+func mentionsAnyBot(mentionedIDs, botIDs []string) bool {
+	bots := map[string]struct{}{}
+	for _, id := range botIDs {
+		for _, candidate := range []string{strings.TrimSpace(id), normalizeWAHAIdentity(id)} {
+			if candidate != "" {
+				bots[strings.ToLower(candidate)] = struct{}{}
+			}
+		}
+	}
+	if len(bots) == 0 {
+		return false
+	}
+	for _, id := range mentionedIDs {
+		if _, ok := bots[strings.ToLower(strings.TrimSpace(id))]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func rawStringPath(raw map[string]any, path ...string) string {
+	if value, _ := rawPath(raw, path...).(string); strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+func rawPath(raw map[string]any, path ...string) any {
+	var cur any = raw
+	for _, key := range path {
+		obj, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur = obj[key]
+	}
+	return cur
+}
+
+func stringSliceFromAny(value any) []string {
+	switch v := value.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, _ := item.(string); strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

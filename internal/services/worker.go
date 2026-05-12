@@ -16,20 +16,112 @@ import (
 )
 
 type WorkerService struct {
-	Repo                ports.Repository
-	ACP                 ports.ACPBridge
-	Catalog             *AgentCatalog
-	Renderer            ports.Renderer
-	Channel             ports.ChannelAdapter
-	Renderers           map[string]ports.Renderer
-	Channels            map[string]ports.ChannelAdapter
-	LajuBaseURL         string
-	LajuBearerToken     string
-	NotifySessionUpdate func(sessionID string)
+	Repo                 ports.Repository
+	ACP                  ports.ACPBridge
+	Catalog              *AgentCatalog
+	Renderer             ports.Renderer
+	Channel              ports.ChannelAdapter
+	Renderers            map[string]ports.Renderer
+	Channels             map[string]ports.ChannelAdapter
+	LajuBaseURL          string
+	LajuBearerToken      string
+	GroupContextLimit    int
+	GroupContextMaxChars int
+	NotifySessionUpdate  func(sessionID string)
 }
 
 type deliveryPreparer interface {
 	PrepareDelivery(ctx context.Context, delivery domain.OutboundDelivery) (domain.OutboundDelivery, error)
+}
+
+const structuredDataContentType = "application/vnd.nexus.structured-data+json"
+
+func (s WorkerService) withWhatsAppGroupContext(ctx context.Context, session domain.Session, message domain.Message) domain.Message {
+	if !strings.EqualFold(session.ChannelType, "whatsapp_web") || !strings.Contains(session.ChannelScopeKey, "@g.us") {
+		return message
+	}
+	limit := s.GroupContextLimit
+	if limit <= 0 {
+		return message
+	}
+	page, err := s.Repo.ListMessages(ctx, domain.MessageListQuery{
+		TenantID:   session.TenantID,
+		SessionID:  session.ID,
+		CursorPage: domain.CursorPage{Limit: limit},
+	})
+	if err != nil {
+		tracex.Logger(ctx).Warn("worker.group_context_failed", "session_id", session.ID, "error", err.Error())
+		return message
+	}
+	data := map[string]any{
+		"kind":               "whatsapp_group_context",
+		"group_id":           session.ChannelScopeKey,
+		"current_message_id": message.MessageID,
+		"recent_messages":    compactGroupMessages(page.Items, message.MessageID, s.GroupContextMaxChars),
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return message
+	}
+	message.Parts = append(message.Parts, domain.Part{ContentType: structuredDataContentType, Content: string(raw)})
+	return message
+}
+
+func compactGroupMessages(messages []domain.Message, currentMessageID string, maxChars int) []map[string]any {
+	if maxChars <= 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(messages))
+	used := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			continue
+		}
+		remaining := maxChars - used
+		if remaining <= 0 {
+			break
+		}
+		if len(text) > remaining {
+			text = text[:remaining]
+		}
+		item := map[string]any{
+			"message_id": msg.MessageID,
+			"role":       msg.Role,
+			"direction":  msg.Direction,
+			"text":       text,
+			"is_current": msg.MessageID == currentMessageID,
+		}
+		if participantID := groupParticipantID(msg.Parts); participantID != "" {
+			item["participant_id"] = participantID
+		}
+		if !msg.CreatedAt.IsZero() {
+			item["created_at"] = msg.CreatedAt.UTC().Format(time.RFC3339)
+		}
+		out = append(out, item)
+		used += len(text)
+	}
+	return out
+}
+
+func groupParticipantID(parts []domain.Part) string {
+	for _, part := range parts {
+		if part.ContentType != structuredDataContentType {
+			continue
+		}
+		var data map[string]any
+		if err := json.Unmarshal([]byte(part.Content), &data); err != nil {
+			continue
+		}
+		if data["kind"] != "whatsapp_group_message" {
+			continue
+		}
+		if participantID, _ := data["participant_id"].(string); strings.TrimSpace(participantID) != "" {
+			return strings.TrimSpace(participantID)
+		}
+	}
+	return ""
 }
 
 func (s WorkerService) ProcessOnce(ctx context.Context, limit int) (err error) {
@@ -159,6 +251,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	if err != nil {
 		return err
 	}
+	message = s.withWhatsAppGroupContext(ctx, session, message)
 	acpSessionID, err := s.ACP.EnsureSession(ctx, session)
 	if err != nil {
 		return err

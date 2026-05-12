@@ -106,6 +106,8 @@ Strengths:
 Current notes:
 
 - this is a separate channel from the official Meta Cloud API path
+- WhatsApp group support is intentionally limited to `ignore` or `reply_when_mentioned`; Nexus stores every group message in group session history, but only forwards native bot mentions to ACP
+- mentioned group runs receive capped recent group transcript through structured ACP context
 - v1 await UX uses text fallback rather than provider-native buttons
 - partial streaming is not surfaced
 
