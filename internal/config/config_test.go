@@ -171,6 +171,9 @@ webchat:
       path: support
       agent_profile_id: support
       title: Support
+whatsapp_web:
+  group_allowlist: ["120363111@g.us"]
+  group_blocklist: ["120363222@g.us"]
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -197,6 +200,12 @@ webchat:
 	}
 	if len(cfg.WebChatIdentities) != 1 || cfg.WebChatIdentities[0].ID != "support_chat" || cfg.WebChatIdentities[0].Path != "support" {
 		t.Fatalf("expected webchat identity config, got %+v", cfg.WebChatIdentities)
+	}
+	if len(cfg.WhatsAppWebGroupAllowlist) != 1 || cfg.WhatsAppWebGroupAllowlist[0] != "120363111@g.us" {
+		t.Fatalf("expected whatsapp group allowlist, got %+v", cfg.WhatsAppWebGroupAllowlist)
+	}
+	if len(cfg.WhatsAppWebGroupBlocklist) != 1 || cfg.WhatsAppWebGroupBlocklist[0] != "120363222@g.us" {
+		t.Fatalf("expected whatsapp group blocklist, got %+v", cfg.WhatsAppWebGroupBlocklist)
 	}
 }
 

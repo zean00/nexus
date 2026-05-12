@@ -58,6 +58,8 @@ type Config struct {
 	WhatsAppWebRequireRecentInbound       bool
 	WhatsAppWebGroupMode                  string
 	WhatsAppWebGroupBotIDs                []string
+	WhatsAppWebGroupAllowlist             []string
+	WhatsAppWebGroupBlocklist             []string
 	WhatsAppWebGroupContextLimit          int
 	WhatsAppWebGroupContextMaxChars       int
 	WhatsAppWebMinDelayMS                 int
@@ -219,6 +221,8 @@ func Load() (Config, error) {
 		WhatsAppWebRequireRecentInbound:       envBool("WHATSAPP_WEB_REQUIRE_RECENT_INBOUND", true),
 		WhatsAppWebGroupMode:                  env("WHATSAPP_WEB_GROUP_MODE", "ignore"),
 		WhatsAppWebGroupBotIDs:                csvEnv("WHATSAPP_WEB_GROUP_BOT_IDS"),
+		WhatsAppWebGroupAllowlist:             csvEnv("WHATSAPP_WEB_GROUP_ALLOWLIST"),
+		WhatsAppWebGroupBlocklist:             csvEnv("WHATSAPP_WEB_GROUP_BLOCKLIST"),
 		WhatsAppWebGroupContextLimit:          mustEnvIntDefault("WHATSAPP_WEB_GROUP_CONTEXT_LIMIT", 30),
 		WhatsAppWebGroupContextMaxChars:       mustEnvIntDefault("WHATSAPP_WEB_GROUP_CONTEXT_MAX_CHARS", 6000),
 		WhatsAppWebMinDelayMS:                 mustEnvIntDefault("WHATSAPP_WEB_MIN_DELAY_MS", 800),
@@ -473,24 +477,30 @@ func Load() (Config, error) {
 }
 
 type fileConfig struct {
-	ServiceName                  string             `json:"service_name" yaml:"service_name"`
-	Environment                  string             `json:"environment" yaml:"environment"`
-	HTTPAddr                     string             `json:"http_addr" yaml:"http_addr"`
-	AdminAddr                    string             `json:"admin_addr" yaml:"admin_addr"`
-	DatabaseURL                  string             `json:"database_url" yaml:"database_url"`
-	DefaultTenantID              string             `json:"default_tenant_id" yaml:"default_tenant_id"`
-	DefaultAgentProfileID        string             `json:"default_agent_profile_id" yaml:"default_agent_profile_id"`
-	ACP                          fileACPConfig      `json:"acp" yaml:"acp"`
-	Routing                      AgentRoutingConfig `json:"routing" yaml:"routing"`
-	WebChat                      fileWebChatConfig  `json:"webchat" yaml:"webchat"`
-	WebChatHistoryScope          string             `json:"webchat_history_scope" yaml:"webchat_history_scope"`
-	WebChatInteractionVisibility string             `json:"webchat_interaction_visibility" yaml:"webchat_interaction_visibility"`
+	ServiceName                  string                `json:"service_name" yaml:"service_name"`
+	Environment                  string                `json:"environment" yaml:"environment"`
+	HTTPAddr                     string                `json:"http_addr" yaml:"http_addr"`
+	AdminAddr                    string                `json:"admin_addr" yaml:"admin_addr"`
+	DatabaseURL                  string                `json:"database_url" yaml:"database_url"`
+	DefaultTenantID              string                `json:"default_tenant_id" yaml:"default_tenant_id"`
+	DefaultAgentProfileID        string                `json:"default_agent_profile_id" yaml:"default_agent_profile_id"`
+	ACP                          fileACPConfig         `json:"acp" yaml:"acp"`
+	Routing                      AgentRoutingConfig    `json:"routing" yaml:"routing"`
+	WebChat                      fileWebChatConfig     `json:"webchat" yaml:"webchat"`
+	WhatsAppWeb                  fileWhatsAppWebConfig `json:"whatsapp_web" yaml:"whatsapp_web"`
+	WebChatHistoryScope          string                `json:"webchat_history_scope" yaml:"webchat_history_scope"`
+	WebChatInteractionVisibility string                `json:"webchat_interaction_visibility" yaml:"webchat_interaction_visibility"`
 }
 
 type fileWebChatConfig struct {
 	HistoryScope          string                  `json:"history_scope" yaml:"history_scope"`
 	InteractionVisibility string                  `json:"interaction_visibility" yaml:"interaction_visibility"`
 	Identities            []WebChatIdentityConfig `json:"identities" yaml:"identities"`
+}
+
+type fileWhatsAppWebConfig struct {
+	GroupAllowlist []string `json:"group_allowlist" yaml:"group_allowlist"`
+	GroupBlocklist []string `json:"group_blocklist" yaml:"group_blocklist"`
 }
 
 type fileACPConfig struct {
@@ -563,6 +573,12 @@ func mergeFileConfig(cfg *Config, file fileConfig) {
 	}
 	if len(file.WebChat.Identities) > 0 {
 		cfg.WebChatIdentities = append([]WebChatIdentityConfig(nil), file.WebChat.Identities...)
+	}
+	if len(file.WhatsAppWeb.GroupAllowlist) > 0 {
+		cfg.WhatsAppWebGroupAllowlist = append([]string(nil), file.WhatsAppWeb.GroupAllowlist...)
+	}
+	if len(file.WhatsAppWeb.GroupBlocklist) > 0 {
+		cfg.WhatsAppWebGroupBlocklist = append([]string(nil), file.WhatsAppWeb.GroupBlocklist...)
 	}
 	if file.ACP.Mode != "" {
 		cfg.ACPMode = file.ACP.Mode
@@ -662,6 +678,12 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.WhatsAppPhoneNumberID = value
 	}
 	cfg.WhatsAppAPIBaseURL = env("WHATSAPP_API_BASE_URL", cfg.WhatsAppAPIBaseURL)
+	if value := csvEnv("WHATSAPP_WEB_GROUP_ALLOWLIST"); len(value) > 0 {
+		cfg.WhatsAppWebGroupAllowlist = value
+	}
+	if value := csvEnv("WHATSAPP_WEB_GROUP_BLOCKLIST"); len(value) > 0 {
+		cfg.WhatsAppWebGroupBlocklist = value
+	}
 	cfg.EmailWebhookSecret = env("EMAIL_WEBHOOK_SECRET", cfg.EmailWebhookSecret)
 	if value := os.Getenv("EMAIL_SMTP_ADDR"); value != "" {
 		cfg.EmailSMTPAddr = value

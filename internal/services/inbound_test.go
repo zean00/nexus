@@ -455,6 +455,83 @@ func TestInboundServiceQueuesMentionedWhatsAppGroup(t *testing.T) {
 	}
 }
 
+func TestInboundServiceQueuesMentionedWhatsAppGroupOnlyWhenAllowed(t *testing.T) {
+	repo := &fakeRepo{
+		receipts: map[string]bool{},
+		sessions: map[string]domain.Session{},
+	}
+	svc := InboundService{
+		Repo:                      repo,
+		Router:                    StaticRouter{DefaultAgentProfileID: "agent_profile_default"},
+		WhatsAppWebGroupMode:      "reply_when_mentioned",
+		WhatsAppWebGroupAllowlist: []string{"allowed@g.us"},
+		WhatsAppWebGroupBlocklist: []string{"blocked@g.us"},
+	}
+
+	ignored, err := svc.Handle(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_group_blocked",
+		TenantID:        "tenant_default",
+		Channel:         "whatsapp_web",
+		ProviderEventID: "provider_group_blocked",
+		ReceivedAt:      time.Now(),
+		Conversation:    domain.Conversation{ChannelSurfaceKey: "blocked@g.us"},
+		Message:         domain.Message{MessageID: "msg_group_blocked", Text: "@bot help"},
+		Metadata:        domain.Metadata{IsGroup: true, GroupID: "blocked@g.us", MentionsBot: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ignored.Status != "ignored" || len(repo.queue) != 0 {
+		t.Fatalf("expected blocked group to be ignored, result=%+v queue=%+v", ignored, repo.queue)
+	}
+
+	accepted, err := svc.Handle(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_group_allowed",
+		TenantID:        "tenant_default",
+		Channel:         "whatsapp_web",
+		ProviderEventID: "provider_group_allowed",
+		ReceivedAt:      time.Now(),
+		Conversation:    domain.Conversation{ChannelSurfaceKey: "allowed@g.us"},
+		Message:         domain.Message{MessageID: "msg_group_allowed", Text: "@bot help"},
+		Metadata:        domain.Metadata{IsGroup: true, GroupID: "allowed@g.us", MentionsBot: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Status != "accepted" || len(repo.queue) != 1 {
+		t.Fatalf("expected allowed group to be queued, result=%+v queue=%+v", accepted, repo.queue)
+	}
+}
+
+func TestInboundServiceMentionedWhatsAppGroupAllowlistExcludesUnknown(t *testing.T) {
+	repo := &fakeRepo{
+		receipts: map[string]bool{},
+		sessions: map[string]domain.Session{},
+	}
+	svc := InboundService{
+		Repo:                      repo,
+		Router:                    StaticRouter{DefaultAgentProfileID: "agent_profile_default"},
+		WhatsAppWebGroupMode:      "reply_when_mentioned",
+		WhatsAppWebGroupAllowlist: []string{"allowed@g.us"},
+	}
+	result, err := svc.Handle(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_group_unknown",
+		TenantID:        "tenant_default",
+		Channel:         "whatsapp_web",
+		ProviderEventID: "provider_group_unknown",
+		ReceivedAt:      time.Now(),
+		Conversation:    domain.Conversation{ChannelSurfaceKey: "unknown@g.us"},
+		Message:         domain.Message{MessageID: "msg_group_unknown", Text: "@bot help"},
+		Metadata:        domain.Metadata{IsGroup: true, GroupID: "unknown@g.us", MentionsBot: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "ignored" || len(repo.queue) != 0 {
+		t.Fatalf("expected non-allowlisted group to be ignored, result=%+v queue=%+v", result, repo.queue)
+	}
+}
+
 func TestInboundServiceHandlesTelegramSessionListCommand(t *testing.T) {
 	repo := &fakeRepo{
 		receipts: map[string]bool{},

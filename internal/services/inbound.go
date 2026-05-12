@@ -19,13 +19,15 @@ import (
 var ErrDuplicateEvent = errors.New("duplicate inbound event")
 
 type InboundService struct {
-	Repo                   ports.Repository
-	Router                 ports.Router
-	Identity               ports.IdentityRepository
-	MultipleAgentMode      bool
-	AgentProfiles          map[string]domain.AgentProfile
-	AllowedAgentsByChannel map[string][]string
-	WhatsAppWebGroupMode   string
+	Repo                      ports.Repository
+	Router                    ports.Router
+	Identity                  ports.IdentityRepository
+	MultipleAgentMode         bool
+	AgentProfiles             map[string]domain.AgentProfile
+	AllowedAgentsByChannel    map[string][]string
+	WhatsAppWebGroupMode      string
+	WhatsAppWebGroupAllowlist []string
+	WhatsAppWebGroupBlocklist []string
 }
 
 type InboundResult struct {
@@ -34,16 +36,57 @@ type InboundResult struct {
 	QueueID   string `json:"queue_id,omitempty"`
 }
 
-func shouldIgnoreWhatsAppGroup(evt domain.CanonicalInboundEvent, mode string) bool {
+func shouldIgnoreWhatsAppGroup(evt domain.CanonicalInboundEvent, mode string, allowlist, blocklist []string) bool {
 	if evt.Channel != "whatsapp_web" || !evt.Metadata.IsGroup {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "reply_when_mentioned":
-		return !evt.Metadata.MentionsBot
+		return !evt.Metadata.MentionsBot || !whatsAppGroupAllowed(evt.Metadata.GroupID, evt.Conversation.ChannelSurfaceKey, allowlist, blocklist)
 	default:
 		return true
 	}
+}
+
+func whatsAppGroupAllowed(groupID, surfaceKey string, allowlist, blocklist []string) bool {
+	groupID = strings.TrimSpace(groupID)
+	surfaceKey = strings.TrimSpace(surfaceKey)
+	if containsWhatsAppGroupID(blocklist, groupID, surfaceKey) {
+		return false
+	}
+	if len(trimmedNonEmpty(allowlist)) > 0 {
+		return containsWhatsAppGroupID(allowlist, groupID, surfaceKey)
+	}
+	return true
+}
+
+func containsWhatsAppGroupID(values []string, candidates ...string) bool {
+	normalized := map[string]bool{}
+	for _, candidate := range candidates {
+		if value := normalizeWhatsAppGroupListID(candidate); value != "" {
+			normalized[value] = true
+		}
+	}
+	for _, value := range values {
+		if normalized[normalizeWhatsAppGroupListID(value)] {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeWhatsAppGroupListID(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func trimmedNonEmpty(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundEvent) (result InboundResult, err error) {
@@ -77,7 +120,7 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 		if err != nil {
 			return err
 		}
-		if shouldIgnoreWhatsAppGroup(evt, s.WhatsAppWebGroupMode) {
+		if shouldIgnoreWhatsAppGroup(evt, s.WhatsAppWebGroupMode, s.WhatsAppWebGroupAllowlist, s.WhatsAppWebGroupBlocklist) {
 			inboundMessageID, err := repo.StoreInboundMessage(ctx, evt, session.ID)
 			if err != nil {
 				return err

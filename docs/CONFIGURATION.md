@@ -226,6 +226,8 @@ Behavior notes:
 | `WHATSAPP_WEB_REQUIRE_RECENT_INBOUND` | `true` | Require a recent inbound message before outbound sends are allowed | Enforces reply-oriented behavior for `whatsapp_web` |
 | `WHATSAPP_WEB_GROUP_MODE` | `ignore` | WhatsApp group behavior: `ignore` or `reply_when_mentioned` | Group messages are always stored in Nexus history |
 | `WHATSAPP_WEB_GROUP_BOT_IDS` | empty | Comma-separated bot JIDs/numbers used for native WAHA mention matching | Required for `reply_when_mentioned` to trigger reliably |
+| `WHATSAPP_WEB_GROUP_ALLOWLIST` | empty | Comma-separated group JIDs allowed to trigger replies when mentioned | Empty means all mentioned groups are allowed unless blocked |
+| `WHATSAPP_WEB_GROUP_BLOCKLIST` | empty | Comma-separated group JIDs that never trigger replies when mentioned | Takes precedence over allowlist |
 | `WHATSAPP_WEB_GROUP_CONTEXT_LIMIT` | `30` | Recent group messages attached to mentioned runs | Sent as capped structured context to ACP |
 | `WHATSAPP_WEB_GROUP_CONTEXT_MAX_CHARS` | `6000` | Maximum text characters in attached group context | Prevents large group transcripts from bloating prompts |
 | `WHATSAPP_WEB_MIN_DELAY_MS` | `800` | Minimum delay before sends | Anti-block pacing floor |
@@ -242,7 +244,7 @@ Behavior notes:
 - WAHA webhook verification accepts hex or base64 `X-Webhook-Hmac` values, with optional case-insensitive `sha1`, `sha256`, `sha512`, or `hmac-sha*` prefixes; `X-Webhook-Hmac-Algorithm` selects the HMAC algorithm and defaults to SHA-256
 - outbound artifacts are sent through WAHA directly and do not require public URLs
 - inbound WAHA location payloads are normalized into canonical location parts with a maps-link text fallback
-- WhatsApp groups are session-scoped by group JID; in `reply_when_mentioned` mode Nexus stores all group messages but only enqueues native bot mentions
+- WhatsApp groups are session-scoped by group JID; in `reply_when_mentioned` mode Nexus stores all group messages but only enqueues native bot mentions from groups allowed by `WHATSAPP_WEB_GROUP_ALLOWLIST` / `WHATSAPP_WEB_GROUP_BLOCKLIST`
 - mentioned WhatsApp group turns include recent group history as `whatsapp_group_context` structured ACP data; passive group messages are not forwarded to ACP
 - Nexus exposes admin session lifecycle endpoints for the configured WAHA session
 - phone-based identity linking is shared with the official WhatsApp channel
