@@ -69,6 +69,9 @@ type Config struct {
 	WhatsAppWebBurstWindowMinutes         int
 	WhatsAppWebBurstMessageCap            int
 	NexusPublicBaseURL                    string
+	InboundWebhookURL                     string
+	InboundWebhookBearerToken             string
+	WebChatAccountKey                     string
 	LajuBaseURL                           string
 	LajuBearerToken                       string
 	EmailLajuForwardOnly                  bool
@@ -233,6 +236,9 @@ func Load() (Config, error) {
 		WhatsAppWebBurstWindowMinutes:         mustEnvIntDefault("WHATSAPP_WEB_BURST_WINDOW_MINUTES", 2),
 		WhatsAppWebBurstMessageCap:            mustEnvIntDefault("WHATSAPP_WEB_BURST_MESSAGE_CAP", 4),
 		NexusPublicBaseURL:                    strings.TrimRight(strings.TrimSpace(os.Getenv("NEXUS_PUBLIC_BASE_URL")), "/"),
+		InboundWebhookURL:                     strings.TrimSpace(os.Getenv("CHANNEL_INBOUND_WEBHOOK_URL")),
+		InboundWebhookBearerToken:             strings.TrimSpace(os.Getenv("CHANNEL_INBOUND_WEBHOOK_TOKEN")),
+		WebChatAccountKey:                     strings.TrimSpace(os.Getenv("WEBCHAT_ACCOUNT_KEY")),
 		LajuBaseURL:                           strings.TrimRight(strings.TrimSpace(os.Getenv("LAJU_URL")), "/"),
 		LajuBearerToken:                       strings.TrimSpace(os.Getenv("LAJU_TOKEN")),
 		EmailLajuForwardOnly:                  envBool("EMAIL_LAJU_FORWARD_ONLY", false),

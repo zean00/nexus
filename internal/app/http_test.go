@@ -266,11 +266,15 @@ func (r *appRepoStub) EnqueueDelivery(_ context.Context, delivery domain.Outboun
 	return nil
 }
 func (r *appRepoStub) EnqueueLajuInbound(_ context.Context, tenantID, eventID string, payload []byte) error {
+	return r.EnqueueInboundWebhook(context.Background(), tenantID, eventID, payload)
+}
+func (r *appRepoStub) EnqueueInboundWebhook(_ context.Context, tenantID, eventID string, payload []byte) error {
 	r.lajuInboundEvents = append(r.lajuInboundEvents, domain.OutboxEvent{
-		TenantID:    tenantID,
-		EventType:   "laju.inbound.forward",
-		AggregateID: eventID,
-		PayloadJSON: payload,
+		TenantID:      tenantID,
+		EventType:     "channel.inbound.webhook",
+		AggregateType: "inbound_webhook",
+		AggregateID:   eventID,
+		PayloadJSON:   payload,
 	})
 	return nil
 }

@@ -94,6 +94,8 @@ In practice, this gives you a fast local loop without weakening non-local enviro
 
 The embedded webchat is the easiest way to verify session handling, awaits, streaming updates, artifacts, and identity-link flows.
 
+When the gateway is running locally with `WEBCHAT_DEV_AUTH=true` and `NEXUS_ENV=development`, opening `http://localhost:8080/webchat` shows a development sign-in form instead of the normal OTP flow. The UI still requires an email address; submitting it calls `POST /webchat/dev/session` to create or reuse that local webchat session. Dedicated webchat URLs use the same server-side guard, so identity config cannot expose this form outside local development.
+
 ![Webchat shell](./images/webchat-shell.png)
 
 ## CLI Wrapper for Webchat

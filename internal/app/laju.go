@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"nexus/internal/config"
 	"nexus/internal/domain"
 	"nexus/internal/httpx"
 	"nexus/internal/services"
@@ -15,6 +16,7 @@ import (
 
 type lajuInboundEnqueuer interface {
 	EnqueueLajuInbound(ctx context.Context, tenantID, eventID string, payload []byte) error
+	EnqueueInboundWebhook(ctx context.Context, tenantID, eventID string, payload []byte) error
 }
 
 type lajuChannelContext struct {
@@ -37,7 +39,7 @@ type lajuChannelContext struct {
 }
 
 func (a *App) forwardLajuInbound(ctx context.Context, evt domain.CanonicalInboundEvent, result services.InboundResult) {
-	if strings.TrimSpace(a.Config.LajuBaseURL) == "" {
+	if strings.TrimSpace(inboundWebhookURL(a.Config)) == "" {
 		return
 	}
 	body, err := json.Marshal(lajuInboundPayload(evt, result))
@@ -50,9 +52,26 @@ func (a *App) forwardLajuInbound(ctx context.Context, evt domain.CanonicalInboun
 		slog.WarnContext(ctx, "laju inbound outbox unavailable", "event_id", evt.EventID)
 		return
 	}
-	if err := enqueuer.EnqueueLajuInbound(ctx, evt.TenantID, evt.EventID, body); err != nil {
-		slog.WarnContext(ctx, "enqueue laju inbound failed", "event_id", evt.EventID, "error", err.Error())
+	if err := enqueuer.EnqueueInboundWebhook(ctx, evt.TenantID, evt.EventID, body); err != nil {
+		slog.WarnContext(ctx, "enqueue inbound webhook failed", "event_id", evt.EventID, "error", err.Error())
 	}
+}
+
+func inboundWebhookURL(cfg config.Config) string {
+	if strings.TrimSpace(cfg.InboundWebhookURL) != "" {
+		return strings.TrimSpace(cfg.InboundWebhookURL)
+	}
+	if strings.TrimSpace(cfg.LajuBaseURL) == "" {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(cfg.LajuBaseURL), "/") + "/api/integrations/nexus/inbound"
+}
+
+func inboundWebhookToken(cfg config.Config) string {
+	if strings.TrimSpace(cfg.InboundWebhookBearerToken) != "" {
+		return strings.TrimSpace(cfg.InboundWebhookBearerToken)
+	}
+	return strings.TrimSpace(cfg.LajuBearerToken)
 }
 
 func lajuInboundPayload(evt domain.CanonicalInboundEvent, result services.InboundResult) map[string]any {

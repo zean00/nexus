@@ -643,12 +643,13 @@ func (a *App) handleWebChatMessage(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	evt := buildWebChatMessageEvent(a.Config.DefaultTenantID, authSession, identity, surfaceKey, ownerUserID, text, artifacts, replyTo)
+	evt := buildWebChatMessageEvent(a.Config.DefaultTenantID, a.Config.WebChatAccountKey, authSession, identity, surfaceKey, ownerUserID, text, artifacts, replyTo)
 	result, err := a.Inbound.Handle(r.Context(), evt)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	a.forwardLajuInbound(r.Context(), evt, result)
 	if a.WebChatHub != nil {
 		a.WebChatHub.Notify(result.SessionID)
 	}
@@ -1774,7 +1775,7 @@ func webChatActivityTime(run domain.Run) time.Time {
 	return run.StartedAt
 }
 
-func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession, identity *config.WebChatIdentityConfig, surfaceKey, ownerUserID, text string, artifacts []domain.Artifact, replyTo map[string]any) domain.CanonicalInboundEvent {
+func buildWebChatMessageEvent(tenantID, accountKey string, authSession domain.WebAuthSession, identity *config.WebChatIdentityConfig, surfaceKey, ownerUserID, text string, artifacts []domain.Artifact, replyTo map[string]any) domain.CanonicalInboundEvent {
 	eventID := "webchat_evt_" + randomToken(8)
 	messageType := "text"
 	switch {
@@ -1837,6 +1838,7 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 		},
 		Metadata: domain.Metadata{
 			Command:           webChatCommandFromText(text, identity),
+			AccountKey:        webChatAccountKey(accountKey, identity),
 			ArtifactTrust:     "first-party-webchat",
 			WebChatIdentityID: webChatIdentityID(identity),
 			DisabledCommands:  webChatDisabledCommands(identity),
@@ -1847,6 +1849,16 @@ func buildWebChatMessageEvent(tenantID string, authSession domain.WebAuthSession
 			RawPayload: rawPayload,
 		},
 	}
+}
+
+func webChatAccountKey(accountKey string, identity *config.WebChatIdentityConfig) string {
+	if strings.TrimSpace(accountKey) != "" {
+		return strings.TrimSpace(accountKey)
+	}
+	if id := webChatIdentityID(identity); id != "" {
+		return id
+	}
+	return "default"
 }
 
 func webChatCommandFromText(text string, identity *config.WebChatIdentityConfig) string {

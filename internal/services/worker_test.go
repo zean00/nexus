@@ -1044,16 +1044,16 @@ func TestWorkerForwardsLajuInboundOutboxEvent(t *testing.T) {
 
 	repo := &workerRepo{
 		outboxEvents: []domain.OutboxEvent{{
-			ID:          "outbox_laju_inbound_evt_1",
-			EventType:   "laju.inbound.forward",
+			ID:          "outbox_inbound_webhook_evt_1",
+			EventType:   "channel.inbound.webhook",
 			AggregateID: "evt_1",
 			PayloadJSON: []byte(`{"channel":"webchat","session_id":"session_1","body":"hello"}`),
 		}},
 	}
 	worker := WorkerService{
-		Repo:            repo,
-		LajuBaseURL:     server.URL,
-		LajuBearerToken: "laju-token",
+		Repo:                repo,
+		InboundWebhookURL:   server.URL + "/api/integrations/nexus/inbound",
+		InboundWebhookToken: "laju-token",
 	}
 	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
 		t.Fatal(err)
@@ -1077,17 +1077,17 @@ func TestWorkerRetriesLajuInboundOutboxEventOnFailure(t *testing.T) {
 
 	repo := &workerRepo{
 		outboxEvents: []domain.OutboxEvent{{
-			ID:          "outbox_laju_inbound_evt_1",
-			EventType:   "laju.inbound.forward",
+			ID:          "outbox_inbound_webhook_evt_1",
+			EventType:   "channel.inbound.webhook",
 			AggregateID: "evt_1",
 			PayloadJSON: []byte(`{"channel":"webchat"}`),
 		}},
 	}
-	worker := WorkerService{Repo: repo, LajuBaseURL: server.URL}
+	worker := WorkerService{Repo: repo, InboundWebhookURL: server.URL + "/api/integrations/nexus/inbound"}
 	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
 		t.Fatal(err)
 	}
-	if len(repo.markedOutboxFailed) != 1 || repo.markedOutboxFailed[0] != "outbox_laju_inbound_evt_1" {
+	if len(repo.markedOutboxFailed) != 1 || repo.markedOutboxFailed[0] != "outbox_inbound_webhook_evt_1" {
 		t.Fatalf("expected failed Laju forward to be requeued, got %+v", repo.markedOutboxFailed)
 	}
 }

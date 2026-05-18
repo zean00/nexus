@@ -23,8 +23,8 @@ type WorkerService struct {
 	Channel              ports.ChannelAdapter
 	Renderers            map[string]ports.Renderer
 	Channels             map[string]ports.ChannelAdapter
-	LajuBaseURL          string
-	LajuBearerToken      string
+	InboundWebhookURL    string
+	InboundWebhookToken  string
 	GroupContextLimit    int
 	GroupContextMaxChars int
 	NotifySessionUpdate  func(sessionID string)
@@ -178,24 +178,24 @@ func (s WorkerService) processEvent(ctx context.Context, evt domain.OutboxEvent)
 		return s.processAwaitResume(ctx, evt)
 	case "delivery.send":
 		return s.processDelivery(ctx, evt)
-	case "laju.inbound.forward":
-		return s.processLajuInboundForward(ctx, evt)
+	case "channel.inbound.webhook", "laju.inbound.forward":
+		return s.processInboundWebhook(ctx, evt)
 	default:
 		return nil
 	}
 }
 
-func (s WorkerService) processLajuInboundForward(ctx context.Context, evt domain.OutboxEvent) error {
-	if strings.TrimSpace(s.LajuBaseURL) == "" {
-		return errors.New("laju url is not configured")
+func (s WorkerService) processInboundWebhook(ctx context.Context, evt domain.OutboxEvent) error {
+	if strings.TrimSpace(s.InboundWebhookURL) == "" {
+		return errors.New("inbound webhook url is not configured")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.LajuBaseURL, "/")+"/api/integrations/nexus/inbound", bytes.NewReader(evt.PayloadJSON))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSpace(s.InboundWebhookURL), bytes.NewReader(evt.PayloadJSON))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if strings.TrimSpace(s.LajuBearerToken) != "" {
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(s.LajuBearerToken))
+	if strings.TrimSpace(s.InboundWebhookToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(s.InboundWebhookToken))
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -203,7 +203,7 @@ func (s WorkerService) processLajuInboundForward(ctx context.Context, evt domain
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("laju inbound forward failed with status %d", res.StatusCode)
+		return fmt.Errorf("inbound webhook failed with status %d", res.StatusCode)
 	}
 	return nil
 }

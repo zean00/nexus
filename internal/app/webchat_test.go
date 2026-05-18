@@ -1497,7 +1497,7 @@ func TestWebChatSurfaceScopesAllMultipleModePaths(t *testing.T) {
 
 func TestDedicatedWebChatDisablesAgentCommand(t *testing.T) {
 	identity := config.WebChatIdentityConfig{ID: "support", Path: "support", AgentProfileID: "agent_support"}
-	evt := buildWebChatMessageEvent("tenant_default", domain.WebAuthSession{
+	evt := buildWebChatMessageEvent("tenant_default", "", domain.WebAuthSession{
 		ID:    "websess_1",
 		Email: "user@example.com",
 	}, &identity, "webchat:support:user_1", "user_1", "/agent finance", nil, nil)
@@ -1511,7 +1511,7 @@ func TestDedicatedWebChatDisablesAgentCommand(t *testing.T) {
 }
 
 func TestBuildWebChatMessageEventIncludesRawPayload(t *testing.T) {
-	evt := buildWebChatMessageEvent("tenant_default", domain.WebAuthSession{
+	evt := buildWebChatMessageEvent("tenant_default", "", domain.WebAuthSession{
 		ID:    "websess_1",
 		Email: "user@example.com",
 	}, nil, "websess_1", "user@example.com", "hello from webchat", nil, map[string]any{"message_id": "msg-1", "artifact_ids": []string{"cap-1"}})

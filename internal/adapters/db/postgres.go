@@ -1226,12 +1226,16 @@ func (r *PostgresRepository) EnqueueAwaitResume(ctx context.Context, req domain.
 }
 
 func (r *PostgresRepository) EnqueueLajuInbound(ctx context.Context, tenantID, eventID string, payload []byte) error {
+	return r.EnqueueInboundWebhook(ctx, tenantID, eventID, payload)
+}
+
+func (r *PostgresRepository) EnqueueInboundWebhook(ctx context.Context, tenantID, eventID string, payload []byte) error {
 	_, err := r.exec(ctx, `
 		insert into outbox_events (
 			id, tenant_id, event_type, aggregate_type, aggregate_id, idempotency_key, payload_json, status, available_at, attempt_count
-		) values ($1,$2,'laju.inbound.forward','laju_inbound',$3,$4,$5,'queued',now(),0)
+		) values ($1,$2,'channel.inbound.webhook','inbound_webhook',$3,$4,$5,'queued',now(),0)
 		on conflict (id) do nothing
-	`, "outbox_laju_inbound_"+eventID, tenantID, eventID, "laju_inbound:"+eventID, payload)
+	`, "outbox_inbound_webhook_"+eventID, tenantID, eventID, "inbound_webhook:"+eventID, payload)
 	return err
 }
 
@@ -1301,6 +1305,7 @@ func (r *PostgresRepository) ClaimOutbox(ctx context.Context, now time.Time, lim
 				case event_type
 					when 'delivery.send' then 0
 					when 'await.resume' then 1
+					when 'channel.inbound.webhook' then 2
 					when 'laju.inbound.forward' then 2
 					when 'queue.start' then 3
 					else 4

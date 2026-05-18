@@ -147,14 +147,16 @@ The `/agent` command is available on Telegram, default webchat, Slack, official 
 
 In single mode `/sessions` and `/switch` keep their existing behavior. In multiple mode those commands only list and switch sessions scoped to the currently active agent profile for that channel/surface.
 
-## Laju Integration
+## Inbound Webhook Integration
 
 | Variable | Default | Purpose | Notes |
 | --- | --- | --- | --- |
-| `LAJU_URL` | empty | Base URL for forwarding inbound Nexus channel context to Laju | When empty, forwarding is disabled |
-| `LAJU_TOKEN` | empty | Bearer token for Laju inbound forwarding | Sent as `Authorization: Bearer ...` when configured |
+| `CHANNEL_INBOUND_WEBHOOK_URL` | empty | Full URL for forwarding canonical inbound channel events to a subscriber | When empty, `LAJU_URL` remains as a compatibility fallback |
+| `CHANNEL_INBOUND_WEBHOOK_TOKEN` | empty | Bearer token for inbound webhook delivery | Falls back to `LAJU_TOKEN` when empty |
+| `LAJU_URL` | empty | Compatibility base URL for Laju inbound forwarding | Used only when `CHANNEL_INBOUND_WEBHOOK_URL` is empty |
+| `LAJU_TOKEN` | empty | Compatibility bearer token for Laju inbound forwarding | Used only when `CHANNEL_INBOUND_WEBHOOK_TOKEN` is empty |
 
-When `LAJU_URL` is configured, Nexus enqueues inbound channel context as durable outbox work and the worker posts it to `/api/integrations/nexus/inbound`. The forwarded metadata includes the Nexus inbound `message_id`; Laju moderation-warning outbound pushes should echo that value as `metadata.message_id`, `metadata.inbound_message_id`, or `metadata.nexus_message_id` so Nexus can hide the exact denied inbound message from future history/context.
+When `CHANNEL_INBOUND_WEBHOOK_URL` is configured, Nexus enqueues inbound channel context as durable outbox work and the worker posts the canonical event payload to that subscriber URL. Existing Laju deployments can keep using `LAJU_URL`; Nexus derives `/api/integrations/nexus/inbound` from it. The forwarded metadata includes the Nexus inbound `message_id`; moderation-warning outbound pushes should echo that value as `metadata.message_id`, `metadata.inbound_message_id`, or `metadata.nexus_message_id` so Nexus can hide the exact denied inbound message from future history/context.
 
 ## Slack
 
@@ -294,6 +296,7 @@ Behavior notes:
 | `WEBCHAT_HISTORY_SCOPE` | `linked_channels` | Webchat timeline query scope | `session`, `user`, `linked_channels` |
 | `WEBCHAT_SESSION_HOURS` | `24` | Webchat auth session TTL | Controls cookie-backed session lifetime |
 | `WEBCHAT_OTP_MINUTES` | `10` | OTP challenge TTL | Email login code expiry |
+| `WEBCHAT_ACCOUNT_KEY` | `default` | Stable account key included in forwarded webchat events | Subscribers can route by channel plus account key while using the surface key for customer/session continuity |
 
 ## Web Push
 
@@ -372,6 +375,8 @@ The dev login endpoint `POST /webchat/dev/session` is only enabled when:
 - the request host is loopback
 
 This endpoint intentionally returns `404` outside that local-only scope.
+
+When the endpoint is enabled for a local browser request, the embedded webchat UI advertises a development sign-in form that asks for an email address and calls `POST /webchat/dev/session` directly. The email is still required so Nexus can reuse or create the correct webchat auth session. Dedicated webchat identity `features` cannot force `devAuth`; Nexus ignores configured `devAuth` and only exposes it from the server-side local development gate.
 
 ## Identity and Trust
 
