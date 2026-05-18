@@ -249,6 +249,7 @@ export function WebChat(props: WebChatProps) {
   const title = props.title ?? labels.title;
   const subtitle = props.subtitle ?? labels.subtitle;
   const statusLabel = props.statusLabel ?? "Live";
+  const presenceLabel = activityLabel || statusLabel;
   const panelLabel = props.panelLabel ?? "Session";
   const rootClassName = props.className ? `nexus-webchat-shell ${props.className}` : "nexus-webchat-shell";
 
@@ -459,8 +460,8 @@ export function WebChat(props: WebChatProps) {
           <section className="nexus-webchat-main">
             <div className="nexus-webchat-toolbar">
               <div className="nexus-webchat-presence">
-                <span className="nexus-webchat-presence-dot" aria-hidden="true" />
-                <span>{statusLabel}</span>
+                <span className={`nexus-webchat-presence-dot ${activityLabel ? "working" : ""}`} aria-hidden="true" />
+                <span>{presenceLabel}</span>
               </div>
               <p className="nexus-webchat-panel-caption">{panelLabel}</p>
             </div>
@@ -589,6 +590,7 @@ function TimelineItem(props: {
   const label = role === "user" ? "You" : "Assistant";
   const text = props.item.text || props.item.status || props.item.type;
   const useMarkdown = role === "assistant" && Boolean(text);
+  const timestamp = formatTimestamp(props.item.created_at);
 
   return (
     <article className={`nexus-webchat-item ${role}`}>
@@ -598,6 +600,7 @@ function TimelineItem(props: {
       <div className="nexus-webchat-item-content">
         <div className="nexus-webchat-item-meta">
           <strong>{label}</strong>
+          {timestamp ? <time dateTime={props.item.created_at}>{timestamp}</time> : null}
           {props.item.partial ? <span>typing</span> : null}
         </div>
         <div className="nexus-webchat-item-body">
@@ -803,11 +806,11 @@ function filterVisibleItems(
 }
 
 function activityLabelForMode(mode: WebChatInteractionVisibility, activity: WebChatActivity): string {
+  if (mode === "off") {
+    return "";
+  }
   if (mode === "minimal") {
     return "Typing...";
-  }
-  if (mode !== "simple") {
-    return "";
   }
   switch (activity.phase) {
     case "typing":
@@ -818,6 +821,20 @@ function activityLabelForMode(mode: WebChatInteractionVisibility, activity: WebC
     default:
       return "Thinking...";
   }
+}
+
+function formatTimestamp(value?: string): string {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
 }
 
 function asError(value: unknown): Error {

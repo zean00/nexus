@@ -390,6 +390,39 @@ func TestInboundServiceQueuesMessage(t *testing.T) {
 	}
 }
 
+func TestInboundServiceEmailForwardOnlyIncludesAgentProfile(t *testing.T) {
+	repo := &fakeRepo{
+		receipts: map[string]bool{},
+		sessions: map[string]domain.Session{},
+	}
+	svc := InboundService{
+		Repo:                 repo,
+		Router:               StaticRouter{DefaultAgentProfileID: "agent_profile_email"},
+		EmailLajuForwardOnly: true,
+	}
+	result, err := svc.Handle(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_email_1",
+		TenantID:        "tenant_default",
+		Channel:         "email",
+		ProviderEventID: "provider_email_1",
+		ReceivedAt:      time.Now(),
+		Conversation:    domain.Conversation{ChannelSurfaceKey: "inbox:support"},
+		Message:         domain.Message{MessageID: "msg_email_1", Text: "hello"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "forwarded" {
+		t.Fatalf("expected forwarded, got %s", result.Status)
+	}
+	if result.AgentProfileID != "agent_profile_email" {
+		t.Fatalf("expected forwarded result to include resolved agent profile, got %+v", result)
+	}
+	if len(repo.queue) != 0 {
+		t.Fatalf("expected no queue item for email forward-only, got %+v", repo.queue)
+	}
+}
+
 func TestInboundServiceStoresButIgnoresUnmentionedWhatsAppGroup(t *testing.T) {
 	repo := &fakeRepo{
 		receipts: map[string]bool{},

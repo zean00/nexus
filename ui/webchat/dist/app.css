@@ -250,6 +250,9 @@ textarea {
   background: #16a34a;
   box-shadow: 0 0 0 0.18rem rgba(22, 163, 74, 0.12);
 }
+.nexus-webchat-presence-dot.working {
+  animation: nexus-webchat-pulse 1.2s ease-in-out infinite;
+}
 .nexus-webchat-panel label {
   display: grid;
   gap: 0.42rem;
@@ -351,6 +354,9 @@ textarea {
 .nexus-webchat-item-meta strong {
   color: var(--nexus-webchat-ink);
   font-size: 0.92rem;
+}
+.nexus-webchat-item-meta time {
+  font-variant-numeric: tabular-nums;
 }
 .nexus-webchat-item-body {
   width: fit-content;
@@ -536,6 +542,16 @@ textarea {
   padding: 0.75rem;
   color: var(--nexus-webchat-muted);
   font-size: 0.82rem;
+}
+@keyframes nexus-webchat-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.78);
+  }
 }
 @keyframes nexus-webchat-bounce {
   0%, 80%, 100% {

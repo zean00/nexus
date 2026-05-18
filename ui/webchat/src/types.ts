@@ -32,6 +32,7 @@ export interface WebChatItem {
   await_id?: string;
   choices?: RenderChoice[];
   artifacts?: Artifact[];
+  created_at?: string;
   meta?: Record<string, string>;
 }
 

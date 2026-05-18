@@ -32,9 +32,10 @@ type InboundService struct {
 }
 
 type InboundResult struct {
-	SessionID string `json:"session_id"`
-	Status    string `json:"status"`
-	QueueID   string `json:"queue_id,omitempty"`
+	SessionID      string `json:"session_id"`
+	Status         string `json:"status"`
+	QueueID        string `json:"queue_id,omitempty"`
+	AgentProfileID string `json:"agent_profile_id,omitempty"`
 }
 
 func shouldIgnoreWhatsAppGroup(evt domain.CanonicalInboundEvent, mode string, allowlist, blocklist []string) bool {
@@ -182,8 +183,9 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 		}
 		if s.EmailLajuForwardOnly && strings.EqualFold(evt.Channel, "email") {
 			result = InboundResult{
-				SessionID: session.ID,
-				Status:    "forwarded",
+				SessionID:      session.ID,
+				Status:         "forwarded",
+				AgentProfileID: session.AgentProfileID,
 			}
 			return nil
 		}
@@ -196,9 +198,10 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 			return err
 		}
 		result = InboundResult{
-			SessionID: session.ID,
-			Status:    "accepted",
-			QueueID:   queueItem.ID,
+			SessionID:      session.ID,
+			Status:         "accepted",
+			QueueID:        queueItem.ID,
+			AgentProfileID: session.AgentProfileID,
 		}
 		if active {
 			result.Status = "queued"

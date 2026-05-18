@@ -20564,6 +20564,7 @@ function WebChat(props) {
   const title = props.title ?? labels.title;
   const subtitle = props.subtitle ?? labels.subtitle;
   const statusLabel = props.statusLabel ?? "Live";
+  const presenceLabel = activityLabel || statusLabel;
   const panelLabel = props.panelLabel ?? "Session";
   const rootClassName = props.className ? `nexus-webchat-shell ${props.className}` : "nexus-webchat-shell";
   async function handleRequestAuth(event) {
@@ -20748,8 +20749,8 @@ function WebChat(props) {
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("section", { className: "nexus-webchat-main", children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "nexus-webchat-toolbar", children: [
           /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "nexus-webchat-presence", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "nexus-webchat-presence-dot", "aria-hidden": "true" }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: statusLabel })
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: `nexus-webchat-presence-dot ${activityLabel ? "working" : ""}`, "aria-hidden": "true" }),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: presenceLabel })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "nexus-webchat-panel-caption", children: panelLabel })
         ] }),
@@ -20845,11 +20846,13 @@ function TimelineItem(props) {
   const label = role === "user" ? "You" : "Assistant";
   const text7 = props.item.text || props.item.status || props.item.type;
   const useMarkdown = role === "assistant" && Boolean(text7);
+  const timestamp = formatTimestamp(props.item.created_at);
   return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("article", { className: `nexus-webchat-item ${role}`, children: [
     /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "nexus-webchat-item-avatar", "aria-hidden": "true", children: role === "user" ? "Y" : "A" }),
     /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "nexus-webchat-item-content", children: [
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "nexus-webchat-item-meta", children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("strong", { children: label }),
+        timestamp ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("time", { dateTime: props.item.created_at, children: timestamp }) : null,
         props.item.partial ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: "typing" }) : null
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "nexus-webchat-item-body", children: useMarkdown ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(MarkdownBody, { text: text7 }) : text7 }),
@@ -21008,11 +21011,11 @@ function filterVisibleItems(items, mode, activity) {
   return items.filter((item) => !(item.type === "message" && item.role === "assistant" && item.partial));
 }
 function activityLabelForMode(mode, activity) {
+  if (mode === "off") {
+    return "";
+  }
   if (mode === "minimal") {
     return "Typing...";
-  }
-  if (mode !== "simple") {
-    return "";
   }
   switch (activity.phase) {
     case "typing":
@@ -21023,6 +21026,19 @@ function activityLabelForMode(mode, activity) {
     default:
       return "Thinking...";
   }
+}
+function formatTimestamp(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat(void 0, {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
 }
 function asError(value) {
   return value instanceof Error ? value : new Error(String(value));
