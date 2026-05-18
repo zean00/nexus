@@ -317,7 +317,7 @@ Supported values:
 
 | Mode | Behavior |
 | --- | --- |
-| `full` | Show the normal timeline, including partial streamed assistant text |
+| `full` | Show the normal timeline, including partial streamed assistant text; if no partial assistant text is visible yet, show a transient activity indicator while the agent is running |
 | `simple` | Hide internal activity detail and show human-style transient signals such as `Thinking...`, `Typing...`, `Working...` |
 | `minimal` | Hide partial assistant text and collapse activity to `Typing...` |
 | `off` | Hide transient activity signals and partial assistant text until final output appears |

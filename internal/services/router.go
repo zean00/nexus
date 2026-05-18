@@ -90,13 +90,19 @@ func NewPolicyRouter(repo ports.Repository, cfg config.Config) PolicyRouter {
 }
 
 func (r PolicyRouter) Route(ctx context.Context, evt domain.CanonicalInboundEvent, _ domain.Session) (domain.RouteDecision, error) {
-	agentProfileID, source, err := r.resolveAgentProfile(ctx, evt)
+	agentProfileID, source, match, err := r.resolveAgentProfile(ctx, evt)
 	if err != nil {
 		return domain.RouteDecision{}, err
 	}
 	profile := r.AgentProfiles[agentProfileID]
 	if profile.ID == "" {
 		profile = domain.AgentProfile{ID: agentProfileID, ConnectionID: "acp_default", AgentName: r.DefaultACPAgentName}
+	}
+	if strings.ToLower(strings.TrimSpace(r.ACPMode)) != "multiple" {
+		profile.ConnectionID = "acp_default"
+		if strings.TrimSpace(profile.AgentName) == "" {
+			profile.AgentName = r.DefaultACPAgentName
+		}
 	}
 	policy := r.FallbackPolicy
 	policy.AgentProfileID = agentProfileID
@@ -107,12 +113,20 @@ func (r PolicyRouter) Route(ctx context.Context, evt domain.CanonicalInboundEven
 			return domain.RouteDecision{}, err
 		}
 	}
+	agentMode := normalizeRouteAgentMode(routeString(match, "agent_mode", "agentMode"))
+	responseDelivery := strings.ToLower(strings.TrimSpace(routeString(match, "response_delivery", "responseDelivery")))
+	if responseDelivery == "" && (agentMode == "manual" || agentMode == "supervised") {
+		responseDelivery = "operator_review"
+	}
 	return domain.RouteDecision{
 		AgentProfileID:                    agentProfileID,
 		ACPConnectionID:                   firstNonEmptyRouteValue(profile.ConnectionID, "acp_default"),
 		ACPAgentName:                      firstNonEmptyRouteValue(profile.AgentName, r.DefaultACPAgentName),
 		ACPProfileID:                      agentProfileID,
 		Mode:                              "async",
+		AgentMode:                         agentMode,
+		ResponseDelivery:                  responseDelivery,
+		AllowFirstMessageResponse:         routeBool(match, "allow_first_message_response", "allowFirstMessageResponse"),
 		RequiresLinkedIdentity:            policy.RequireLinkedIdentityForApproval,
 		RequiresRecentStepUp:              policy.RequireRecentStepUpForApproval,
 		AllowedApprovalChannels:           append([]string(nil), policy.AllowedApprovalChannels...),
@@ -123,40 +137,34 @@ func (r PolicyRouter) Route(ctx context.Context, evt domain.CanonicalInboundEven
 	}, nil
 }
 
-func (r PolicyRouter) resolveAgentProfile(ctx context.Context, evt domain.CanonicalInboundEvent) (string, string, error) {
+func (r PolicyRouter) resolveAgentProfile(ctx context.Context, evt domain.CanonicalInboundEvent) (string, string, map[string]any, error) {
 	if strings.ToLower(strings.TrimSpace(r.ACPMode)) != "multiple" {
-		return firstNonEmptyRouteValue(r.DefaultAgentProfileID, "agent_profile_default"), "single", nil
+		if profileID, source, match, err := r.resolveRuleAgentProfile(ctx, evt, false); err != nil {
+			return "", "", nil, err
+		} else if profileID != "" {
+			return profileID, "single_" + source, match, nil
+		}
+		return firstNonEmptyRouteValue(r.DefaultAgentProfileID, "agent_profile_default"), "single", nil, nil
 	}
 	if repo, ok := r.Repo.(routeOverrideRepository); ok {
 		if profileID, err := repo.GetAgentRouteOverride(ctx, evt.TenantID, evt.Channel, evt.Conversation.ChannelSurfaceKey, evt.Sender.ChannelUserID); err == nil && profileID != "" {
 			if err := r.ensureAllowed(evt.Channel, profileID); err != nil {
-				return "", "", err
+				return "", "", nil, err
 			}
-			return profileID, "override", nil
-		}
-		if rules, err := repo.ListAgentRoutingRules(ctx, evt.TenantID); err == nil {
-			if profileID := firstMatchingRule(evt, rules); profileID != "" {
-				if err := r.ensureAllowed(evt.Channel, profileID); err != nil {
-					return "", "", err
-				}
-				return profileID, "db_rule", nil
-			}
-		} else {
-			return "", "", err
+			return profileID, "override", nil, nil
 		}
 	}
-	if profileID := firstMatchingRule(evt, r.FileRules); profileID != "" {
-		if err := r.ensureAllowed(evt.Channel, profileID); err != nil {
-			return "", "", err
-		}
-		return profileID, "file_rule", nil
+	if profileID, source, match, err := r.resolveRuleAgentProfile(ctx, evt, true); err != nil {
+		return "", "", nil, err
+	} else if profileID != "" {
+		return profileID, source, match, nil
 	}
 	if strings.EqualFold(evt.Channel, "webchat") && strings.TrimSpace(evt.Metadata.WebChatIdentityID) != "" {
 		if profileID := r.WebChatAgentByIdentity[evt.Metadata.WebChatIdentityID]; profileID != "" {
 			if err := r.ensureAllowed(evt.Channel, profileID); err != nil {
-				return "", "", err
+				return "", "", nil, err
 			}
-			return profileID, "webchat_identity", nil
+			return profileID, "webchat_identity", nil, nil
 		}
 	}
 	profileID := r.DefaultAgentByChannel[strings.ToLower(strings.TrimSpace(evt.Channel))]
@@ -164,9 +172,35 @@ func (r PolicyRouter) resolveAgentProfile(ctx context.Context, evt domain.Canoni
 		profileID = r.DefaultAgentProfileID
 	}
 	if err := r.ensureAllowed(evt.Channel, profileID); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
-	return profileID, "channel_default", nil
+	return profileID, "channel_default", nil, nil
+}
+
+func (r PolicyRouter) resolveRuleAgentProfile(ctx context.Context, evt domain.CanonicalInboundEvent, enforceAllowed bool) (string, string, map[string]any, error) {
+	if repo, ok := r.Repo.(routeOverrideRepository); ok {
+		rules, err := repo.ListAgentRoutingRules(ctx, evt.TenantID)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if profileID, match := firstMatchingRule(evt, rules); profileID != "" {
+			if enforceAllowed {
+				if err := r.ensureAllowed(evt.Channel, profileID); err != nil {
+					return "", "", nil, err
+				}
+			}
+			return profileID, "db_rule", match, nil
+		}
+	}
+	if profileID, match := firstMatchingRule(evt, r.FileRules); profileID != "" {
+		if enforceAllowed {
+			if err := r.ensureAllowed(evt.Channel, profileID); err != nil {
+				return "", "", nil, err
+			}
+		}
+		return profileID, "file_rule", match, nil
+	}
+	return "", "", nil, nil
 }
 
 func (r PolicyRouter) ensureAllowed(channel, profileID string) error {
@@ -188,14 +222,14 @@ func (r PolicyRouter) ensureAllowed(channel, profileID string) error {
 	return fmt.Errorf("agent profile %q is not available on channel %s", profileID, channel)
 }
 
-func firstMatchingRule(evt domain.CanonicalInboundEvent, rules []domain.AgentRoutingRule) string {
+func firstMatchingRule(evt domain.CanonicalInboundEvent, rules []domain.AgentRoutingRule) (string, map[string]any) {
 	for _, rule := range rules {
 		if !rule.Enabled || rule.AgentProfileID == "" || !ruleMatches(evt, rule.Match) {
 			continue
 		}
-		return rule.AgentProfileID
+		return rule.AgentProfileID, rule.Match
 	}
-	return ""
+	return "", nil
 }
 
 func ruleMatches(evt domain.CanonicalInboundEvent, match map[string]any) bool {
@@ -221,6 +255,12 @@ func ruleMatches(evt domain.CanonicalInboundEvent, match map[string]any) bool {
 		default:
 			continue
 		}
+		if strings.EqualFold(evt.Channel, "webchat") && strings.EqualFold(key, "surface_key") {
+			continue
+		}
+		if got == "" && strings.EqualFold(evt.Channel, "webchat") && (strings.EqualFold(key, "account_key") || strings.EqualFold(key, "provider_account_id")) {
+			continue
+		}
 		if !strings.EqualFold(strings.TrimSpace(got), want) {
 			return false
 		}
@@ -235,6 +275,48 @@ func firstNonEmptyRouteValue(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func routeString(match map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if match == nil {
+			return ""
+		}
+		if value, ok := match[key]; ok {
+			return strings.TrimSpace(fmt.Sprint(value))
+		}
+	}
+	return ""
+}
+
+func routeBool(match map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if match == nil {
+			return false
+		}
+		value, ok := match[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case bool:
+			return typed
+		case string:
+			return strings.EqualFold(strings.TrimSpace(typed), "true")
+		default:
+			return strings.EqualFold(strings.TrimSpace(fmt.Sprint(value)), "true")
+		}
+	}
+	return false
+}
+
+func normalizeRouteAgentMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "manual", "supervised", "auto", "unattended":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

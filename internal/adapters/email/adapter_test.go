@@ -44,6 +44,27 @@ func TestParseInboundAwaitReply(t *testing.T) {
 	}
 }
 
+func TestParseInboundUsesRecipientAsAccountKey(t *testing.T) {
+	adapter := New("secret", "", "", "", "support@laju.local")
+	raw := `{
+		"event_id":"evt_email_account",
+		"message_id":"<msg-account@example.com>",
+		"from":"Alice <alice@example.com>",
+		"subject":"Need help",
+		"text":"hello",
+		"thread_id":"<thread-account@example.com>",
+		"headers":{"Delivered-To":"support-e2e@laju.local","To":"support@laju.local"}
+	}`
+
+	evt, err := adapter.ParseInbound(context.Background(), nil, []byte(raw), "tenant_default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evt.Metadata.AccountKey != "support-e2e@laju.local" {
+		t.Fatalf("account key = %q, want recipient mailbox", evt.Metadata.AccountKey)
+	}
+}
+
 func TestHydrateInboundArtifactsDecodesAttachment(t *testing.T) {
 	adapter := New("secret", "", "", "", "nexus@example.com")
 	content := base64.StdEncoding.EncodeToString([]byte("attachment-body"))

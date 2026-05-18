@@ -89,6 +89,7 @@ type Session struct {
 	TenantID        string
 	OwnerUserID     string
 	AgentProfileID  string
+	Mode            string
 	ChannelType     string
 	ChannelScopeKey string
 	State           string
@@ -106,6 +107,9 @@ type RouteDecision struct {
 	ACPAgentName                      string
 	ACPProfileID                      string
 	Mode                              string
+	AgentMode                         string
+	ResponseDelivery                  string
+	AllowFirstMessageResponse         bool
 	RequiresApproval                  bool
 	RequiresLinkedIdentity            bool
 	RequiresRecentStepUp              bool

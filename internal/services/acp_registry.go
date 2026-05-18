@@ -63,7 +63,7 @@ func (r *ACPRegistry) BridgeForSession(session domain.Session) (ports.ACPBridge,
 }
 
 func (r *ACPRegistry) BridgeForRoute(route domain.RouteDecision) (ports.ACPBridge, error) {
-	if r != nil && strings.TrimSpace(route.AgentProfileID) != "" {
+	if r != nil && strings.TrimSpace(route.AgentProfileID) != "" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(route.Source)), "single") {
 		if bridge, ok := r.ProfileBridges[route.AgentProfileID]; ok && bridge != nil {
 			return bridge, nil
 		}

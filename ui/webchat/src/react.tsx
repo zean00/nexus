@@ -233,17 +233,24 @@ export function WebChat(props: WebChatProps) {
     () => filterVisibleItems(items, effectiveVisibilityMode, effectiveActivity),
     [effectiveActivity, effectiveVisibilityMode, items]
   );
+  const hasVisibleAssistantPartial = visibleItems.some(
+    (item) => item.type === "message" && item.role === "assistant" && item.partial
+  );
 
   useEffect(() => {
-    if (effectiveVisibilityMode === "full" || effectiveVisibilityMode === "off" || !effectiveActivity) {
+    if (
+      effectiveVisibilityMode === "off" ||
+      !effectiveActivity ||
+      (effectiveVisibilityMode === "full" && hasVisibleAssistantPartial)
+    ) {
       setActivityLabel("");
       return;
     }
     const timer = window.setTimeout(() => {
       setActivityLabel(activityLabelForMode(effectiveVisibilityMode, effectiveActivity));
-    }, 800);
+    }, 200);
     return () => window.clearTimeout(timer);
-  }, [effectiveActivity, effectiveVisibilityMode]);
+  }, [effectiveActivity, effectiveVisibilityMode, hasVisibleAssistantPartial]);
 
   const themeStyle = buildThemeStyle(props.theme, props.compact);
   const title = props.title ?? labels.title;

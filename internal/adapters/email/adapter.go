@@ -200,7 +200,7 @@ func (a Adapter) ParseInbound(_ context.Context, _ *http.Request, body []byte, t
 			Artifacts:   artifacts,
 		},
 		Metadata: domain.Metadata{
-			AccountKey:    strings.ToLower(firstNonEmpty(a.FromAddress, payload.Headers["Delivered-To"], payload.Headers["To"])),
+			AccountKey:    strings.ToLower(firstNonEmpty(payload.Headers["Delivered-To"], payload.Headers["To"], a.FromAddress)),
 			ArtifactTrust: "trusted-channel-ingress",
 			ResponderBinding: domain.ResponderBinding{
 				Mode:                  "same-user-only",

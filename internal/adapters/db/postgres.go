@@ -132,8 +132,12 @@ func (r *PostgresRepository) ResolveSession(ctx context.Context, evt domain.Cano
 func (r *PostgresRepository) ResolveSessionForRoute(ctx context.Context, evt domain.CanonicalInboundEvent, route domain.RouteDecision, multipleMode bool) (domain.Session, bool, error) {
 	if !multipleMode {
 		session, created, err := r.ResolveSession(ctx, evt, route.AgentProfileID)
+		if strings.TrimSpace(route.AgentProfileID) != "" {
+			session.AgentProfileID = route.AgentProfileID
+		}
 		session.ACPConnectionID = route.ACPConnectionID
 		session.ACPAgentName = route.ACPAgentName
+		session.Mode = route.AgentMode
 		return session, created, err
 	}
 	agentProfileID := strings.TrimSpace(route.AgentProfileID)
@@ -1380,11 +1384,13 @@ func (r *PostgresRepository) GetQueueStartIdempotencyKey(ctx context.Context, qu
 
 func (r *PostgresRepository) GetSession(ctx context.Context, sessionID string) (domain.Session, error) {
 	row := r.queryRow(ctx, `
-		select id, tenant_id, coalesce(owner_user_id,''), coalesce(agent_profile_id,''), channel_type, channel_scope_key, state, last_active_at, coalesce(acp_session_id,'')
+		select id, tenant_id, coalesce(owner_user_id,''), coalesce(agent_profile_id,''), channel_type,
+		       channel_scope_key, state, last_active_at, coalesce(acp_connection_id,''), coalesce(acp_server_url,''),
+		       coalesce(acp_agent_name,''), coalesce(acp_session_id,''), coalesce(mode,'')
 		from sessions where id=$1
 	`, sessionID)
 	var s domain.Session
-	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPSessionID)
+	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPConnectionID, &s.ACPServerURL, &s.ACPAgentName, &s.ACPSessionID, &s.Mode)
 	return s, err
 }
 

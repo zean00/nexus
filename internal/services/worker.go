@@ -235,7 +235,14 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	}
 	session.ACPConnectionID = route.ACPConnectionID
 	session.ACPAgentName = route.ACPAgentName
-	session.ACPProfileID = route.AgentProfileID
+	if strings.TrimSpace(route.AgentProfileID) != "" {
+		session.AgentProfileID = route.AgentProfileID
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(route.Source)), "single") {
+		session.ACPProfileID = ""
+	} else {
+		session.ACPProfileID = route.AgentProfileID
+	}
 	var currentCompat *domain.AgentCompatibility
 	if s.Catalog != nil {
 		compat, err := s.Catalog.ValidateForRoute(ctx, route, false)
@@ -252,6 +259,9 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 		return err
 	}
 	message = s.withWhatsAppGroupContext(ctx, session, message)
+	if route.AgentMode != "" {
+		session.Mode = route.AgentMode
+	}
 	acpSessionID, err := s.ACP.EnsureSession(ctx, session)
 	if err != nil {
 		return err
@@ -321,8 +331,10 @@ func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Sess
 				CreatedAt: time.Now().UTC(),
 			})
 		}
-		if err := s.persistRunEvent(ctx, session, runEvent); err != nil {
-			return "", err
+		if !routeUsesOperatorReview(route) {
+			if err := s.persistRunEvent(ctx, session, runEvent); err != nil {
+				return "", err
+			}
 		}
 		if err := s.hideModerationDeniedInbound(ctx, inboundMessageID, runEvent); err != nil {
 			return "", err
@@ -331,9 +343,13 @@ func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Sess
 		if renderer == nil {
 			return "", fmt.Errorf("no renderer for channel %s", session.ChannelType)
 		}
-		deliveries, err := renderer.RenderRunEvent(ctx, session, runEvent)
-		if err != nil {
-			return "", err
+		var deliveries []domain.OutboundDelivery
+		if !routeUsesOperatorReview(route) {
+			var err error
+			deliveries, err = renderer.RenderRunEvent(ctx, session, runEvent)
+			if err != nil {
+				return "", err
+			}
 		}
 		if runEvent.Status == "awaiting" {
 			await := domain.Await{
@@ -376,6 +392,10 @@ func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Sess
 		return "", err
 	}
 	return terminalStatus, nil
+}
+
+func routeUsesOperatorReview(route domain.RouteDecision) bool {
+	return strings.EqualFold(strings.TrimSpace(route.ResponseDelivery), "operator_review")
 }
 
 func marshalTrustPolicy(route domain.RouteDecision) []byte {

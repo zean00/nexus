@@ -86,7 +86,7 @@ func (c *AgentCatalog) ValidateForConnection(ctx context.Context, connectionID, 
 
 func (c *AgentCatalog) ValidateForRoute(ctx context.Context, route domain.RouteDecision, refresh bool) (domain.AgentCompatibility, error) {
 	connectionID := route.ACPConnectionID
-	if strings.TrimSpace(route.ACPProfileID) != "" {
+	if strings.TrimSpace(route.ACPProfileID) != "" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(route.Source)), "single") {
 		connectionID = route.ACPProfileID
 	}
 	return c.ValidateForConnection(ctx, connectionID, route.ACPAgentName, refresh)

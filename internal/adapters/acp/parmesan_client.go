@@ -158,6 +158,9 @@ func (c ParmesanClient) EnsureSession(ctx context.Context, session domain.Sessio
 		"customer_id": session.OwnerUserID,
 		"_meta":       parmesanSessionMeta(session),
 	}
+	if strings.TrimSpace(session.Mode) != "" {
+		body["mode"] = strings.ToLower(strings.TrimSpace(session.Mode))
+	}
 	var created parmesanSession
 	if err := c.postJSON(ctx, parmesanSessionsPath(session.AgentProfileID), nil, body, &created); err != nil {
 		return "", err
