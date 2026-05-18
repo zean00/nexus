@@ -281,6 +281,9 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	if err := s.Repo.CreateRun(ctx, run); err != nil {
 		return err
 	}
+	if s.NotifySessionUpdate != nil {
+		s.NotifySessionUpdate(session.ID)
+	}
 	terminalStatus, err := s.consumeRunEvents(ctx, session, queued.ID, queued.InboundMessageID, run.ID, route, currentCompat, stream)
 	if err != nil {
 		return err

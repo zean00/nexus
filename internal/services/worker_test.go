@@ -686,6 +686,30 @@ func TestWorkerPersistsOutboundArtifacts(t *testing.T) {
 	}
 }
 
+func TestWorkerNotifiesWebchatAfterRunStarts(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
+		queueItem:    domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
+		session:      domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
+		message:      domain.Message{MessageID: "msg_1", Text: "hello"},
+		route:        domain.RouteDecision{ACPAgentName: "default-agent"},
+	}
+	notified := []string{}
+	worker := WorkerService{
+		Repo:                repo,
+		ACP:                 workerACP{},
+		Renderer:            WebChatRenderer{},
+		Channel:             noopChannel{},
+		NotifySessionUpdate: func(sessionID string) { notified = append(notified, sessionID) },
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(notified) < 2 || notified[0] != "session_1" {
+		t.Fatalf("expected immediate run-start notification before event notifications, got %+v", notified)
+	}
+}
+
 func TestWorkerWhatsAppGroupContextHonorsZeroLimit(t *testing.T) {
 	repo := &workerRepo{
 		listMessages: []domain.Message{{MessageID: "older", Text: "do not include"}},
