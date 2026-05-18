@@ -20282,6 +20282,15 @@ var WebChatClient = class {
       body: JSON.stringify({ email, code: code4 })
     });
   }
+  async devSession(email) {
+    const payload = await this.requestJSON("/dev/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    });
+    this.csrfToken = payload.data.csrf_token;
+    return payload.data;
+  }
   async logout(csrfToken) {
     await this.requestJSON("/auth/logout", {
       method: "POST",
@@ -20415,6 +20424,8 @@ var defaultLabels = {
   otpLabel: "Code",
   requestCode: "Send code",
   verifyCode: "Verify code",
+  devSignIn: "Continue",
+  devAuthHelp: "Development mode: enter an email to start or resume a local session.",
   authHelp: "Check your inbox for a code or magic link.",
   authSent: "Check your inbox for a code or magic link.",
   authFailed: "Verification failed.",
@@ -20437,7 +20448,8 @@ var defaultFeatures = {
   uploads: true,
   newChat: true,
   logout: true,
-  sse: true
+  sse: true,
+  devAuth: false
 };
 function WebChat(props) {
   const providedClient = (0, import_react2.useContext)(clientContext);
@@ -20458,6 +20470,7 @@ function WebChat(props) {
   const [activityLabel, setActivityLabel] = (0, import_react2.useState)("");
   const [requestEmail, setRequestEmail] = (0, import_react2.useState)("");
   const [verifyEmail, setVerifyEmail] = (0, import_react2.useState)("");
+  const [devEmail, setDevEmail] = (0, import_react2.useState)("");
   const [verifyCode, setVerifyCode] = (0, import_react2.useState)("");
   const [status, setStatus] = (0, import_react2.useState)("");
   const [sendStatus, setSendStatus] = (0, import_react2.useState)("");
@@ -20578,6 +20591,19 @@ function WebChat(props) {
       setStatus(labels.authFailed);
     }
   }
+  async function handleDevAuth(event) {
+    event.preventDefault();
+    try {
+      const data = await client.devSession(devEmail);
+      setAuthenticated(true);
+      applyBootstrapData(data);
+      setStatus("");
+      props.onAuthChange?.(true);
+    } catch (error) {
+      props.onError?.(asError(error));
+      setStatus(labels.authFailed);
+    }
+  }
   async function handleSendMessage(event) {
     event.preventDefault();
     if (!messageText.trim() && files.length === 0) {
@@ -20661,7 +20687,17 @@ function WebChat(props) {
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h1", { children: title }),
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { children: subtitle })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("section", { className: "nexus-webchat-auth-grid", children: [
+      features.devAuth ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("section", { className: "nexus-webchat-auth-grid", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("form", { className: "nexus-webchat-panel", onSubmit: handleDevAuth, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "nexus-webchat-panel-head", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "nexus-webchat-eyebrow", children: "Development sign-in" }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h2", { children: "Email session" })
+        ] }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: labels.emailLabel }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { type: "email", value: devEmail, onChange: (event) => setDevEmail(event.target.value), required: true })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "submit", children: labels.devSignIn })
+      ] }) }) : /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("section", { className: "nexus-webchat-auth-grid", children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("form", { className: "nexus-webchat-panel", onSubmit: handleRequestAuth, children: [
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "nexus-webchat-panel-head", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "nexus-webchat-eyebrow", children: "Request access" }),
@@ -20689,7 +20725,7 @@ function WebChat(props) {
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "submit", children: labels.verifyCode })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "nexus-webchat-status", children: status || labels.authHelp })
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "nexus-webchat-status", children: status || (features.devAuth ? labels.devAuthHelp : labels.authHelp) })
     ] }) });
   }
   return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: rootClassName, style: { ...themeStyle, ...props.style }, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "nexus-webchat-frame", children: [

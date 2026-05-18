@@ -1149,6 +1149,28 @@ func TestWebChatIndexServesReactShell(t *testing.T) {
 	}
 }
 
+func TestWebChatIndexExposesDevAuthOnlyForLocalDevelopment(t *testing.T) {
+	app := &App{Config: config.Config{Environment: "development", WebChatDevAuth: true}}
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/webchat", nil)
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatIndex(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"devAuth":true`) {
+		t.Fatalf("expected dev auth feature for local development request, got %s", rec.Body.String())
+	}
+
+	remoteReq := httptest.NewRequest(http.MethodGet, "https://chat.example.com/webchat", nil)
+	remoteRec := httptest.NewRecorder()
+	app.handleWebChatIndex(remoteRec, remoteReq)
+	if strings.Contains(remoteRec.Body.String(), `"devAuth":true`) {
+		t.Fatalf("expected dev auth feature to remain hidden for remote request, got %s", remoteRec.Body.String())
+	}
+}
+
 func TestBuildWebChatItemsMarksPartialAssistantMessages(t *testing.T) {
 	items := buildWebChatItems(domain.SessionDetail{
 		Messages: []domain.Message{
@@ -1376,6 +1398,52 @@ func TestDedicatedWebChatIndexUsesIdentityConfig(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"baseUrl":"/webchat/support"`) || !strings.Contains(rec.Body.String(), `"title":"Support"`) {
 		t.Fatalf("expected scoped webchat config, got %s", rec.Body.String())
+	}
+}
+
+func TestDedicatedWebChatIndexKeepsDevAuthServerGuarded(t *testing.T) {
+	app := &App{Config: config.Config{
+		Environment:    "development",
+		WebChatDevAuth: true,
+		WebChatIdentities: []config.WebChatIdentityConfig{{
+			ID:       "support",
+			Path:     "support",
+			Features: map[string]any{"auth": true, "uploads": false},
+		}},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/webchat/support", nil)
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatScoped(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"devAuth":true`) {
+		t.Fatalf("expected scoped webchat config to include server-gated dev auth, got %s", rec.Body.String())
+	}
+}
+
+func TestDedicatedWebChatIndexIgnoresConfiguredDevAuthWhenGateDisabled(t *testing.T) {
+	app := &App{Config: config.Config{
+		Environment:    "production",
+		WebChatDevAuth: false,
+		WebChatIdentities: []config.WebChatIdentityConfig{{
+			ID:       "support",
+			Path:     "support",
+			Features: map[string]any{"auth": true, "devAuth": true},
+		}},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "https://chat.example.com/webchat/support", nil)
+	rec := httptest.NewRecorder()
+
+	app.handleWebChatScoped(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"devAuth":true`) {
+		t.Fatalf("expected configured dev auth to be ignored when server gate is disabled, got %s", rec.Body.String())
 	}
 }
 

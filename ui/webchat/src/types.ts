@@ -74,6 +74,8 @@ export interface WebChatLabels {
   otpLabel?: string;
   requestCode?: string;
   verifyCode?: string;
+  devSignIn?: string;
+  devAuthHelp?: string;
   authHelp?: string;
   authSent?: string;
   authFailed?: string;
@@ -114,6 +116,7 @@ export interface WebChatFeatures {
   newChat?: boolean;
   logout?: boolean;
   sse?: boolean;
+  devAuth?: boolean;
 }
 
 export interface EmbeddedWebChatConfig {

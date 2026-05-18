@@ -62,6 +62,8 @@ const defaultLabels: Required<WebChatLabels> = {
   otpLabel: "Code",
   requestCode: "Send code",
   verifyCode: "Verify code",
+  devSignIn: "Continue",
+  devAuthHelp: "Development mode: enter an email to start or resume a local session.",
   authHelp: "Check your inbox for a code or magic link.",
   authSent: "Check your inbox for a code or magic link.",
   authFailed: "Verification failed.",
@@ -85,7 +87,8 @@ const defaultFeatures: Required<WebChatFeatures> = {
   uploads: true,
   newChat: true,
   logout: true,
-  sse: true
+  sse: true,
+  devAuth: false
 };
 
 export function WebChatWidget(props: WebChatWidgetProps) {
@@ -145,6 +148,7 @@ export function WebChat(props: WebChatProps) {
   const [activityLabel, setActivityLabel] = useState("");
   const [requestEmail, setRequestEmail] = useState("");
   const [verifyEmail, setVerifyEmail] = useState("");
+  const [devEmail, setDevEmail] = useState("");
   const [verifyCode, setVerifyCode] = useState("");
   const [status, setStatus] = useState("");
   const [sendStatus, setSendStatus] = useState("");
@@ -275,6 +279,20 @@ export function WebChat(props: WebChatProps) {
     }
   }
 
+  async function handleDevAuth(event: React.FormEvent) {
+    event.preventDefault();
+    try {
+      const data = await client.devSession(devEmail);
+      setAuthenticated(true);
+      applyBootstrapData(data);
+      setStatus("");
+      props.onAuthChange?.(true);
+    } catch (error) {
+      props.onError?.(asError(error));
+      setStatus(labels.authFailed);
+    }
+  }
+
   async function handleSendMessage(event: React.FormEvent) {
     event.preventDefault();
     if (!messageText.trim() && files.length === 0) {
@@ -366,39 +384,57 @@ export function WebChat(props: WebChatProps) {
             <h1>{title}</h1>
             <p>{subtitle}</p>
           </section>
-          <section className="nexus-webchat-auth-grid">
-            <form className="nexus-webchat-panel" onSubmit={handleRequestAuth}>
-              <div className="nexus-webchat-panel-head">
-                <div>
-                  <p className="nexus-webchat-eyebrow">Request access</p>
-                  <h2>Email sign-in</h2>
+          {features.devAuth ? (
+            <section className="nexus-webchat-auth-grid">
+              <form className="nexus-webchat-panel" onSubmit={handleDevAuth}>
+                <div className="nexus-webchat-panel-head">
+                  <div>
+                    <p className="nexus-webchat-eyebrow">Development sign-in</p>
+                    <h2>Email session</h2>
+                  </div>
                 </div>
-              </div>
-              <label>
-                <span>{labels.emailLabel}</span>
-                <input type="email" value={requestEmail} onChange={(event) => setRequestEmail(event.target.value)} required />
-              </label>
-              <button type="submit">{labels.requestCode}</button>
-            </form>
-            <form className="nexus-webchat-panel" onSubmit={handleVerifyAuth}>
-              <div className="nexus-webchat-panel-head">
-                <div>
-                  <p className="nexus-webchat-eyebrow">Verify code</p>
-                  <h2>Continue session</h2>
+                <label>
+                  <span>{labels.emailLabel}</span>
+                  <input type="email" value={devEmail} onChange={(event) => setDevEmail(event.target.value)} required />
+                </label>
+                <button type="submit">{labels.devSignIn}</button>
+              </form>
+            </section>
+          ) : (
+            <section className="nexus-webchat-auth-grid">
+              <form className="nexus-webchat-panel" onSubmit={handleRequestAuth}>
+                <div className="nexus-webchat-panel-head">
+                  <div>
+                    <p className="nexus-webchat-eyebrow">Request access</p>
+                    <h2>Email sign-in</h2>
+                  </div>
                 </div>
-              </div>
-              <label>
-                <span>{labels.emailLabel}</span>
-                <input type="email" value={verifyEmail} onChange={(event) => setVerifyEmail(event.target.value)} required />
-              </label>
-              <label>
-                <span>{labels.otpLabel}</span>
-                <input value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} required />
-              </label>
-              <button type="submit">{labels.verifyCode}</button>
-            </form>
-          </section>
-          <p className="nexus-webchat-status">{status || labels.authHelp}</p>
+                <label>
+                  <span>{labels.emailLabel}</span>
+                  <input type="email" value={requestEmail} onChange={(event) => setRequestEmail(event.target.value)} required />
+                </label>
+                <button type="submit">{labels.requestCode}</button>
+              </form>
+              <form className="nexus-webchat-panel" onSubmit={handleVerifyAuth}>
+                <div className="nexus-webchat-panel-head">
+                  <div>
+                    <p className="nexus-webchat-eyebrow">Verify code</p>
+                    <h2>Continue session</h2>
+                  </div>
+                </div>
+                <label>
+                  <span>{labels.emailLabel}</span>
+                  <input type="email" value={verifyEmail} onChange={(event) => setVerifyEmail(event.target.value)} required />
+                </label>
+                <label>
+                  <span>{labels.otpLabel}</span>
+                  <input value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} required />
+                </label>
+                <button type="submit">{labels.verifyCode}</button>
+              </form>
+            </section>
+          )}
+          <p className="nexus-webchat-status">{status || (features.devAuth ? labels.devAuthHelp : labels.authHelp)}</p>
         </div>
       </div>
     );

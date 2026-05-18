@@ -61,7 +61,6 @@ func (a *App) webChatPageConfig(r *http.Request) map[string]any {
 	out := map[string]any{
 		"baseUrl":               "/webchat",
 		"interactionVisibility": a.webChatInteractionVisibilityMode(),
-		"features":              features,
 	}
 	if identity := webChatIdentityFromRequest(r); identity != nil {
 		out["baseUrl"] = "/webchat/" + strings.Trim(identity.Path, "/")
@@ -78,9 +77,21 @@ func (a *App) webChatPageConfig(r *http.Request) map[string]any {
 			out["theme"] = identity.Theme
 		}
 		if len(identity.Features) > 0 {
-			out["features"] = identity.Features
+			features = map[string]bool{}
+			for key, value := range identity.Features {
+				if key == "devAuth" {
+					continue
+				}
+				if enabled, ok := value.(bool); ok {
+					features[key] = enabled
+				}
+			}
 		}
 	}
+	if a.webChatDevAuthEnabled(r) {
+		features["devAuth"] = true
+	}
+	out["features"] = features
 	return out
 }
 

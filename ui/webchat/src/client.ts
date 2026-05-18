@@ -32,6 +32,16 @@ export class WebChatClient {
     });
   }
 
+  async devSession(email: string): Promise<BootstrapData> {
+    const payload = await this.requestJSON<{ data: BootstrapData }>("/dev/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    });
+    this.csrfToken = payload.data.csrf_token;
+    return payload.data;
+  }
+
   async logout(csrfToken?: string): Promise<void> {
     await this.requestJSON("/auth/logout", {
       method: "POST",
