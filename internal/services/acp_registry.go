@@ -224,6 +224,19 @@ func (b ResolvingACPBridge) GetRunForSession(ctx context.Context, session domain
 	return bridge.GetRun(ctx, acpRunID)
 }
 
+func (b ResolvingACPBridge) ListVisibleEvents(ctx context.Context, session domain.Session, minOffset int64) ([]domain.VisibleSessionEvent, error) {
+	bridge, err := b.Resolver.BridgeForSession(session)
+	if err != nil {
+		return nil, err
+	}
+	if scoped, ok := bridge.(interface {
+		ListVisibleEvents(context.Context, domain.Session, int64) ([]domain.VisibleSessionEvent, error)
+	}); ok {
+		return scoped.ListVisibleEvents(ctx, session, minOffset)
+	}
+	return nil, nil
+}
+
 func (b ResolvingACPBridge) FindRunByIdempotencyKey(ctx context.Context, session domain.Session, idempotencyKey string) (domain.RunStatusSnapshot, bool, error) {
 	bridge, err := b.Resolver.BridgeForSession(session)
 	if err != nil {

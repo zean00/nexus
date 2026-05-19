@@ -287,6 +287,47 @@ func (c ParmesanClient) GetRunForSession(ctx context.Context, session domain.Ses
 	return c.getRunWithAgent(ctx, session.AgentProfileID, acpRunID)
 }
 
+func (c ParmesanClient) ListVisibleEvents(ctx context.Context, session domain.Session, minOffset int64) ([]domain.VisibleSessionEvent, error) {
+	if strings.TrimSpace(session.ACPSessionID) == "" {
+		return nil, nil
+	}
+	events, err := c.listOperatorSessionEvents(ctx, session.ACPSessionID, minOffset)
+	if err != nil {
+		agentID := strings.TrimSpace(session.AgentProfileID)
+		if strings.TrimSpace(session.ACPProfileID) != "" {
+			agentID = strings.TrimSpace(session.ACPProfileID)
+		}
+		if strings.TrimSpace(agentID) == "" {
+			return nil, err
+		}
+		events, err = c.listEvents(ctx, agentID, session.ACPSessionID, minOffset)
+		if err != nil {
+			return nil, err
+		}
+	}
+	out := make([]domain.VisibleSessionEvent, 0, len(events))
+	for _, event := range events {
+		if !isCustomerVisibleACPMessage(event) {
+			continue
+		}
+		text := parmesanEventText(event)
+		if text == "" {
+			continue
+		}
+		out = append(out, domain.VisibleSessionEvent{
+			ID:          strings.TrimSpace(event.ID),
+			SessionID:   strings.TrimSpace(event.SessionID),
+			Source:      strings.TrimSpace(event.Source),
+			Kind:        strings.TrimSpace(event.Kind),
+			Offset:      event.Offset,
+			ExecutionID: strings.TrimSpace(event.ExecutionID),
+			Text:        text,
+			Metadata:    event.Metadata,
+		})
+	}
+	return out, nil
+}
+
 func (c ParmesanClient) FindRunByIdempotencyKey(ctx context.Context, session domain.Session, idempotencyKey string) (domain.RunStatusSnapshot, bool, error) {
 	if strings.TrimSpace(session.ACPSessionID) == "" || strings.TrimSpace(idempotencyKey) == "" {
 		return domain.RunStatusSnapshot{}, false, nil
@@ -504,6 +545,63 @@ func (c ParmesanClient) listEvents(ctx context.Context, agentID, sessionID strin
 	return events, nil
 }
 
+func (c ParmesanClient) listOperatorSessionEvents(ctx context.Context, sessionID string, minOffset int64) ([]parmesanEvent, error) {
+	query := map[string]string{}
+	if minOffset > 0 {
+		query["min_offset"] = fmt.Sprintf("%d", minOffset)
+	}
+	var events []parmesanEvent
+	if err := c.getJSON(ctx, parmesanOperatorSessionEventsPath(sessionID), query, &events); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+func isCustomerVisibleACPMessage(event parmesanEvent) bool {
+	if !strings.EqualFold(strings.TrimSpace(event.Kind), "message") {
+		return false
+	}
+	switch strings.TrimSpace(event.Source) {
+	case "human_agent", "human_agent_on_behalf_of_ai_agent":
+		return true
+	case "ai_agent":
+		return boolValue(event.Metadata, "response_review_approved")
+	default:
+		return false
+	}
+}
+
+func parmesanEventText(event parmesanEvent) string {
+	parts := make([]string, 0, len(event.Content))
+	for _, part := range event.Content {
+		partType := strings.TrimSpace(part.Type)
+		if partType != "" && !strings.EqualFold(partType, "text") {
+			continue
+		}
+		if text := strings.TrimSpace(part.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
+	}
+	return firstNonEmpty(textValue(event.Data, "text"), textValue(event.Data, "message"))
+}
+
+func boolValue(values map[string]any, key string) bool {
+	if values == nil {
+		return false
+	}
+	switch typed := values[key].(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return false
+	}
+}
+
 func buildApprovalAwaitPrompt(event parmesanEvent, agentID string) []byte {
 	return marshalJSON(parmesanAwaitPrompt{
 		Title:          firstNonEmpty(textValue(event.Data, "message"), "Approval required"),
@@ -600,6 +698,10 @@ func parmesanMessagesPath(agentID, sessionID string) string {
 
 func parmesanEventsPath(agentID, sessionID string) string {
 	return parmesanSessionPath(agentID, sessionID) + "/events"
+}
+
+func parmesanOperatorSessionEventsPath(sessionID string) string {
+	return "/v1/operator/sessions/" + url.PathEscape(sessionID) + "/events"
 }
 
 func parmesanApprovalsPath(agentID, sessionID string) string {

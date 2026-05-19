@@ -391,6 +391,17 @@ type RunEvent struct {
 	Metadata    map[string]any
 }
 
+type VisibleSessionEvent struct {
+	ID          string
+	SessionID   string
+	Source      string
+	Kind        string
+	Offset      int64
+	ExecutionID string
+	Text        string
+	Metadata    map[string]any
+}
+
 type SessionDetail struct {
 	Session    Session            `json:"session"`
 	Messages   []Message          `json:"messages"`

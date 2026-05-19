@@ -549,6 +549,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 			ACP:       acpClient,
 			Renderer:  renderers["slack"],
 			Renderers: renderers,
+			TenantID:  cfg.DefaultTenantID,
 			Config: services.ReconcilerConfig{
 				OutboxClaimTimeout:     cfg.OutboxClaimTimeout,
 				QueueStartingTimeout:   cfg.QueueStartingTimeout,

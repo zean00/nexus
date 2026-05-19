@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"nexus/internal/domain"
@@ -34,6 +35,7 @@ type Reconciler struct {
 	ACP       ports.ACPBridge
 	Renderer  ports.Renderer
 	Renderers map[string]ports.Renderer
+	TenantID  string
 	Config    ReconcilerConfig
 	Observer  ReconcilerObserver
 }
@@ -53,6 +55,10 @@ func (r Reconciler) RunOnce(ctx context.Context, limit int) (err error) {
 	}
 	if err = r.refreshStaleRuns(ctx, now, limit); err != nil {
 		tracex.Logger(ctx).Error("reconciler.refresh_stale_runs_failed", "error", err.Error())
+		errs = append(errs, err)
+	}
+	if err = r.reconcileVisibleRuntimeEvents(ctx, now, limit); err != nil {
+		tracex.Logger(ctx).Error("reconciler.visible_runtime_events_failed", "error", err.Error())
 		errs = append(errs, err)
 	}
 	if err = r.expireAwaits(ctx, now, limit); err != nil {
@@ -252,8 +258,9 @@ func (r Reconciler) refreshStaleRuns(ctx context.Context, now time.Time, limit i
 			}
 			renderer := r.rendererFor(session.ChannelType)
 			if renderer == nil {
-				tracex.Logger(ctx).Error("reconciler.render_completed_run_failed", "run_id", run.ID, "error", "missing renderer")
-				errs = append(errs, fmt.Errorf("no renderer for channel %s", session.ChannelType))
+				err := fmt.Errorf("no renderer for channel %s", session.ChannelType)
+				tracex.Logger(ctx).Error("reconciler.render_completed_run_failed", "run_id", run.ID, "error", err.Error())
+				errs = append(errs, err)
 				continue
 			}
 			deliveries, renderErr := renderer.RenderRunEvent(ctx, session, runEvent)
@@ -263,7 +270,7 @@ func (r Reconciler) refreshStaleRuns(ctx context.Context, now time.Time, limit i
 				continue
 			}
 			for _, delivery := range deliveries {
-				if err := r.Repo.EnqueueDelivery(ctx, delivery); err != nil {
+				if err := r.Repo.EnqueueDelivery(ctx, delivery); err != nil && !isDuplicateDeliveryError(err) {
 					tracex.Logger(ctx).Error("reconciler.enqueue_completed_run_delivery_failed", "run_id", run.ID, "delivery_id", delivery.ID, "error", err.Error())
 					errs = append(errs, err)
 					continue
@@ -302,6 +309,133 @@ func (r Reconciler) refreshStaleRuns(ctx context.Context, now time.Time, limit i
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (r Reconciler) reconcileVisibleRuntimeEvents(ctx context.Context, now time.Time, limit int) error {
+	lister, ok := r.ACP.(interface {
+		ListVisibleEvents(context.Context, domain.Session, int64) ([]domain.VisibleSessionEvent, error)
+	})
+	if !ok {
+		return nil
+	}
+	scanLimit := limit * 10
+	if scanLimit < 100 {
+		scanLimit = 100
+	}
+	var errs []error
+	for _, tenantID := range r.visibleRuntimeTenantIDs() {
+		cursor := ""
+		for {
+			page, err := r.Repo.ListSessions(ctx, domain.SessionListQuery{
+				TenantID:   tenantID,
+				State:      "open",
+				CursorPage: domain.CursorPage{After: cursor, Limit: scanLimit},
+			})
+			if err != nil {
+				errs = append(errs, err)
+				break
+			}
+			for _, session := range page.Items {
+				if strings.TrimSpace(session.ACPSessionID) == "" || strings.TrimSpace(session.AgentProfileID) == "" {
+					continue
+				}
+				events, err := lister.ListVisibleEvents(ctx, session, 0)
+				if err != nil {
+					tracex.Logger(ctx).Error("reconciler.list_visible_runtime_events_failed", "session_id", session.ID, "error", err.Error())
+					errs = append(errs, err)
+					continue
+				}
+				for _, event := range events {
+					if err := r.enqueueVisibleRuntimeEvent(ctx, now, session, event); err != nil {
+						tracex.Logger(ctx).Error("reconciler.enqueue_visible_runtime_event_failed", "session_id", session.ID, "event_id", event.ID, "error", err.Error())
+						errs = append(errs, err)
+						continue
+					}
+				}
+			}
+			if page.NextCursor == "" {
+				break
+			}
+			cursor = page.NextCursor
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (r Reconciler) visibleRuntimeTenantIDs() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, tenantID := range []string{r.TenantID, "tenant_default", "default"} {
+		tenantID = strings.TrimSpace(tenantID)
+		if tenantID == "" || seen[tenantID] {
+			continue
+		}
+		seen[tenantID] = true
+		out = append(out, tenantID)
+	}
+	return out
+}
+
+func (r Reconciler) enqueueVisibleRuntimeEvent(ctx context.Context, now time.Time, session domain.Session, event domain.VisibleSessionEvent) error {
+	eventID := strings.TrimSpace(event.ID)
+	if eventID == "" || strings.TrimSpace(event.Text) == "" {
+		return nil
+	}
+	runID := "acp_event_" + eventID
+	runEvent := domain.RunEvent{
+		RunID:      runID,
+		MessageKey: eventID,
+		Status:     "completed",
+		Text:       event.Text,
+		Metadata: map[string]any{
+			"source":       event.Source,
+			"kind":         event.Kind,
+			"offset":       event.Offset,
+			"execution_id": event.ExecutionID,
+		},
+	}
+	if err := persistRunEvent(ctx, r.Repo, session, runEvent); err != nil && !isDuplicateMessageError(err) {
+		return err
+	}
+	renderer := r.rendererFor(session.ChannelType)
+	if renderer == nil {
+		return fmt.Errorf("no renderer for channel %s", session.ChannelType)
+	}
+	deliveries, err := renderer.RenderRunEvent(ctx, session, runEvent)
+	if err != nil {
+		return err
+	}
+	for _, delivery := range deliveries {
+		if _, err := r.Repo.GetDelivery(ctx, delivery.ID); err == nil {
+			continue
+		}
+		if err := r.Repo.EnqueueDelivery(ctx, delivery); err != nil && !isDuplicateDeliveryError(err) {
+			return err
+		}
+		_ = r.Repo.Audit(ctx, domain.AuditEvent{
+			ID:            fmt.Sprintf("audit_visible_runtime_delivery_%s_%d", delivery.ID, now.UnixNano()),
+			TenantID:      session.TenantID,
+			SessionID:     session.ID,
+			AggregateType: "outbound_delivery",
+			AggregateID:   delivery.ID,
+			EventType:     "reconciler.visible_runtime_event_queued",
+			PayloadJSON:   mustJSON(map[string]any{"event_id": eventID, "source": event.Source}),
+			CreatedAt:     now,
+		})
+	}
+	return nil
+}
+
+func isDuplicateMessageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate") || strings.Contains(msg, "unique")
+}
+
+func isDuplicateDeliveryError(err error) bool {
+	return isDuplicateMessageError(err)
 }
 
 func (r Reconciler) expireAwaits(ctx context.Context, now time.Time, limit int) error {
