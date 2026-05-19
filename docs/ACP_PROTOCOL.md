@@ -40,7 +40,7 @@ That interface is what the worker, reconciler, and catalog depend on. Each runti
 | `ACP_IMPLEMENTATION` | Bridge | Transport |
 | --- | --- | --- |
 | `stdio` | `StdioClient` | JSON-RPC ACP over a local subprocess |
-| `parmesan` | `ParmesanClient` | Parmesan HTTP API mapped into ACPBridge |
+| `sse` | `SSEClient` | strict-compatible HTTP control plane with SSE run-event stream |
 | `strict`, `acp`, `native` | `StrictClient` | strict/native ACP-style HTTP API |
 | anything else | `Client` | OpenCode HTTP bridge |
 
@@ -121,21 +121,16 @@ Current practical notes:
 
 This is the most convenient path for local agent testing because it removes the separate ACP service from the setup.
 
-### 4. Parmesan bridge
+### 4. ACP-over-SSE bridge
 
-Implementation: `internal/adapters/acp/parmesan_client.go`
+Implementation: `internal/adapters/acp/sse_client.go`
 
 Use when:
 
-- you are integrating with the Parmesan execution/session/event model
-- you still want Nexus to consume it through the standard ACP bridge interface
+- the backend exposes the strict/native HTTP control endpoints for manifests, sessions, runs, snapshots, and resume
+- run output should be consumed as `text/event-stream` from `/runs/{run_id}/events`
 
-This bridge maps Parmesan sessions, executions, events, and approvals into:
-
-- agent discovery
-- run snapshots
-- await prompts
-- approval resume flows
+SSE event `data:` payloads use the strict run-event shape: `id`, `status` or `state`, `output` or `text`, optional `artifacts`, optional `await`, and optional `metadata`. Heartbeats and comments are ignored. Malformed JSON is reported through the run event stream error channel.
 
 ## Compatibility Validation
 
@@ -231,8 +226,8 @@ When the stdio bridge is active, runtime surfaces expose:
 | --- | --- | --- | --- | --- | --- |
 | OpenCode HTTP | Yes | Yes | Bridged / warning-based | Yes | Usually no |
 | Strict/native ACP | Yes | Yes | Yes | Yes | Yes, if backend advertises it |
+| ACP-over-SSE | Yes | Yes | Yes | Yes | Yes, if backend advertises it |
 | Stdio ACP | Yes | Yes | Depends on runtime capabilities | Yes, subject to runtime output behavior | Depends on runtime capabilities |
-| Parmesan | Yes | Yes | Yes | Yes | Yes |
 
 ## Choosing a Bridge
 
@@ -240,8 +235,8 @@ When the stdio bridge is active, runtime surfaces expose:
 | --- | --- |
 | Local development with a real agent binary | `stdio` |
 | Production backend with strong ACP semantics | `strict` |
+| Production backend with strict control endpoints and SSE run output | `sse` |
 | Existing OpenCode-compatible HTTP service | OpenCode HTTP bridge |
-| Parmesan-native runtime | `parmesan` |
 
 ## Strict ACP Email Context
 

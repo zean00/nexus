@@ -33,8 +33,8 @@ func NewBridge(cfg BridgeConfig) ports.ACPBridge {
 			StartupTimeout:   cfg.StartupTimeout,
 			RPCTimeout:       cfg.RPCTimeout,
 		})
-	case "parmesan":
-		client := NewParmesanClient(cfg.BaseURL, cfg.Token, cfg.RPCTimeout)
+	case "sse":
+		client := NewSSEClient(cfg.BaseURL, cfg.Token)
 		client.Headers = cfg.Headers
 		return client
 	case "strict", "acp", "native":

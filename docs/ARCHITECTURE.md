@@ -248,8 +248,8 @@ Bridge implementations currently include:
 
 - OpenCode HTTP bridge
 - strict/native ACP HTTP bridge
+- strict-compatible ACP-over-SSE bridge
 - stdio ACP subprocess bridge
-- Parmesan bridge
 
 The agent catalog validates each discovered manifest before the worker accepts an agent for execution.
 

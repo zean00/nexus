@@ -392,11 +392,13 @@ func configureACPHTTP(bridge ports.ACPBridge, id string, policy *resilience.Poli
 		return b
 	case *acp.StrictClient:
 		b.HTTP = policy.HTTPClient("acp."+id+".strict_http", 60*time.Second)
-	case acp.ParmesanClient:
-		b.HTTP = policy.HTTPClient("acp."+id+".parmesan_http", 60*time.Second)
+	case acp.SSEClient:
+		b.HTTP = policy.HTTPClient("acp."+id+".sse_http", 60*time.Second)
+		b.StreamHTTP = policy.HTTPClient("acp."+id+".sse_stream_http", 0)
 		return b
-	case *acp.ParmesanClient:
-		b.HTTP = policy.HTTPClient("acp."+id+".parmesan_http", 60*time.Second)
+	case *acp.SSEClient:
+		b.HTTP = policy.HTTPClient("acp."+id+".sse_http", 60*time.Second)
+		b.StreamHTTP = policy.HTTPClient("acp."+id+".sse_stream_http", 0)
 	}
 	return bridge
 }

@@ -62,7 +62,7 @@ This is easy to miss when hardening HTTP servers. The admin server can use a nor
 | Variable | Default | Purpose | Notes |
 | --- | --- | --- | --- |
 | `ACP_IMPLEMENTATION` | `strict` | ACP bridge implementation | See [ACP_PROTOCOL.md](./ACP_PROTOCOL.md) |
-| `ACP_BASE_URL` | `http://localhost:8090` | Base URL for HTTP-based ACP bridges | Used by `strict`, `opencode`, `parmesan` |
+| `ACP_BASE_URL` | `http://localhost:8090` | Base URL for HTTP-based ACP bridges | Used by `strict`, `sse`, `opencode` |
 | `ACP_TOKEN` | empty | Bearer/API token for ACP backend | Sent by HTTP bridges |
 | `ACP_COMMAND` | `opencode` | Subprocess command for `stdio` bridge | Example: `opencode` |
 | `ACP_ARGS` | empty | CSV list of stdio bridge args | Example: `acp,--pure,--cwd,/repo` |
@@ -462,6 +462,16 @@ export ACP_IMPLEMENTATION=strict
 export ACP_BASE_URL=http://localhost:8090
 export ACP_TOKEN=secret
 export DEFAULT_ACP_AGENT_NAME=strict-agent
+```
+
+### Strict-compatible ACP-over-SSE backend
+
+```bash
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/nexus?sslmode=disable
+export ACP_IMPLEMENTATION=sse
+export ACP_BASE_URL=http://localhost:8090
+export ACP_TOKEN=secret
+export DEFAULT_ACP_AGENT_NAME=sse-agent
 ```
 
 ### OpenCode stdio backend
