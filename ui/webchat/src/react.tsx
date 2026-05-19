@@ -564,9 +564,21 @@ export function WebChat(props: WebChatProps) {
     activity?: WebChatActivity;
     visibility_mode?: WebChatInteractionVisibility;
   }) {
-    setItems(payload.items ?? []);
+    const nextItems = payload.items ?? [];
+    setItems(nextItems);
     setActivity(payload.activity);
-    setOptimisticActivity(undefined);
+    setOptimisticActivity((current) => {
+      if (!current || payload.activity) {
+        return undefined;
+      }
+      if (nextItems.length === 0) {
+        return undefined;
+      }
+      if (hasAssistantAfterLatestUser(nextItems) || hasPendingAwait(nextItems)) {
+        return undefined;
+      }
+      return current;
+    });
     setServerVisibilityMode(normalizeVisibilityMode(payload.visibility_mode ?? serverVisibilityMode));
   }
 }
@@ -810,6 +822,18 @@ function filterVisibleItems(
     return items;
   }
   return items.filter((item) => !(item.type === "message" && item.role === "assistant" && item.partial));
+}
+
+function hasAssistantAfterLatestUser(items: WebChatItem[]): boolean {
+  const latestUserIndex = items.findLastIndex((item) => item.type === "message" && item.role === "user");
+  if (latestUserIndex < 0) {
+    return false;
+  }
+  return items.slice(latestUserIndex + 1).some((item) => item.type === "message" && item.role === "assistant");
+}
+
+function hasPendingAwait(items: WebChatItem[]): boolean {
+  return items.some((item) => item.type === "await" && item.status === "pending");
 }
 
 function activityLabelForMode(mode: WebChatInteractionVisibility, activity: WebChatActivity): string {

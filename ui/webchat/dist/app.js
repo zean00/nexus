@@ -20824,9 +20824,21 @@ function WebChat(props) {
     setPhoneVerified(Boolean(data.primary_phone_verified));
   }
   function applyTimelinePayload(payload) {
-    setItems(payload.items ?? []);
+    const nextItems = payload.items ?? [];
+    setItems(nextItems);
     setActivity(payload.activity);
-    setOptimisticActivity(void 0);
+    setOptimisticActivity((current) => {
+      if (!current || payload.activity) {
+        return void 0;
+      }
+      if (nextItems.length === 0) {
+        return void 0;
+      }
+      if (hasAssistantAfterLatestUser(nextItems) || hasPendingAwait(nextItems)) {
+        return void 0;
+      }
+      return current;
+    });
     setServerVisibilityMode(normalizeVisibilityMode(payload.visibility_mode ?? serverVisibilityMode));
   }
 }
@@ -21012,6 +21024,16 @@ function filterVisibleItems(items, mode, activity) {
     return items;
   }
   return items.filter((item) => !(item.type === "message" && item.role === "assistant" && item.partial));
+}
+function hasAssistantAfterLatestUser(items) {
+  const latestUserIndex = items.findLastIndex((item) => item.type === "message" && item.role === "user");
+  if (latestUserIndex < 0) {
+    return false;
+  }
+  return items.slice(latestUserIndex + 1).some((item) => item.type === "message" && item.role === "assistant");
+}
+function hasPendingAwait(items) {
+  return items.some((item) => item.type === "await" && item.status === "pending");
 }
 function activityLabelForMode(mode, activity) {
   if (mode === "off") {
