@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -129,6 +130,36 @@ func TestSSEStreamsCRLFDelimitedEvents(t *testing.T) {
 	events := collectRunEvents(t, stream)
 	if len(events) != 1 || events[0].Text != "done" || events[0].Status != "completed" {
 		t.Fatalf("unexpected CRLF SSE events: %+v", events)
+	}
+}
+
+func TestSSEMapsStrictAwaitPrompt(t *testing.T) {
+	prompt := base64.StdEncoding.EncodeToString([]byte(`{"body":"Continue?"}`))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/runs":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"run_await","session_id":"acp_session_1","status":"running"}`)
+		case "/runs/run_await/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"id":"run_await","session_id":"acp_session_1","status":"awaiting","await":{"prompt":"`+prompt+`"}}`+"\n\n")
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewSSEClient(server.URL, "")
+	client.HTTP = server.Client()
+	_, stream, err := client.StartRun(context.Background(), domain.StartRunRequest{
+		Session: domain.Session{ID: "session_1", ACPSessionID: "acp_session_1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collectRunEvents(t, stream)
+	if len(events) != 1 || events[0].Status != "awaiting" || string(events[0].AwaitPrompt) != `{"body":"Continue?"}` {
+		t.Fatalf("unexpected await SSE events: %+v", events)
 	}
 }
 
