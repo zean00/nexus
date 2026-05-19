@@ -405,7 +405,7 @@ export function WebChat(props: WebChatProps) {
                 </div>
                 <label>
                   <span>{labels.emailLabel}</span>
-                  <input type="email" value={devEmail} onChange={(event) => setDevEmail(event.target.value)} required />
+                  <input autoComplete="email" id="nexus-webchat-dev-email" name="email" type="email" value={devEmail} onChange={(event) => setDevEmail(event.target.value)} required />
                 </label>
                 <button type="submit">{labels.devSignIn}</button>
               </form>
@@ -421,7 +421,7 @@ export function WebChat(props: WebChatProps) {
                 </div>
                 <label>
                   <span>{labels.emailLabel}</span>
-                  <input type="email" value={requestEmail} onChange={(event) => setRequestEmail(event.target.value)} required />
+                  <input autoComplete="email" id="nexus-webchat-request-email" name="email" type="email" value={requestEmail} onChange={(event) => setRequestEmail(event.target.value)} required />
                 </label>
                 <button type="submit">{labels.requestCode}</button>
               </form>
@@ -434,11 +434,11 @@ export function WebChat(props: WebChatProps) {
                 </div>
                 <label>
                   <span>{labels.emailLabel}</span>
-                  <input type="email" value={verifyEmail} onChange={(event) => setVerifyEmail(event.target.value)} required />
+                  <input autoComplete="email" id="nexus-webchat-verify-email" name="email" type="email" value={verifyEmail} onChange={(event) => setVerifyEmail(event.target.value)} required />
                 </label>
                 <label>
                   <span>{labels.otpLabel}</span>
-                  <input value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} required />
+                  <input autoComplete="one-time-code" id="nexus-webchat-verify-code" name="code" value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} required />
                 </label>
                 <button type="submit">{labels.verifyCode}</button>
               </form>
@@ -494,6 +494,8 @@ export function WebChat(props: WebChatProps) {
 
             <form className="nexus-webchat-panel nexus-webchat-composer" onSubmit={handleSendMessage}>
               <textarea
+                id="nexus-webchat-message"
+                name="message"
                 placeholder={labels.composerPlaceholder}
                 value={messageText}
                 onChange={(event) => setMessageText(event.target.value)}
@@ -502,7 +504,9 @@ export function WebChat(props: WebChatProps) {
                 <label className="nexus-webchat-upload">
                   <span>{files.length > 0 ? `${files.length} file${files.length === 1 ? "" : "s"} selected` : "Attach files"}</span>
                   <input
+                    id="nexus-webchat-files"
                     multiple
+                    name="files"
                     onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
                     type="file"
                   />
@@ -526,7 +530,7 @@ export function WebChat(props: WebChatProps) {
               <form className="nexus-webchat-identity-form" onSubmit={handleSavePhone}>
                 <label>
                   <span>{labels.phoneLabel}</span>
-                  <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+628123456789" />
+                  <input autoComplete="tel" id="nexus-webchat-phone" name="phone" value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+628123456789" />
                 </label>
                 <div className="nexus-webchat-actions">
                   <button type="submit">{labels.savePhone}</button>

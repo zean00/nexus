@@ -611,6 +611,9 @@ func (a *App) GatewayHandler() http.Handler {
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
 		writeMetrics(w, context.Background(), "gateway", a.Config.DefaultTenantID, a.Repo, a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval)
 	})
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("/webhooks/slack", a.handleSlackWebhook)
 	mux.HandleFunc("/webhooks/whatsapp", a.handleWhatsAppWebhook)
 	mux.HandleFunc("/webhooks/whatsapp-web", a.handleWhatsAppWebWebhook)

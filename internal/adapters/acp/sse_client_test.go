@@ -111,6 +111,7 @@ func TestSSEStreamsCRLFDelimitedEvents(t *testing.T) {
 			_, _ = io.WriteString(w, `{"id":"run_crlf","session_id":"acp_session_1","status":"running"}`)
 		case "/runs/run_crlf/events":
 			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"id\":\"run_crlf\",\"session_id\":\"acp_session_1\",\"status\":\"running\"}\r\n\r\n")
 			_, _ = io.WriteString(w, "data: {\"id\":\"run_crlf\",\"session_id\":\"acp_session_1\",\"status\":\"completed\",\"output\":\"done\"}\r\n\r\n")
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -128,7 +129,7 @@ func TestSSEStreamsCRLFDelimitedEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := collectRunEvents(t, stream)
-	if len(events) != 1 || events[0].Text != "done" || events[0].Status != "completed" {
+	if len(events) != 2 || events[0].Status != "running" || strings.TrimSpace(events[0].Text) != "" || events[1].Text != "done" || events[1].Status != "completed" {
 		t.Fatalf("unexpected CRLF SSE events: %+v", events)
 	}
 }

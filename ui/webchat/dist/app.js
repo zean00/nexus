@@ -20699,7 +20699,7 @@ function WebChat(props) {
         ] }) }),
         /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: labels.emailLabel }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { type: "email", value: devEmail, onChange: (event) => setDevEmail(event.target.value), required: true })
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { autoComplete: "email", id: "nexus-webchat-dev-email", name: "email", type: "email", value: devEmail, onChange: (event) => setDevEmail(event.target.value), required: true })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "submit", children: labels.devSignIn })
       ] }) }) : /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("section", { className: "nexus-webchat-auth-grid", children: [
@@ -20710,7 +20710,7 @@ function WebChat(props) {
           ] }) }),
           /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: labels.emailLabel }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { type: "email", value: requestEmail, onChange: (event) => setRequestEmail(event.target.value), required: true })
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { autoComplete: "email", id: "nexus-webchat-request-email", name: "email", type: "email", value: requestEmail, onChange: (event) => setRequestEmail(event.target.value), required: true })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "submit", children: labels.requestCode })
         ] }),
@@ -20721,11 +20721,11 @@ function WebChat(props) {
           ] }) }),
           /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: labels.emailLabel }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { type: "email", value: verifyEmail, onChange: (event) => setVerifyEmail(event.target.value), required: true })
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { autoComplete: "email", id: "nexus-webchat-verify-email", name: "email", type: "email", value: verifyEmail, onChange: (event) => setVerifyEmail(event.target.value), required: true })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: labels.otpLabel }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { value: verifyCode, onChange: (event) => setVerifyCode(event.target.value), required: true })
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { autoComplete: "one-time-code", id: "nexus-webchat-verify-code", name: "code", value: verifyCode, onChange: (event) => setVerifyCode(event.target.value), required: true })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "submit", children: labels.verifyCode })
         ] })
@@ -20775,6 +20775,8 @@ function WebChat(props) {
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
             "textarea",
             {
+              id: "nexus-webchat-message",
+              name: "message",
               placeholder: labels.composerPlaceholder,
               value: messageText,
               onChange: (event) => setMessageText(event.target.value)
@@ -20785,7 +20787,9 @@ function WebChat(props) {
             /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
               "input",
               {
+                id: "nexus-webchat-files",
                 multiple: true,
+                name: "files",
                 onChange: (event) => setFiles(Array.from(event.target.files ?? [])),
                 type: "file"
               }
@@ -20803,7 +20807,7 @@ function WebChat(props) {
         /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("form", { className: "nexus-webchat-identity-form", onSubmit: handleSavePhone, children: [
           /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: labels.phoneLabel }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { value: phone, onChange: (event) => setPhone(event.target.value), placeholder: "+628123456789" })
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { autoComplete: "tel", id: "nexus-webchat-phone", name: "phone", value: phone, onChange: (event) => setPhone(event.target.value), placeholder: "+628123456789" })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "nexus-webchat-actions", children: [
             /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "submit", children: labels.savePhone }),
