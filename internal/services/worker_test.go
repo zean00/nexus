@@ -42,6 +42,7 @@ type workerRepo struct {
 	hiddenMetadata      any
 	listMessages        []domain.Message
 	listMessagesQueries []domain.MessageListQuery
+	countMessages       int
 }
 
 func (r *workerRepo) InTx(ctx context.Context, fn func(context.Context, ports.Repository) error) error {
@@ -196,7 +197,7 @@ func (r *workerRepo) ListDeliveries(context.Context, domain.DeliveryListQuery) (
 	return domain.PagedResult[domain.OutboundDelivery]{}, nil
 }
 func (r *workerRepo) CountMessages(context.Context, domain.MessageListQuery) (int, error) {
-	return 0, nil
+	return r.countMessages, nil
 }
 func (r *workerRepo) CountArtifacts(context.Context, domain.ArtifactListQuery) (int, error) {
 	return 0, nil
@@ -683,6 +684,52 @@ func TestWorkerPersistsOutboundArtifacts(t *testing.T) {
 	}
 	if len(repo.storedArtifacts) != 1 {
 		t.Fatalf("expected one stored artifact, got %d", len(repo.storedArtifacts))
+	}
+}
+
+func TestWorkerAllowsFirstOperatorReviewResponse(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents:  []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
+		queueItem:    domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
+		session:      domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
+		message:      domain.Message{MessageID: "msg_1", Text: "hello"},
+		route:        domain.RouteDecision{ACPAgentName: "default-agent", ResponseDelivery: "operator_review", AllowFirstMessageResponse: true},
+		countMessages: 1,
+	}
+	worker := WorkerService{
+		Repo:     repo,
+		ACP:      workerACP{},
+		Renderer: WebChatRenderer{},
+		Channel:  noopChannel{},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if repo.storedOutboundText != "done" {
+		t.Fatalf("expected first operator-review response to be delivered, got %q", repo.storedOutboundText)
+	}
+}
+
+func TestWorkerSuppressesLaterOperatorReviewResponses(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents:  []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
+		queueItem:    domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
+		session:      domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
+		message:      domain.Message{MessageID: "msg_1", Text: "second question"},
+		route:        domain.RouteDecision{ACPAgentName: "default-agent", ResponseDelivery: "operator_review", AllowFirstMessageResponse: true},
+		countMessages: 2,
+	}
+	worker := WorkerService{
+		Repo:     repo,
+		ACP:      workerACP{},
+		Renderer: WebChatRenderer{},
+		Channel:  noopChannel{},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if repo.storedOutboundText != "" {
+		t.Fatalf("expected later operator-review response to be held, got %q", repo.storedOutboundText)
 	}
 }
 

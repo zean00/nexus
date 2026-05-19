@@ -161,6 +161,9 @@ func (c ParmesanClient) EnsureSession(ctx context.Context, session domain.Sessio
 	if strings.TrimSpace(session.Mode) != "" {
 		body["mode"] = strings.ToLower(strings.TrimSpace(session.Mode))
 	}
+	if session.AllowFirstMessageResponse {
+		body["allow_first_message_response"] = true
+	}
 	var created parmesanSession
 	if err := c.postJSON(ctx, parmesanSessionsPath(session.AgentProfileID), nil, body, &created); err != nil {
 		return "", err

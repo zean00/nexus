@@ -85,20 +85,21 @@ type ResponderBinding struct {
 }
 
 type Session struct {
-	ID              string
-	TenantID        string
-	OwnerUserID     string
-	AgentProfileID  string
-	Mode            string
-	ChannelType     string
-	ChannelScopeKey string
-	State           string
-	LastActiveAt    time.Time
-	ACPConnectionID string
-	ACPServerURL    string
-	ACPAgentName    string
-	ACPProfileID    string
-	ACPSessionID    string
+	ID                        string
+	TenantID                  string
+	OwnerUserID               string
+	AgentProfileID            string
+	Mode                      string
+	ChannelType               string
+	ChannelScopeKey           string
+	State                     string
+	LastActiveAt              time.Time
+	ACPConnectionID           string
+	ACPServerURL              string
+	ACPAgentName              string
+	ACPProfileID              string
+	ACPSessionID              string
+	AllowFirstMessageResponse bool
 }
 
 type RouteDecision struct {

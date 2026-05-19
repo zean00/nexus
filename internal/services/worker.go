@@ -259,9 +259,14 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 		return err
 	}
 	message = s.withWhatsAppGroupContext(ctx, session, message)
+	messageCount, err := s.Repo.CountMessages(ctx, domain.MessageListQuery{TenantID: session.TenantID, SessionID: session.ID})
+	if err != nil {
+		return err
+	}
 	if route.AgentMode != "" {
 		session.Mode = route.AgentMode
 	}
+	session.AllowFirstMessageResponse = route.AllowFirstMessageResponse
 	acpSessionID, err := s.ACP.EnsureSession(ctx, session)
 	if err != nil {
 		return err
@@ -294,7 +299,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	if s.NotifySessionUpdate != nil {
 		s.NotifySessionUpdate(session.ID)
 	}
-	terminalStatus, err := s.consumeRunEvents(ctx, session, queued.ID, queued.InboundMessageID, run.ID, route, currentCompat, stream)
+	terminalStatus, err := s.consumeRunEvents(ctx, session, queued.ID, queued.InboundMessageID, run.ID, route, currentCompat, stream, messageCount)
 	if err != nil {
 		return err
 	}
@@ -307,7 +312,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	return nil
 }
 
-func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Session, queueItemID, inboundMessageID, runID string, route domain.RouteDecision, currentCompat *domain.AgentCompatibility, stream domain.RunEventStream) (string, error) {
+func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Session, queueItemID, inboundMessageID, runID string, route domain.RouteDecision, currentCompat *domain.AgentCompatibility, stream domain.RunEventStream, messageCount int) (string, error) {
 	terminalStatus := ""
 	for runEvent := range stream.Events {
 		originalStatus := runEvent.Status
@@ -331,7 +336,7 @@ func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Sess
 				CreatedAt: time.Now().UTC(),
 			})
 		}
-		if !routeUsesOperatorReview(route) {
+		if routeAllowsDirectResponse(route, messageCount) {
 			if err := s.persistRunEvent(ctx, session, runEvent); err != nil {
 				return "", err
 			}
@@ -344,7 +349,7 @@ func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Sess
 			return "", fmt.Errorf("no renderer for channel %s", session.ChannelType)
 		}
 		var deliveries []domain.OutboundDelivery
-		if !routeUsesOperatorReview(route) {
+		if routeAllowsDirectResponse(route, messageCount) {
 			var err error
 			deliveries, err = renderer.RenderRunEvent(ctx, session, runEvent)
 			if err != nil {
@@ -396,6 +401,13 @@ func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Sess
 
 func routeUsesOperatorReview(route domain.RouteDecision) bool {
 	return strings.EqualFold(strings.TrimSpace(route.ResponseDelivery), "operator_review")
+}
+
+func routeAllowsDirectResponse(route domain.RouteDecision, messageCount int) bool {
+	if !routeUsesOperatorReview(route) {
+		return true
+	}
+	return route.AllowFirstMessageResponse && messageCount <= 1
 }
 
 func marshalTrustPolicy(route domain.RouteDecision) []byte {
