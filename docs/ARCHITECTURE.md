@@ -248,7 +248,7 @@ Bridge implementations currently include:
 
 - OpenCode HTTP bridge
 - strict/native ACP HTTP bridge
-- strict-compatible ACP-over-SSE bridge
+- strict-compatible ACP-over-SSE bridge; use `ACP_BASE_URL=http://.../acp` for Duraclaw so Nexus calls Duraclaw's ACP route prefix
 - stdio ACP subprocess bridge
 
 The agent catalog validates each discovered manifest before the worker accepts an agent for execution.

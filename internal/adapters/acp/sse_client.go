@@ -217,6 +217,11 @@ func (c SSEClient) mapSSEPayload(run domain.Run, payload []byte) (domain.RunEven
 	if err := json.Unmarshal(payload, &response); err != nil {
 		return domain.RunEvent{}, fmt.Errorf("decode acp sse event: %w", err)
 	}
+	var streaming struct {
+		Partial   bool `json:"partial"`
+		IsPartial bool `json:"is_partial"`
+	}
+	_ = json.Unmarshal(payload, &streaming)
 	if response.ID == "" {
 		response.ID = run.ACPRunID
 	}
@@ -238,6 +243,7 @@ func (c SSEClient) mapSSEPayload(run domain.Run, payload []byte) (domain.RunEven
 		return domain.RunEvent{}, err
 	}
 	event.RunID = run.ID
+	event.IsPartial = streaming.Partial || streaming.IsPartial
 	return event, nil
 }
 

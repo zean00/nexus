@@ -474,6 +474,15 @@ export ACP_TOKEN=secret
 export DEFAULT_ACP_AGENT_NAME=sse-agent
 ```
 
+For Duraclaw, include the ACP route prefix in the base URL:
+
+```bash
+export ACP_IMPLEMENTATION=sse
+export ACP_BASE_URL=http://localhost:8090/acp
+```
+
+Nexus keeps the strict HTTP control plane for discovery, sessions, runs, resume, and snapshots, then opens `GET /runs/{run_id}/events` as `text/event-stream`. The backend should emit strict run-shaped SSE `data:` payloads and keep the stream open until `completed`, `failed`, or `canceled`.
+
 ### OpenCode stdio backend
 
 ```bash

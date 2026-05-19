@@ -32,7 +32,7 @@ func TestSSEStartRunStreamsEvents(t *testing.T) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = io.WriteString(w, ": heartbeat\n\n")
 			_, _ = io.WriteString(w, "event: message\n")
-			_, _ = io.WriteString(w, `data: {"id":"run_1","session_id":"acp_session_1","status":"running","text":"hel"}`+"\n\n")
+			_, _ = io.WriteString(w, `data: {"id":"run_1","session_id":"acp_session_1","status":"running","text":"hel","partial":true}`+"\n\n")
 			_, _ = io.WriteString(w, `data: {"id":"run_1","session_id":"acp_session_1","status":"completed","output":"hello"}`+"\n\n")
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -58,7 +58,7 @@ func TestSSEStartRunStreamsEvents(t *testing.T) {
 		t.Fatalf("unexpected run payload: %+v", runPayload)
 	}
 	events := collectRunEvents(t, stream)
-	if len(events) != 2 || events[0].RunID != run.ID || events[0].Text != "hel" || events[1].Text != "hello" || events[1].Status != "completed" {
+	if len(events) != 2 || events[0].RunID != run.ID || events[0].Text != "hel" || !events[0].IsPartial || events[1].Text != "hello" || events[1].Status != "completed" || events[1].IsPartial {
 		t.Fatalf("unexpected SSE events: %+v", events)
 	}
 }
