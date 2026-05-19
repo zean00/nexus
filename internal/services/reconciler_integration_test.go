@@ -74,7 +74,8 @@ func TestReconcilerIntegrationWithPostgres(t *testing.T) {
 	t.Run("refreshes stale run", func(t *testing.T) {
 		seedReconcilerStaleRunFixture(t, ctx, pool)
 		reconciler := Reconciler{
-			Repo: repo,
+			Repo:     repo,
+			Renderer: SlackRenderer{},
 			ACP: workerIntegrationACP{
 				getRun: domain.RunStatusSnapshot{
 					ACPRunID: "acp_run_stale_1",
@@ -99,6 +100,27 @@ func TestReconcilerIntegrationWithPostgres(t *testing.T) {
 		}
 		if run.Status != "completed" {
 			t.Fatalf("expected stale run to be refreshed to completed, got %+v", run)
+		}
+		delivery, err := repo.GetDelivery(ctx, "delivery_run_stale_1_completed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if delivery.Status != "queued" || delivery.SessionID != "session_stale_run_1" {
+			t.Fatalf("expected completed snapshot delivery to be queued, got %+v", delivery)
+		}
+		detail, err := repo.GetRunDetail(ctx, "run_stale_1", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundOutput := false
+		for _, message := range detail.Messages {
+			if message.Direction == "outbound" && message.Text == "done" {
+				foundOutput = true
+				break
+			}
+		}
+		if !foundOutput {
+			t.Fatalf("expected recovered completion output in run history, got %+v", detail.Messages)
 		}
 		queueItem, err := repo.GetQueueItem(ctx, "queue_stale_run_1")
 		if err != nil {

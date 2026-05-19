@@ -20553,8 +20553,9 @@ function WebChat(props) {
   const hasVisibleAssistantPartial = visibleItems.some(
     (item) => item.type === "message" && item.role === "assistant" && item.partial
   );
+  const hasVisibleAssistantReply = hasAssistantAfterLatestUser(visibleItems);
   (0, import_react2.useEffect)(() => {
-    if (effectiveVisibilityMode === "off" || !effectiveActivity || effectiveVisibilityMode === "full" && hasVisibleAssistantPartial) {
+    if (effectiveVisibilityMode === "off" || !effectiveActivity || hasVisibleAssistantReply || effectiveVisibilityMode === "full" && hasVisibleAssistantPartial) {
       setActivityLabel("");
       return;
     }
@@ -20562,7 +20563,7 @@ function WebChat(props) {
       setActivityLabel(activityLabelForMode(effectiveVisibilityMode, effectiveActivity));
     }, 200);
     return () => window.clearTimeout(timer);
-  }, [effectiveActivity, effectiveVisibilityMode, hasVisibleAssistantPartial]);
+  }, [effectiveActivity, effectiveVisibilityMode, hasVisibleAssistantPartial, hasVisibleAssistantReply]);
   const themeStyle = buildThemeStyle(props.theme, props.compact);
   const title = props.title ?? labels.title;
   const subtitle = props.subtitle ?? labels.subtitle;

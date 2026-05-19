@@ -30,10 +30,12 @@ type ReconcilerObserver interface {
 }
 
 type Reconciler struct {
-	Repo     ports.Repository
-	ACP      ports.ACPBridge
-	Config   ReconcilerConfig
-	Observer ReconcilerObserver
+	Repo      ports.Repository
+	ACP       ports.ACPBridge
+	Renderer  ports.Renderer
+	Renderers map[string]ports.Renderer
+	Config    ReconcilerConfig
+	Observer  ReconcilerObserver
 }
 
 func (r Reconciler) RunOnce(ctx context.Context, limit int) (err error) {
@@ -63,6 +65,13 @@ func (r Reconciler) RunOnce(ctx context.Context, limit int) (err error) {
 	}
 	tracex.Logger(ctx).Info("reconciler.completed", "limit", limit)
 	return errors.Join(errs...)
+}
+
+func (r Reconciler) rendererFor(channelType string) ports.Renderer {
+	if renderer, ok := r.Renderers[channelType]; ok {
+		return renderer
+	}
+	return r.Renderer
 }
 
 func (r Reconciler) requeueClaimedOutbox(ctx context.Context, now time.Time, limit int) error {
@@ -227,6 +236,39 @@ func (r Reconciler) refreshStaleRuns(ctx context.Context, now time.Time, limit i
 			tracex.Logger(ctx).Error("reconciler.persist_run_snapshot_failed", "run_id", run.ID, "error", err.Error())
 			errs = append(errs, err)
 			continue
+		}
+		if snapshot.Status == "completed" && snapshot.Output != "" {
+			runEvent := domain.RunEvent{
+				RunID:      run.ID,
+				MessageKey: run.ACPRunID,
+				Status:     "completed",
+				Text:       snapshot.Output,
+				Artifacts:  snapshot.Artifacts,
+			}
+			if err := persistRunEvent(ctx, r.Repo, session, runEvent); err != nil {
+				tracex.Logger(ctx).Error("reconciler.persist_completed_run_output_failed", "run_id", run.ID, "error", err.Error())
+				errs = append(errs, err)
+				continue
+			}
+			renderer := r.rendererFor(session.ChannelType)
+			if renderer == nil {
+				tracex.Logger(ctx).Error("reconciler.render_completed_run_failed", "run_id", run.ID, "error", "missing renderer")
+				errs = append(errs, fmt.Errorf("no renderer for channel %s", session.ChannelType))
+				continue
+			}
+			deliveries, renderErr := renderer.RenderRunEvent(ctx, session, runEvent)
+			if renderErr != nil {
+				tracex.Logger(ctx).Error("reconciler.render_completed_run_failed", "run_id", run.ID, "error", renderErr.Error())
+				errs = append(errs, renderErr)
+				continue
+			}
+			for _, delivery := range deliveries {
+				if err := r.Repo.EnqueueDelivery(ctx, delivery); err != nil {
+					tracex.Logger(ctx).Error("reconciler.enqueue_completed_run_delivery_failed", "run_id", run.ID, "delivery_id", delivery.ID, "error", err.Error())
+					errs = append(errs, err)
+					continue
+				}
+			}
 		}
 		if err := r.Repo.Audit(ctx, domain.AuditEvent{
 			ID:            fmt.Sprintf("audit_run_refresh_%s_%d", run.ID, now.UnixNano()),

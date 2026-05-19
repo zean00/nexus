@@ -596,6 +596,10 @@ func (s WorkerService) processAwaitResume(ctx context.Context, evt domain.Outbox
 }
 
 func (s WorkerService) persistRunEvent(ctx context.Context, session domain.Session, evt domain.RunEvent) error {
+	return persistRunEvent(ctx, s.Repo, session, evt)
+}
+
+func persistRunEvent(ctx context.Context, repo ports.Repository, session domain.Session, evt domain.RunEvent) error {
 	rawPayload, err := json.Marshal(map[string]any{
 		"run_id":      evt.RunID,
 		"message_key": evt.MessageKey,
@@ -612,12 +616,12 @@ func (s WorkerService) persistRunEvent(ctx context.Context, session domain.Sessi
 	if messageKey == "" {
 		messageKey = evt.RunID
 	}
-	messageID, err := s.Repo.StoreOutboundMessage(ctx, session, evt.RunID, messageKey, evt.Text, rawPayload)
+	messageID, err := repo.StoreOutboundMessage(ctx, session, evt.RunID, messageKey, evt.Text, rawPayload)
 	if err != nil {
 		return err
 	}
 	if len(evt.Artifacts) > 0 {
-		if err := s.Repo.StoreArtifacts(ctx, messageID, "outbound", evt.Artifacts); err != nil {
+		if err := repo.StoreArtifacts(ctx, messageID, "outbound", evt.Artifacts); err != nil {
 			return err
 		}
 	}

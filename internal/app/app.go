@@ -545,8 +545,10 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 			GroupContextMaxChars: cfg.WhatsAppWebGroupContextMaxChars,
 		},
 		Reconciler: services.Reconciler{
-			Repo: repo,
-			ACP:  acpClient,
+			Repo:      repo,
+			ACP:       acpClient,
+			Renderer:  renderers["slack"],
+			Renderers: renderers,
 			Config: services.ReconcilerConfig{
 				OutboxClaimTimeout:     cfg.OutboxClaimTimeout,
 				QueueStartingTimeout:   cfg.QueueStartingTimeout,
