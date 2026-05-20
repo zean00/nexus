@@ -502,6 +502,40 @@ func (queuedThenCompletedWorkerACP) FindLatestRunForSession(context.Context, dom
 }
 func (queuedThenCompletedWorkerACP) CancelRun(context.Context, domain.Run) error { return nil }
 
+type statusOnlyThenCompletedWorkerACP struct{}
+
+func (statusOnlyThenCompletedWorkerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
+	return nil, nil
+}
+func (statusOnlyThenCompletedWorkerACP) EnsureSession(context.Context, domain.Session) (string, error) {
+	return "acp_session_1", nil
+}
+func (statusOnlyThenCompletedWorkerACP) StartRun(context.Context, domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
+	return domain.Run{
+			ID:          "run_status_only_1",
+			SessionID:   "session_1",
+			Status:      "starting",
+			StartedAt:   time.Now(),
+			LastEventAt: time.Now(),
+		}, domain.StaticRunEventStream(
+			domain.RunEvent{RunID: "run_status_only_1", Status: "running"},
+			domain.RunEvent{RunID: "run_status_only_1", Status: "completed", Text: "done"},
+		), nil
+}
+func (statusOnlyThenCompletedWorkerACP) ResumeRun(context.Context, domain.Await, []byte) (domain.RunEventStream, error) {
+	return domain.StaticRunEventStream(), nil
+}
+func (statusOnlyThenCompletedWorkerACP) GetRun(context.Context, string) (domain.RunStatusSnapshot, error) {
+	return domain.RunStatusSnapshot{}, nil
+}
+func (statusOnlyThenCompletedWorkerACP) FindRunByIdempotencyKey(context.Context, domain.Session, string) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (statusOnlyThenCompletedWorkerACP) FindLatestRunForSession(context.Context, domain.Session) (domain.RunStatusSnapshot, bool, error) {
+	return domain.RunStatusSnapshot{}, false, nil
+}
+func (statusOnlyThenCompletedWorkerACP) CancelRun(context.Context, domain.Run) error { return nil }
+
 type resumeWorkerACP struct{}
 
 func (resumeWorkerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
@@ -980,6 +1014,38 @@ func TestWorkerDoesNotDowngradeStartedQueueItemToQueued(t *testing.T) {
 	}
 	if len(repo.queueStatusUpdates) == 0 || repo.queueStatusUpdates[len(repo.queueStatusUpdates)-1] != "completed" {
 		t.Fatalf("expected queue to finish completed, got %+v", repo.queueStatusUpdates)
+	}
+}
+
+func TestWorkerSkipsStatusOnlyOutboundMessageButUpdatesState(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
+		queueItem:    domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
+		session:      domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
+		message:      domain.Message{MessageID: "msg_1", Text: "start"},
+		route:        domain.RouteDecision{ACPAgentName: "default-agent"},
+	}
+	worker := WorkerService{
+		Repo:     repo,
+		ACP:      statusOnlyThenCompletedWorkerACP{},
+		Renderer: WebChatRenderer{},
+		Channel:  noopChannel{},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.storedOutboundTexts) != 1 || repo.storedOutboundTexts[0] != "done" {
+		t.Fatalf("expected only completed output to be stored, got %+v", repo.storedOutboundTexts)
+	}
+	sawRunning := false
+	for _, status := range repo.queueStatusUpdates {
+		if status == "running" {
+			sawRunning = true
+			break
+		}
+	}
+	if !sawRunning || len(repo.queueStatusUpdates) == 0 || repo.queueStatusUpdates[len(repo.queueStatusUpdates)-1] != "completed" {
+		t.Fatalf("expected status-only running event to update queue state, got %+v", repo.queueStatusUpdates)
 	}
 }
 

@@ -336,7 +336,8 @@ func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Sess
 				CreatedAt: time.Now().UTC(),
 			})
 		}
-		if routeAllowsDirectResponse(route, messageCount) {
+		renderable := runEventHasRenderableContent(runEvent)
+		if routeAllowsDirectResponse(route, messageCount) && renderable {
 			if err := s.persistRunEvent(ctx, session, runEvent); err != nil {
 				return "", err
 			}
@@ -349,7 +350,7 @@ func (s WorkerService) consumeRunEvents(ctx context.Context, session domain.Sess
 			return "", fmt.Errorf("no renderer for channel %s", session.ChannelType)
 		}
 		var deliveries []domain.OutboundDelivery
-		if routeAllowsDirectResponse(route, messageCount) {
+		if routeAllowsDirectResponse(route, messageCount) && renderable {
 			var err error
 			deliveries, err = renderer.RenderRunEvent(ctx, session, runEvent)
 			if err != nil {
@@ -408,6 +409,10 @@ func routeAllowsDirectResponse(route domain.RouteDecision, messageCount int) boo
 		return true
 	}
 	return route.AllowFirstMessageResponse && messageCount <= 1
+}
+
+func runEventHasRenderableContent(evt domain.RunEvent) bool {
+	return strings.TrimSpace(evt.Text) != "" || len(evt.Artifacts) > 0 || len(evt.AwaitPrompt) > 0 || len(evt.AwaitSchema) > 0
 }
 
 func marshalTrustPolicy(route domain.RouteDecision) []byte {
