@@ -319,6 +319,10 @@ func normalizeRouteAgentMode(value string) string {
 	}
 }
 
+func NormalizeAgentModeForAdmin(value string) string {
+	return normalizeRouteAgentMode(value)
+}
+
 func cloneStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for k, v := range in {

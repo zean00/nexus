@@ -164,6 +164,8 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 		if session.Mode == "" {
 			session.Mode = route.AgentMode
 		}
+		effectiveAgentMode := effectiveInboundAgentMode(session, route)
+		effectiveResponseDelivery := effectiveInboundResponseDelivery(effectiveAgentMode, route)
 		identityRepo := s.Identity
 		if txIdentity, ok := repo.(ports.IdentityRepository); ok {
 			identityRepo = txIdentity
@@ -191,8 +193,8 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 				SessionID:        session.ID,
 				Status:           "forwarded",
 				AgentProfileID:   session.AgentProfileID,
-				AgentMode:        route.AgentMode,
-				ResponseDelivery: route.ResponseDelivery,
+				AgentMode:        effectiveAgentMode,
+				ResponseDelivery: effectiveResponseDelivery,
 			}
 			return nil
 		}
@@ -209,8 +211,8 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 			Status:           "accepted",
 			QueueID:          queueItem.ID,
 			AgentProfileID:   session.AgentProfileID,
-			AgentMode:        route.AgentMode,
-			ResponseDelivery: route.ResponseDelivery,
+			AgentMode:        effectiveAgentMode,
+			ResponseDelivery: effectiveResponseDelivery,
 		}
 		if active {
 			result.Status = "queued"
@@ -228,6 +230,24 @@ func (s InboundService) Handle(ctx context.Context, evt domain.CanonicalInboundE
 	}
 	tracex.Logger(ctx).Info("inbound.accepted", "event_id", evt.EventID, "session_id", result.SessionID, "queue_id", result.QueueID, "status", result.Status)
 	return result, nil
+}
+
+func effectiveInboundAgentMode(session domain.Session, route domain.RouteDecision) string {
+	if mode := normalizeRouteAgentMode(session.Mode); mode != "" {
+		return mode
+	}
+	return normalizeRouteAgentMode(route.AgentMode)
+}
+
+func effectiveInboundResponseDelivery(mode string, route domain.RouteDecision) string {
+	switch normalizeRouteAgentMode(mode) {
+	case "auto", "unattended":
+		return "direct"
+	case "manual", "supervised":
+		return "operator_review"
+	default:
+		return route.ResponseDelivery
+	}
 }
 
 type routeSessionResolver interface {

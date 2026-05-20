@@ -390,6 +390,43 @@ func TestInboundServiceQueuesMessage(t *testing.T) {
 	}
 }
 
+func TestInboundServiceReportsExistingAutoSessionAsDirect(t *testing.T) {
+	repo := &fakeRepo{
+		receipts: map[string]bool{},
+		sessions: map[string]domain.Session{
+			"C1:T1": {ID: "session_1", TenantID: "tenant_default", ChannelType: "slack", ChannelScopeKey: "C1:T1", Mode: "auto"},
+		},
+	}
+	svc := InboundService{
+		Repo: repo,
+		Router: StaticRouter{
+			DefaultAgentProfileID: "agent_profile_default",
+			FileRules: []domain.AgentRoutingRule{{
+				ID:             "rule_1",
+				TenantID:       "tenant_default",
+				Enabled:        true,
+				AgentProfileID: "agent_profile_default",
+				Match:          map[string]any{"agent_mode": "supervised", "response_delivery": "operator_review"},
+			}},
+		},
+	}
+	result, err := svc.Handle(context.Background(), domain.CanonicalInboundEvent{
+		EventID:         "evt_auto_1",
+		TenantID:        "tenant_default",
+		Channel:         "slack",
+		ProviderEventID: "provider_auto_1",
+		ReceivedAt:      time.Now(),
+		Conversation:    domain.Conversation{ChannelSurfaceKey: "C1:T1"},
+		Message:         domain.Message{MessageID: "msg_auto_1", Text: "hello"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AgentMode != "auto" || result.ResponseDelivery != "direct" {
+		t.Fatalf("result = %+v, want existing auto session to report direct delivery", result)
+	}
+}
+
 func TestInboundServiceEmailForwardOnlyIncludesAgentProfile(t *testing.T) {
 	repo := &fakeRepo{
 		receipts: map[string]bool{},

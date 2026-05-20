@@ -669,6 +669,7 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/sessions", a.handleListSessions)
 	mux.HandleFunc("/admin/sessions/by-acp", a.handleListSessionsByACP)
 	mux.HandleFunc("/admin/sessions/detail", a.handleSessionDetail)
+	mux.HandleFunc("/admin/sessions/mode", a.handleUpdateSessionMode)
 	mux.HandleFunc("/admin/laju/context", a.handleLajuContext)
 	mux.HandleFunc("/admin/acp/agents", a.handleListACPAgents)
 	mux.HandleFunc("/admin/acp/compatible", a.handleListCompatibleACPAgents)

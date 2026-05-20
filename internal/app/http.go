@@ -455,6 +455,40 @@ func (a *App) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, detail, detailMeta("session_id", sessionID, page.Limit))
 }
 
+type sessionModeUpdater interface {
+	UpdateSessionMode(ctx context.Context, sessionID, mode string) error
+}
+
+func (a *App) handleUpdateSessionMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	repo, ok := a.Repo.(sessionModeUpdater)
+	if !ok {
+		httpx.Error(w, http.StatusNotImplemented, "session mode update is not supported")
+		return
+	}
+	var body struct {
+		SessionID string `json:"session_id"`
+		Mode      string `json:"mode"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	sessionID := strings.TrimSpace(body.SessionID)
+	mode := services.NormalizeAgentModeForAdmin(body.Mode)
+	if sessionID == "" || mode == "" {
+		httpx.Error(w, http.StatusBadRequest, "session_id and valid mode are required")
+		return
+	}
+	if err := repo.UpdateSessionMode(r.Context(), sessionID, mode); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]any{"session_id": sessionID, "mode": mode}, nil)
+}
+
 func (a *App) handleListCompatibleACPAgents(w http.ResponseWriter, r *http.Request) {
 	refresh := acpRefresh(r)
 	agents, err := a.Catalog.Compatible(r.Context(), refresh)

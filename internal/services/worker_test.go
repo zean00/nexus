@@ -369,6 +369,32 @@ func (workerACP) FindLatestRunForSession(context.Context, domain.Session) (domai
 }
 func (workerACP) CancelRun(context.Context, domain.Run) error { return nil }
 
+type modeCapturingWorkerACP struct {
+	workerACP
+	ensuredMode string
+	startMode   string
+}
+
+func (a *modeCapturingWorkerACP) EnsureSession(_ context.Context, session domain.Session) (string, error) {
+	a.ensuredMode = session.Mode
+	return "acp_session_1", nil
+}
+
+func (a *modeCapturingWorkerACP) StartRun(_ context.Context, req domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
+	a.startMode = req.Session.Mode
+	return domain.Run{
+			ID:          "run_1",
+			SessionID:   req.Session.ID,
+			Status:      "completed",
+			StartedAt:   time.Now(),
+			LastEventAt: time.Now(),
+		}, domain.StaticRunEventStream(domain.RunEvent{
+			RunID:  "run_1",
+			Status: "completed",
+			Text:   "done",
+		}), nil
+}
+
 type awaitingWorkerACP struct{}
 
 func (awaitingWorkerACP) DiscoverAgents(context.Context) ([]domain.AgentManifest, error) {
@@ -718,6 +744,29 @@ func TestWorkerPersistsOutboundArtifacts(t *testing.T) {
 	}
 	if len(repo.storedArtifacts) != 1 {
 		t.Fatalf("expected one stored artifact, got %d", len(repo.storedArtifacts))
+	}
+}
+
+func TestWorkerPreservesExistingSessionModeOverRouteDefault(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
+		queueItem:    domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
+		session:      domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "web", Mode: "auto"},
+		message:      domain.Message{MessageID: "msg_1", Text: "hello"},
+		route:        domain.RouteDecision{ACPAgentName: "default-agent", AgentMode: "supervised"},
+	}
+	acp := &modeCapturingWorkerACP{}
+	worker := WorkerService{
+		Repo:     repo,
+		ACP:      acp,
+		Renderer: noopRenderer{},
+		Channel:  noopChannel{},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if acp.ensuredMode != "auto" || acp.startMode != "auto" {
+		t.Fatalf("ACP session modes = ensure %q start %q, want auto preserved", acp.ensuredMode, acp.startMode)
 	}
 }
 

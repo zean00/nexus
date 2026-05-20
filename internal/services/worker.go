@@ -263,7 +263,7 @@ func (s WorkerService) processQueueStart(ctx context.Context, evt domain.OutboxE
 	if err != nil {
 		return err
 	}
-	if route.AgentMode != "" {
+	if strings.TrimSpace(session.Mode) == "" && route.AgentMode != "" {
 		session.Mode = route.AgentMode
 	}
 	session.AllowFirstMessageResponse = route.AllowFirstMessageResponse

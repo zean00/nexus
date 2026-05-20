@@ -91,13 +91,13 @@ func (r *PostgresRepository) ResolveSession(ctx context.Context, evt domain.Cano
 	}
 	row := r.queryRow(ctx, `
 		select id, tenant_id, coalesce(owner_user_id,''), coalesce(agent_profile_id,''), channel_type,
-		       channel_scope_key, state, last_active_at, coalesce(acp_session_id,'')
+		       channel_scope_key, state, last_active_at, coalesce(acp_session_id,''), coalesce(mode,'')
 		from sessions
 		where tenant_id=$1 and channel_type=$2 and channel_scope_key=$3 and state in ('open','paused')
 		limit 1
 	`, evt.TenantID, evt.Channel, key)
 	var s domain.Session
-	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPSessionID)
+	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPSessionID, &s.Mode)
 	if err == nil {
 		if s.AgentProfileID == "" && strings.TrimSpace(agentProfileID) != "" {
 			if _, updateErr := r.exec(ctx, `update sessions set agent_profile_id=$1, updated_at=now() where id=$2`, agentProfileID, s.ID); updateErr != nil {
@@ -137,7 +137,9 @@ func (r *PostgresRepository) ResolveSessionForRoute(ctx context.Context, evt dom
 		}
 		session.ACPConnectionID = route.ACPConnectionID
 		session.ACPAgentName = route.ACPAgentName
-		session.Mode = route.AgentMode
+		if created || strings.TrimSpace(session.Mode) == "" {
+			session.Mode = route.AgentMode
+		}
 		return session, created, err
 	}
 	agentProfileID := strings.TrimSpace(route.AgentProfileID)
@@ -152,13 +154,13 @@ func (r *PostgresRepository) ResolveSessionForRoute(ctx context.Context, evt dom
 	key := evt.Conversation.ChannelSurfaceKey
 	row := r.queryRow(ctx, `
 		select id, tenant_id, coalesce(owner_user_id,''), coalesce(agent_profile_id,''), channel_type,
-		       channel_scope_key, state, last_active_at, coalesce(acp_connection_id,''), coalesce(acp_server_url,''), coalesce(acp_agent_name,''), coalesce(acp_session_id,'')
+		       channel_scope_key, state, last_active_at, coalesce(acp_connection_id,''), coalesce(acp_server_url,''), coalesce(acp_agent_name,''), coalesce(acp_session_id,''), coalesce(mode,'')
 		from sessions
 		where tenant_id=$1 and channel_type=$2 and channel_scope_key=$3 and agent_profile_id=$4 and state in ('open','paused')
 		limit 1
 	`, evt.TenantID, evt.Channel, key, agentProfileID)
 	var s domain.Session
-	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPConnectionID, &s.ACPServerURL, &s.ACPAgentName, &s.ACPSessionID)
+	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPConnectionID, &s.ACPServerURL, &s.ACPAgentName, &s.ACPSessionID, &s.Mode)
 	if err == nil {
 		return s, false, nil
 	}
@@ -190,14 +192,14 @@ func (r *PostgresRepository) ResolveSessionForRoute(ctx context.Context, evt dom
 func (r *PostgresRepository) resolveVirtualSurfaceSession(ctx context.Context, evt domain.CanonicalInboundEvent, agentProfileID string) (domain.Session, bool, error) {
 	row := r.queryRow(ctx, `
 		select s.id, s.tenant_id, coalesce(s.owner_user_id,''), coalesce(s.agent_profile_id,''), s.channel_type,
-		       s.channel_scope_key, s.state, s.last_active_at, coalesce(s.acp_session_id,'')
+		       s.channel_scope_key, s.state, s.last_active_at, coalesce(s.acp_session_id,''), coalesce(s.mode,'')
 		from channel_surface_state css
 		join sessions s on s.id = css.active_session_id
 		where css.tenant_id=$1 and css.channel_type=$2 and css.surface_key=$3 and s.owner_user_id=$4 and s.state in ('open','paused')
 		limit 1
 	`, evt.TenantID, evt.Channel, keyForSurface(evt), evt.Sender.ChannelUserID)
 	var s domain.Session
-	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPSessionID)
+	err := row.Scan(&s.ID, &s.TenantID, &s.OwnerUserID, &s.AgentProfileID, &s.ChannelType, &s.ChannelScopeKey, &s.State, &s.LastActiveAt, &s.ACPSessionID, &s.Mode)
 	if err == nil {
 		if s.AgentProfileID == "" && strings.TrimSpace(agentProfileID) != "" {
 			if _, updateErr := r.exec(ctx, `update sessions set agent_profile_id=$1, updated_at=now() where id=$2`, agentProfileID, s.ID); updateErr != nil {
@@ -1400,6 +1402,15 @@ func (r *PostgresRepository) UpdateSessionACPSessionID(ctx context.Context, sess
 		set acp_session_id=$2, updated_at=now()
 		where id=$1 and coalesce(acp_session_id,'') <> $2
 	`, sessionID, acpSessionID)
+	return err
+}
+
+func (r *PostgresRepository) UpdateSessionMode(ctx context.Context, sessionID, mode string) error {
+	_, err := r.exec(ctx, `
+		update sessions
+		set mode=$2, updated_at=now()
+		where id=$1
+	`, sessionID, mode)
 	return err
 }
 
