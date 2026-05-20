@@ -381,6 +381,9 @@ func (r Reconciler) enqueueVisibleRuntimeEvent(ctx context.Context, now time.Tim
 	if eventID == "" || strings.TrimSpace(event.Text) == "" {
 		return nil
 	}
+	if visibleRuntimeEventAlreadyStored(ctx, r.Repo, session, event) {
+		return nil
+	}
 	runID := "acp_event_" + eventID
 	runEvent := domain.RunEvent{
 		RunID:      runID,
@@ -424,6 +427,54 @@ func (r Reconciler) enqueueVisibleRuntimeEvent(ctx context.Context, now time.Tim
 		})
 	}
 	return nil
+}
+
+func visibleRuntimeEventAlreadyStored(ctx context.Context, repo ports.Repository, session domain.Session, event domain.VisibleSessionEvent) bool {
+	if !visibleRuntimeEventSourceSupportsRunDedupe(event.Source) {
+		return false
+	}
+	executionID := strings.TrimSpace(event.ExecutionID)
+	if executionID == "" {
+		return false
+	}
+	page, err := repo.ListMessages(ctx, domain.MessageListQuery{
+		TenantID:  session.TenantID,
+		SessionID: session.ID,
+		CursorPage: domain.CursorPage{
+			Limit: 200,
+		},
+	})
+	if err != nil {
+		return false
+	}
+	for _, message := range page.Items {
+		if !strings.EqualFold(message.Direction, "outbound") || !strings.EqualFold(message.Role, "assistant") {
+			continue
+		}
+		var payload struct {
+			RunID    string         `json:"run_id"`
+			Metadata map[string]any `json:"metadata"`
+		}
+		if err := json.Unmarshal(message.RawPayload, &payload); err != nil {
+			continue
+		}
+		if strings.TrimSpace(payload.RunID) == "run_"+executionID {
+			return true
+		}
+		if strings.TrimSpace(fmt.Sprint(payload.Metadata["execution_id"])) == executionID {
+			return true
+		}
+	}
+	return false
+}
+
+func visibleRuntimeEventSourceSupportsRunDedupe(source string) bool {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "ai_agent", "assistant", "human_agent_on_behalf_of_ai_agent":
+		return true
+	default:
+		return false
+	}
 }
 
 func isDuplicateMessageError(err error) bool {

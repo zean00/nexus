@@ -153,6 +153,46 @@ func TestStrictStartRunForwardsReplyTo(t *testing.T) {
 	}
 }
 
+func TestStrictListVisibleEvents(t *testing.T) {
+	var gotPath string
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query().Get("min_offset")
+		if r.Header.Get("X-Session-ID") != "session_1" {
+			t.Fatalf("missing session headers: %s", r.Header.Get("X-Session-ID"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[
+			{"id":"evt_customer","session_id":"acp_sess_1","source":"customer","kind":"message","offset":1,"content":[{"type":"text","text":"hello"}]},
+			{"id":"evt_status","session_id":"acp_sess_1","source":"runtime","kind":"status","offset":2,"data":{"state":"running"}},
+			{"id":"evt_auto","session_id":"acp_sess_1","source":"ai_agent","kind":"message","offset":3,"content":[{"type":"text","text":"auto reply"}],"execution_id":"exec_1"},
+			{"id":"evt_ai","session_id":"acp_sess_1","source":"ai_agent","kind":"message","offset":4,"content":[{"type":"text","text":"agent reply"}],"execution_id":"exec_1","metadata":{"response_review_approved":true}},
+			{"id":"evt_operator","session_id":"acp_sess_1","source":"human_agent","kind":"message","offset":4,"text":"operator reply"}
+		]`)
+	}))
+	defer server.Close()
+
+	client := NewStrictClient(server.URL, "")
+	client.HTTP = server.Client()
+	events, err := client.ListVisibleEvents(context.Background(), domain.Session{ID: "session_1", ACPSessionID: "acp_sess_1"}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/sessions/acp_sess_1/events" || gotQuery != "2" {
+		t.Fatalf("unexpected request path/query: %s?min_offset=%s", gotPath, gotQuery)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events len = %d, want 2: %+v", len(events), events)
+	}
+	if events[0].ID != "evt_ai" || events[0].Text != "agent reply" || events[0].ExecutionID != "exec_1" {
+		t.Fatalf("unexpected ai event: %+v", events[0])
+	}
+	if events[1].ID != "evt_operator" || events[1].Text != "operator reply" {
+		t.Fatalf("unexpected operator event: %+v", events[1])
+	}
+}
+
 func TestStrictStartRunAddsEmailContextAndArtifactRefs(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -336,6 +376,53 @@ func TestStrictEnsureSessionWithGreetingRequestsExistingACPSession(t *testing.T)
 	}
 	if payload["gateway_session_id"] != "gateway_session_1" || payload["session_id"] != "acp_session_1" || payload["send_greeting"] != true {
 		t.Fatalf("unexpected payload %#v", payload)
+	}
+}
+
+func TestStrictEnsureSessionSyncsExistingSessionMetadata(t *testing.T) {
+	var payload map[string]any
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPut {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/sessions/acp_session_1" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"acp_session_1"}`)
+	}))
+	defer server.Close()
+
+	client := NewStrictClient(server.URL, "")
+	client.HTTP = server.Client()
+
+	id, err := client.EnsureSession(context.Background(), domain.Session{
+		ID:                        "gateway_session_1",
+		ACPSessionID:              "acp_session_1",
+		Mode:                      "supervised",
+		AllowFirstMessageResponse: true,
+		ACPAgentName:              "agent_profile_live_support",
+		ACPProfileID:              "agent_profile_live_support",
+		ChannelType:               "webchat",
+		ChannelScopeKey:           "surface_1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || id != "acp_session_1" {
+		t.Fatalf("expected one sync request and session id, got requests=%d id=%q", requests, id)
+	}
+	metadata, _ := payload["metadata"].(map[string]any)
+	if payload["gateway_session_id"] != "gateway_session_1" || payload["session_id"] != "acp_session_1" {
+		t.Fatalf("unexpected payload %#v", payload)
+	}
+	if metadata["runtime_mode"] != "supervised" || metadata["agent_mode"] != "supervised" || metadata["agent_name"] != "agent_profile_live_support" || metadata["allow_first_message_response"] != true {
+		t.Fatalf("unexpected metadata %#v", metadata)
 	}
 }
 

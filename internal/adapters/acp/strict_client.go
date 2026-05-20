@@ -54,6 +54,24 @@ type strictRun struct {
 	Await          *strictAwait   `json:"await"`
 }
 
+type strictSessionEvent struct {
+	ID          string         `json:"id"`
+	SessionID   string         `json:"session_id"`
+	Source      string         `json:"source"`
+	Kind        string         `json:"kind"`
+	Offset      int64          `json:"offset"`
+	ExecutionID string         `json:"execution_id"`
+	Text        string         `json:"text"`
+	Body        string         `json:"body"`
+	Content     []strictPart   `json:"content"`
+	Metadata    map[string]any `json:"metadata"`
+}
+
+type strictPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
 type strictAsset struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
@@ -151,10 +169,14 @@ func (c StrictClient) EnsureSessionWithGreeting(ctx context.Context, session dom
 }
 
 func (c StrictClient) ensureSession(ctx context.Context, session domain.Session, options domain.SessionGreetingOptions) (strictSession, error) {
-	if session.ACPSessionID != "" && !options.SendGreeting {
+	metadata := strictSessionMetadata(session)
+	if session.ACPSessionID != "" && !options.SendGreeting && len(metadata) == 0 {
 		return strictSession{ID: session.ACPSessionID}, nil
 	}
-	body := map[string]any{"gateway_session_id": session.ID}
+	body := map[string]any{
+		"gateway_session_id": session.ID,
+		"metadata":           metadata,
+	}
 	if session.ACPSessionID != "" {
 		body["session_id"] = session.ACPSessionID
 	}
@@ -193,6 +215,24 @@ func (c StrictClient) ensureSession(ctx context.Context, session domain.Session,
 		return strictSession{}, fmt.Errorf("ensure session: missing session id")
 	}
 	return created, nil
+}
+
+func strictSessionMetadata(session domain.Session) map[string]any {
+	metadata := map[string]any{}
+	if mode := strings.ToLower(strings.TrimSpace(session.Mode)); mode != "" {
+		metadata["runtime_mode"] = mode
+		metadata["agent_mode"] = mode
+	}
+	if session.AllowFirstMessageResponse {
+		metadata["allow_first_message_response"] = true
+	}
+	if agentName := strings.TrimSpace(session.ACPAgentName); agentName != "" {
+		metadata["agent_name"] = agentName
+	}
+	if profileID := strings.TrimSpace(session.ACPProfileID); profileID != "" {
+		metadata["agent_profile_id"] = profileID
+	}
+	return metadata
 }
 
 func strictGreetingLanguage(value string) (string, string) {
@@ -405,6 +445,106 @@ func (c StrictClient) GetRunForSession(ctx context.Context, session domain.Sessi
 		return domain.RunStatusSnapshot{}, err
 	}
 	return c.mapSnapshot(response)
+}
+
+func (c StrictClient) ListVisibleEvents(ctx context.Context, session domain.Session, minOffset int64) ([]domain.VisibleSessionEvent, error) {
+	sessionID := strings.TrimSpace(session.ACPSessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(session.ID)
+	}
+	if sessionID == "" {
+		return nil, nil
+	}
+	query := map[string]string{}
+	if minOffset > 0 {
+		query["min_offset"] = fmt.Sprint(minOffset)
+	}
+	var events []strictSessionEvent
+	if err := c.getJSON(ctx, "/sessions/"+url.PathEscape(sessionID)+"/events", query, &events, sessionHeaders(session, "", "")); err != nil {
+		return nil, err
+	}
+	out := make([]domain.VisibleSessionEvent, 0, len(events))
+	for _, event := range events {
+		mapped, ok := mapStrictVisibleSessionEvent(event)
+		if ok {
+			out = append(out, mapped)
+		}
+	}
+	return out, nil
+}
+
+func mapStrictVisibleSessionEvent(event strictSessionEvent) (domain.VisibleSessionEvent, bool) {
+	source := strings.TrimSpace(event.Source)
+	switch source {
+	case "human_agent", "human_operator", "operator", "human_agent_on_behalf_of_ai_agent":
+	case "ai_agent", "assistant":
+		if !strictEventMetadataBool(event.Metadata, "response_review_approved") {
+			return domain.VisibleSessionEvent{}, false
+		}
+	default:
+		return domain.VisibleSessionEvent{}, false
+	}
+	kind := strings.TrimSpace(event.Kind)
+	if kind != "" && kind != "message" && kind != "agent.message" && kind != "operator.message" {
+		return domain.VisibleSessionEvent{}, false
+	}
+	text := strictSessionEventText(event)
+	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(text) == "" {
+		return domain.VisibleSessionEvent{}, false
+	}
+	return domain.VisibleSessionEvent{
+		ID:          event.ID,
+		SessionID:   event.SessionID,
+		Source:      source,
+		Kind:        firstNonEmpty(kind, "message"),
+		Offset:      event.Offset,
+		ExecutionID: event.ExecutionID,
+		Text:        text,
+		Metadata:    event.Metadata,
+	}, true
+}
+
+func strictSessionEventText(event strictSessionEvent) string {
+	if text := strings.TrimSpace(event.Text); text != "" {
+		return text
+	}
+	if text := strings.TrimSpace(event.Body); text != "" {
+		return text
+	}
+	var parts []string
+	for _, part := range event.Content {
+		if text := strings.TrimSpace(part.Text); text != "" && (part.Type == "" || part.Type == "text") {
+			parts = append(parts, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func strictEventMetadataBool(metadata map[string]any, key string) bool {
+	if metadata == nil {
+		return false
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return false
+	}
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (c StrictClient) FindRunByIdempotencyKey(ctx context.Context, session domain.Session, idempotencyKey string) (domain.RunStatusSnapshot, bool, error) {

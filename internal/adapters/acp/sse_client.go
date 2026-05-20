@@ -57,13 +57,9 @@ func (c SSEClient) EnsureSession(ctx context.Context, session domain.Session) (s
 
 func (c SSEClient) StartRun(ctx context.Context, req domain.StartRunRequest) (domain.Run, domain.RunEventStream, error) {
 	strict := c.strict()
-	sessionID := req.Session.ACPSessionID
-	if sessionID == "" {
-		var err error
-		sessionID, err = strict.EnsureSession(ctx, req.Session)
-		if err != nil {
-			return domain.Run{}, domain.RunEventStream{}, err
-		}
+	sessionID, err := strict.EnsureSession(ctx, req.Session)
+	if err != nil {
+		return domain.Run{}, domain.RunEventStream{}, err
 	}
 	parts := strictMessageParts(req.Message.Parts)
 	parts = appendEmailContextPart(parts, req.Session, req.Message)
@@ -122,6 +118,10 @@ func (c SSEClient) GetRun(ctx context.Context, acpRunID string) (domain.RunStatu
 
 func (c SSEClient) GetRunForSession(ctx context.Context, session domain.Session, acpRunID string) (domain.RunStatusSnapshot, error) {
 	return c.strict().GetRunForSession(ctx, session, acpRunID)
+}
+
+func (c SSEClient) ListVisibleEvents(ctx context.Context, session domain.Session, minOffset int64) ([]domain.VisibleSessionEvent, error) {
+	return c.strict().ListVisibleEvents(ctx, session, minOffset)
 }
 
 func (c SSEClient) FindRunByIdempotencyKey(ctx context.Context, session domain.Session, idempotencyKey string) (domain.RunStatusSnapshot, bool, error) {

@@ -690,10 +690,10 @@ func TestWorkerPersistsOutboundArtifacts(t *testing.T) {
 func TestWorkerAllowsFirstOperatorReviewResponse(t *testing.T) {
 	repo := &workerRepo{
 		outboxEvents:  []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
-		queueItem:    domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
-		session:      domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
-		message:      domain.Message{MessageID: "msg_1", Text: "hello"},
-		route:        domain.RouteDecision{ACPAgentName: "default-agent", ResponseDelivery: "operator_review", AllowFirstMessageResponse: true},
+		queueItem:     domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
+		session:       domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
+		message:       domain.Message{MessageID: "msg_1", Text: "hello"},
+		route:         domain.RouteDecision{ACPAgentName: "default-agent", ResponseDelivery: "operator_review", AllowFirstMessageResponse: true},
 		countMessages: 1,
 	}
 	worker := WorkerService{
@@ -713,10 +713,10 @@ func TestWorkerAllowsFirstOperatorReviewResponse(t *testing.T) {
 func TestWorkerSuppressesLaterOperatorReviewResponses(t *testing.T) {
 	repo := &workerRepo{
 		outboxEvents:  []domain.OutboxEvent{{ID: "outbox_1", EventType: "queue.start", AggregateID: "queue_1"}},
-		queueItem:    domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
-		session:      domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
-		message:      domain.Message{MessageID: "msg_1", Text: "second question"},
-		route:        domain.RouteDecision{ACPAgentName: "default-agent", ResponseDelivery: "operator_review", AllowFirstMessageResponse: true},
+		queueItem:     domain.QueueItem{ID: "queue_1", SessionID: "session_1", InboundMessageID: "msg_1", Status: "queued"},
+		session:       domain.Session{ID: "session_1", TenantID: "tenant_default", ChannelType: "webchat", ChannelScopeKey: "surface_1"},
+		message:       domain.Message{MessageID: "msg_1", Text: "second question"},
+		route:         domain.RouteDecision{ACPAgentName: "default-agent", ResponseDelivery: "operator_review", AllowFirstMessageResponse: true},
 		countMessages: 2,
 	}
 	worker := WorkerService{
