@@ -896,7 +896,7 @@ func (a Adapter) EnsureSession(ctx context.Context) (SessionStatus, error) {
 	}
 	payload := map[string]any{
 		"name":  a.Session,
-		"start": false,
+		"start": true,
 		"config": map[string]any{
 			"webhooks": []map[string]any{a.webhookConfig()},
 		},
