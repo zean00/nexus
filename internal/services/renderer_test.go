@@ -278,7 +278,7 @@ func TestWhatsAppWebRendererAddsArtifactUploadsForStoredFiles(t *testing.T) {
 		ID:              "session_1",
 		TenantID:        "tenant_default",
 		ChannelType:     "whatsapp_web",
-		ChannelScopeKey: "628123456789@c.us",
+		ChannelScopeKey: "wa-two|628123456789@c.us",
 	}, domain.RunEvent{
 		RunID:  "run_1",
 		Status: "completed",
@@ -319,7 +319,7 @@ func TestWhatsAppWebRendererKeepsAwaitReplySyntax(t *testing.T) {
 		ID:              "session_1",
 		TenantID:        "tenant_default",
 		ChannelType:     "whatsapp_web",
-		ChannelScopeKey: "628123456789@c.us",
+		ChannelScopeKey: "wa-two|628123456789@c.us",
 	}, domain.RunEvent{
 		RunID:       "run_1",
 		Status:      "awaiting",
@@ -336,6 +336,9 @@ func TestWhatsAppWebRendererKeepsAwaitReplySyntax(t *testing.T) {
 		t.Fatal(err)
 	}
 	text, _ := payload["text"].(string)
+	if payload["session"] != "wa-two" {
+		t.Fatalf("expected WAHA session, got %+v", payload)
+	}
 	if !strings.Contains(text, "[await:await_run_1] approve") || !strings.Contains(text, "[await:await_run_1] reject") {
 		t.Fatalf("expected await reply syntax in whatsapp_web text, got %q", text)
 	}

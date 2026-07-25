@@ -14,6 +14,7 @@ import (
 	acpadapter "nexus/internal/adapters/acp"
 	"nexus/internal/adapters/email"
 	"nexus/internal/adapters/whatsapp"
+	"nexus/internal/adapters/whatsappweb"
 	"nexus/internal/config"
 	"nexus/internal/domain"
 	"nexus/internal/ports"
@@ -108,6 +109,23 @@ func TestWhatsAppWebHandlersReturnNotFoundWhenDisabled(t *testing.T) {
 	app.handleWhatsAppWebSessionStatus(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 when whatsapp_web disabled, got %d", rec.Code)
+	}
+}
+
+func TestWhatsAppWebStatusUsesRequestedSession(t *testing.T) {
+	waha := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/sessions/wa-two" {
+			t.Fatalf("path=%q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"name":"wa-two","status":"SCAN_QR_CODE"}`))
+	}))
+	defer waha.Close()
+	app := &App{WhatsAppWebEnabled: true, WhatsAppWeb: whatsappweb.New(waha.URL, "", "default", "", "", "")}
+	req := httptest.NewRequest(http.MethodGet, "/admin/whatsapp-web/session?session=wa-two", nil)
+	rec := httptest.NewRecorder()
+	app.handleWhatsAppWebSessionStatus(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

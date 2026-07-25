@@ -353,10 +353,10 @@ func (r WhatsAppWebRenderer) RenderRunEvent(_ context.Context, session domain.Se
 	if evt.IsPartial {
 		return nil, nil
 	}
-	recipient := session.ChannelScopeKey
+	wahaSession, recipient := splitWhatsAppWebScope(session.ChannelScopeKey)
 	switch evt.Status {
 	case "awaiting":
-		payload, err := renderWhatsAppWebAwaitPayload(recipient, "await_"+evt.RunID, evt.AwaitPrompt)
+		payload, err := renderWhatsAppWebAwaitPayload(wahaSession, recipient, "await_"+evt.RunID, evt.AwaitPrompt)
 		if err != nil {
 			return nil, err
 		}
@@ -379,8 +379,9 @@ func (r WhatsAppWebRenderer) RenderRunEvent(_ context.Context, session domain.Se
 		}
 		formatted := renderMarkdownVariants(text)
 		payload, err := json.Marshal(map[string]any{
-			"chatId": recipient,
-			"text":   firstNonEmpty(formatted.WhatsApp, formatted.Plain, text),
+			"session": wahaSession,
+			"chatId":  recipient,
+			"text":    firstNonEmpty(formatted.WhatsApp, formatted.Plain, text),
 		})
 		if err != nil {
 			return nil, err
@@ -399,6 +400,7 @@ func (r WhatsAppWebRenderer) RenderRunEvent(_ context.Context, session domain.Se
 		for idx, artifact := range evt.Artifacts {
 			artifactPayload, err := json.Marshal(map[string]any{
 				"kind":        "artifact_upload",
+				"session":     wahaSession,
 				"chatId":      recipient,
 				"storage_uri": artifact.StorageURI,
 				"file_name":   artifact.Name,
@@ -424,6 +426,14 @@ func (r WhatsAppWebRenderer) RenderRunEvent(_ context.Context, session domain.Se
 	default:
 		return nil, nil
 	}
+}
+
+func splitWhatsAppWebScope(scope string) (string, string) {
+	session, recipient, ok := strings.Cut(scope, "|")
+	if !ok || strings.TrimSpace(session) == "" || strings.TrimSpace(recipient) == "" {
+		return "", scope
+	}
+	return session, recipient
 }
 
 func (r EmailRenderer) RenderRunEvent(_ context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error) {
@@ -663,14 +673,15 @@ func renderWhatsAppAwaitPayload(recipient, awaitID string, prompt []byte) ([]byt
 	return json.Marshal(payload)
 }
 
-func renderWhatsAppWebAwaitPayload(recipient, awaitID string, prompt []byte) ([]byte, error) {
+func renderWhatsAppWebAwaitPayload(session, recipient, awaitID string, prompt []byte) ([]byte, error) {
 	text, _, err := renderAwaitTextChoices(awaitID, prompt, true)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(map[string]any{
-		"chatId": recipient,
-		"text":   text,
+		"session": session,
+		"chatId":  recipient,
+		"text":    text,
 	})
 }
 

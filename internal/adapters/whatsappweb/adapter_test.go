@@ -246,7 +246,7 @@ func TestSendMessageAppliesAntiBlockSequence(t *testing.T) {
 	adapter.Sleep = func(time.Duration) {}
 	adapter.CountSentDeliveriesSince = func(context.Context, string, time.Time) (int, error) { return 0, nil }
 	adapter.HasRecentInboundMessageSince = func(context.Context, string, time.Time) (bool, error) { return true, nil }
-	payload, err := json.Marshal(map[string]any{"chatId": "628123456789@c.us", "text": "hello there"})
+	payload, err := json.Marshal(map[string]any{"session": "wa-two", "chatId": "628123456789@c.us", "text": "hello there"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,10 +260,10 @@ func TestSendMessageAppliesAntiBlockSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(calls, ",")
-	if !strings.Contains(got, "/api/sendSeen") || !strings.Contains(got, "/api/default/presence") || !strings.Contains(got, "/api/sendText") {
+	if !strings.Contains(got, "/api/sendSeen") || !strings.Contains(got, "/api/wa-two/presence") || !strings.Contains(got, "/api/sendText") {
 		t.Fatalf("unexpected WAHA call sequence %q", got)
 	}
-	if !strings.HasSuffix(got, "/api/default/presence") {
+	if !strings.HasSuffix(got, "/api/wa-two/presence") {
 		t.Fatalf("expected offline presence reset at end, got %q", got)
 	}
 	if result.ProviderMessageID != "wamid.1" {

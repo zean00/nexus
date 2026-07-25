@@ -2,7 +2,9 @@ package app
 
 import (
 	"net/http"
+	"strings"
 
+	"nexus/internal/adapters/whatsappweb"
 	"nexus/internal/httpx"
 )
 
@@ -23,7 +25,7 @@ func (a *App) handleWhatsAppWebSessionStatus(w http.ResponseWriter, r *http.Requ
 		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	status, err := a.WhatsAppWeb.GetSessionStatus(r.Context())
+	status, err := a.whatsAppWebSession(r).GetSessionStatus(r.Context())
 	if err != nil {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
@@ -40,7 +42,7 @@ func (a *App) handleWhatsAppWebSessionStart(w http.ResponseWriter, r *http.Reque
 		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	status, err := a.WhatsAppWeb.StartSession(r.Context())
+	status, err := a.whatsAppWebSession(r).StartSession(r.Context())
 	if err != nil {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
@@ -57,7 +59,7 @@ func (a *App) handleWhatsAppWebSessionStop(w http.ResponseWriter, r *http.Reques
 		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	status, err := a.WhatsAppWeb.StopSession(r.Context())
+	status, err := a.whatsAppWebSession(r).StopSession(r.Context())
 	if err != nil {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
@@ -74,7 +76,7 @@ func (a *App) handleWhatsAppWebSessionQR(w http.ResponseWriter, r *http.Request)
 		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	qr, err := a.WhatsAppWeb.GetQRCode(r.Context())
+	qr, err := a.whatsAppWebSession(r).GetQRCode(r.Context())
 	if err != nil {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
@@ -91,10 +93,17 @@ func (a *App) handleWhatsAppWebWebhookSync(w http.ResponseWriter, r *http.Reques
 		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	status, err := a.WhatsAppWeb.SyncWebhook(r.Context())
+	status, err := a.whatsAppWebSession(r).SyncWebhook(r.Context())
 	if err != nil {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	httpx.OK(w, status, actionMeta("whatsapp_web_webhook_synced"))
+}
+
+func (a *App) whatsAppWebSession(r *http.Request) whatsappweb.Adapter {
+	if session := strings.TrimSpace(r.URL.Query().Get("session")); session != "" {
+		return a.WhatsAppWeb.WithSession(session)
+	}
+	return a.WhatsAppWeb
 }

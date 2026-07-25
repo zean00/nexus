@@ -86,6 +86,11 @@ func New(baseURL, apiKey, session, engine, webhookSecret, publicBaseURL string) 
 
 func (a Adapter) Channel() string { return "whatsapp_web" }
 
+func (a Adapter) WithSession(session string) Adapter {
+	a.Session = strings.TrimSpace(session)
+	return a
+}
+
 func (a Adapter) VerifyInbound(_ context.Context, r *http.Request, body []byte) error {
 	if a.WebhookSecret == "" {
 		return nil
@@ -212,9 +217,6 @@ func (a Adapter) ParseInboundBatch(ctx context.Context, _ *http.Request, body []
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(env.Session) != "" && a.Session != "" && env.Session != a.Session {
-		return nil, fmt.Errorf("unexpected WAHA session %q", env.Session)
-	}
 	if env.Event != "message" && env.Event != "message.any" {
 		return nil, nil
 	}
@@ -241,6 +243,9 @@ func (a Adapter) ParseInboundBatch(ctx context.Context, _ *http.Request, body []
 	}
 	if conversationID == "" {
 		conversationID = channelUserID
+	}
+	if session := strings.TrimSpace(env.Session); session != "" && session != a.Session {
+		surfaceKey = session + "|" + surfaceKey
 	}
 	receivedAt := time.Now().UTC()
 	if payload.Timestamp > 0 {
@@ -301,7 +306,7 @@ func (a Adapter) ParseInboundBatch(ctx context.Context, _ *http.Request, body []
 			GroupID:            conversationID,
 			GroupParticipantID: channelUserID,
 			GroupMentionedIDs:  mentionedIDs,
-			AccountKey:         firstNonEmpty(env.Session, a.Session, surfaceKey),
+			AccountKey:         firstNonEmpty(env.Session, a.Session),
 			ArtifactTrust:      "trusted-channel-ingress",
 			ResponderBinding: domain.ResponderBinding{
 				Mode:                  "same-user-only",
@@ -605,12 +610,16 @@ func (a Adapter) SendAwaitPrompt(ctx context.Context, delivery domain.OutboundDe
 }
 
 func (a Adapter) send(ctx context.Context, delivery domain.OutboundDelivery, _ bool) (domain.DeliveryResult, error) {
-	if strings.TrimSpace(a.BaseURL) == "" || strings.TrimSpace(a.Session) == "" {
+	if strings.TrimSpace(a.BaseURL) == "" {
 		return domain.DeliveryResult{}, nil
 	}
 	var body map[string]any
 	if err := json.Unmarshal(delivery.PayloadJSON, &body); err != nil {
 		return domain.DeliveryResult{}, err
+	}
+	session := firstNonEmpty(asString(body["session"]), a.Session)
+	if session == "" {
+		return domain.DeliveryResult{}, errors.New("missing WAHA session")
 	}
 	chatID, _ := body["chatId"].(string)
 	if strings.TrimSpace(chatID) == "" {
@@ -625,12 +634,12 @@ func (a Adapter) send(ctx context.Context, delivery domain.OutboundDelivery, _ b
 	if a.EnableAntiBlock {
 		if a.EnableSeen {
 			_ = a.postJSON(ctx, "/api/sendSeen", map[string]any{
-				"session": a.Session,
+				"session": session,
 				"chatId":  chatID,
 			}, nil)
 		}
 		if a.EnableTyping {
-			_ = a.postJSON(ctx, "/api/"+url.PathEscape(a.Session)+"/presence", map[string]any{
+			_ = a.postJSON(ctx, "/api/"+url.PathEscape(session)+"/presence", map[string]any{
 				"chatId":   chatID,
 				"presence": "typing",
 			}, nil)
@@ -640,7 +649,7 @@ func (a Adapter) send(ctx context.Context, delivery domain.OutboundDelivery, _ b
 			a.Sleep(delay)
 		}
 		if a.EnableTyping {
-			_ = a.postJSON(ctx, "/api/"+url.PathEscape(a.Session)+"/presence", map[string]any{
+			_ = a.postJSON(ctx, "/api/"+url.PathEscape(session)+"/presence", map[string]any{
 				"chatId":   chatID,
 				"presence": "paused",
 			}, nil)
@@ -648,25 +657,25 @@ func (a Adapter) send(ctx context.Context, delivery domain.OutboundDelivery, _ b
 	}
 	switch kind, _ := body["kind"].(string); kind {
 	case "artifact_upload":
-		result, err := a.sendArtifact(ctx, body)
+		result, err := a.sendArtifact(ctx, body, session)
 		if err != nil {
 			return domain.DeliveryResult{}, err
 		}
-		a.markOffline(ctx)
+		a.markOffline(ctx, session)
 		return result, nil
 	default:
 		var response struct {
 			ID any `json:"id"`
 		}
 		if err := a.postJSON(ctx, "/api/sendText", map[string]any{
-			"session":  a.Session,
+			"session":  session,
 			"chatId":   chatID,
 			"text":     firstNonEmpty(asString(body["text"]), nestedString(body, "text", "body")),
 			"reply_to": asString(body["reply_to"]),
 		}, &response); err != nil {
 			return domain.DeliveryResult{}, err
 		}
-		a.markOffline(ctx)
+		a.markOffline(ctx, session)
 		return domain.DeliveryResult{ProviderMessageID: wahaMessageID(response.ID)}, nil
 	}
 }
@@ -726,7 +735,7 @@ func (a Adapter) deliveryDelay(body map[string]any) time.Duration {
 	return delay
 }
 
-func (a Adapter) sendArtifact(ctx context.Context, body map[string]any) (domain.DeliveryResult, error) {
+func (a Adapter) sendArtifact(ctx context.Context, body map[string]any, session string) (domain.DeliveryResult, error) {
 	storageURI := strings.TrimSpace(asString(body["storage_uri"]))
 	if storageURI == "" {
 		storageURI = strings.TrimSpace(asString(body["source_url"]))
@@ -745,7 +754,7 @@ func (a Adapter) sendArtifact(ctx context.Context, body map[string]any) (domain.
 		ID any `json:"id"`
 	}
 	payload := map[string]any{
-		"session":  a.Session,
+		"session":  session,
 		"chatId":   chatID,
 		"file":     bytesToDataURL(content, firstNonEmpty(mimeType, "application/octet-stream")),
 		"fileName": fileName,
@@ -757,11 +766,11 @@ func (a Adapter) sendArtifact(ctx context.Context, body map[string]any) (domain.
 	return domain.DeliveryResult{ProviderMessageID: wahaMessageID(response.ID)}, nil
 }
 
-func (a Adapter) markOffline(ctx context.Context) {
+func (a Adapter) markOffline(ctx context.Context, session string) {
 	if !a.SetOfflineAfterSend {
 		return
 	}
-	_ = a.postJSON(ctx, "/api/"+url.PathEscape(a.Session)+"/presence", map[string]any{
+	_ = a.postJSON(ctx, "/api/"+url.PathEscape(session)+"/presence", map[string]any{
 		"presence": "offline",
 	}, nil)
 }
