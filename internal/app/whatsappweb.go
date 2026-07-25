@@ -83,6 +83,22 @@ func (a *App) handleWhatsAppWebSessionLogout(w http.ResponseWriter, r *http.Requ
 	httpx.OK(w, map[string]bool{"ok": true}, actionMeta("whatsapp_web_session_logged_out"))
 }
 
+func (a *App) handleWhatsAppWebSessionDelete(w http.ResponseWriter, r *http.Request) {
+	if !a.WhatsAppWebEnabled {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		httpx.Error(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if err := a.whatsAppWebSession(r).DeleteSession(r.Context()); err != nil {
+		httpx.Error(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	httpx.OK(w, map[string]bool{"ok": true}, actionMeta("whatsapp_web_session_deleted"))
+}
+
 func (a *App) handleWhatsAppWebSessionQR(w http.ResponseWriter, r *http.Request) {
 	if !a.WhatsAppWebEnabled {
 		http.NotFound(w, r)

@@ -943,6 +943,10 @@ func (a Adapter) LogoutSession(ctx context.Context) error {
 	return a.postJSON(ctx, "/api/sessions/"+url.PathEscape(a.Session)+"/logout", map[string]any{}, nil)
 }
 
+func (a Adapter) DeleteSession(ctx context.Context) error {
+	return a.writeJSON(ctx, http.MethodDelete, "/api/sessions/"+url.PathEscape(a.Session), map[string]any{}, nil)
+}
+
 func (a Adapter) SyncWebhook(ctx context.Context) (SessionStatus, error) {
 	payload := map[string]any{
 		"name":   a.Session,

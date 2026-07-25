@@ -732,6 +732,7 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/whatsapp-web/session/start", a.handleWhatsAppWebSessionStart)
 	mux.HandleFunc("/admin/whatsapp-web/session/stop", a.handleWhatsAppWebSessionStop)
 	mux.HandleFunc("/admin/whatsapp-web/session/logout", a.handleWhatsAppWebSessionLogout)
+	mux.HandleFunc("/admin/whatsapp-web/session/delete", a.handleWhatsAppWebSessionDelete)
 	mux.HandleFunc("/admin/whatsapp-web/session/qr", a.handleWhatsAppWebSessionQR)
 	mux.HandleFunc("/admin/whatsapp-web/session/webhook/sync", a.handleWhatsAppWebWebhookSync)
 	return tracex.Middleware("admin", a.adminAuthMiddleware(mux))
