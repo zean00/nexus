@@ -939,6 +939,10 @@ func (a Adapter) StopSession(ctx context.Context) (SessionStatus, error) {
 	return a.GetSessionStatus(ctx)
 }
 
+func (a Adapter) LogoutSession(ctx context.Context) error {
+	return a.postJSON(ctx, "/api/sessions/"+url.PathEscape(a.Session)+"/logout", map[string]any{}, nil)
+}
+
 func (a Adapter) SyncWebhook(ctx context.Context) (SessionStatus, error) {
 	payload := map[string]any{
 		"name":   a.Session,

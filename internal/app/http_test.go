@@ -129,6 +129,23 @@ func TestWhatsAppWebStatusUsesRequestedSession(t *testing.T) {
 	}
 }
 
+func TestWhatsAppWebLogoutUsesRequestedSession(t *testing.T) {
+	waha := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/sessions/wa-two/logout" {
+			t.Fatalf("path=%q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer waha.Close()
+	app := &App{WhatsAppWebEnabled: true, WhatsAppWeb: whatsappweb.New(waha.URL, "", "default", "", "", "")}
+	req := httptest.NewRequest(http.MethodPost, "/admin/whatsapp-web/session/logout?session=wa-two", nil)
+	rec := httptest.NewRecorder()
+	app.handleWhatsAppWebSessionLogout(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 type testRouter struct{}
 
 func (testRouter) Route(context.Context, domain.CanonicalInboundEvent, domain.Session) (domain.RouteDecision, error) {
