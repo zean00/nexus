@@ -54,7 +54,7 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 	now := time.Now().UTC()
 	session := domain.WebAuthSession{
 		ID:         sessionID,
-		TenantID:   a.Config.DefaultTenantID,
+		TenantID:   a.tenantID(ctx),
 		Email:      email,
 		ExpiresAt:  now.Add(time.Duration(a.Config.WebChatSessionHours) * time.Hour),
 		LastSeenAt: now,
@@ -64,14 +64,14 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	user, err := a.Identity.EnsureUserByEmail(ctx, a.Config.DefaultTenantID, email)
+	user, err := a.Identity.EnsureUserByEmail(ctx, a.tenantID(ctx), email)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	for _, identity := range []domain.LinkedIdentity{
-		{TenantID: a.Config.DefaultTenantID, UserID: user.ID, ChannelType: "webchat", ChannelUserID: email, Status: "linked", LinkedAt: now, LastVerifiedAt: now},
-		{TenantID: a.Config.DefaultTenantID, UserID: user.ID, ChannelType: "email", ChannelUserID: email, Status: "linked", LinkedAt: now, LastVerifiedAt: now},
+		{TenantID: a.tenantID(ctx), UserID: user.ID, ChannelType: "webchat", ChannelUserID: email, Status: "linked", LinkedAt: now, LastVerifiedAt: now},
+		{TenantID: a.tenantID(ctx), UserID: user.ID, ChannelType: "email", ChannelUserID: email, Status: "linked", LinkedAt: now, LastVerifiedAt: now},
 	} {
 		if err := a.Identity.UpsertLinkedIdentity(ctx, identity); err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -80,7 +80,7 @@ func (a *App) handleAdminWebChatSession(w http.ResponseWriter, r *http.Request) 
 	}
 	for _, linked := range adminWebChatLinkedIdentities(body.LinkedChannelType, body.LinkedChannelUserID) {
 		if err := a.Identity.UpsertLinkedIdentity(ctx, domain.LinkedIdentity{
-			TenantID:       a.Config.DefaultTenantID,
+			TenantID:       a.tenantID(ctx),
 			UserID:         user.ID,
 			ChannelType:    linked.ChannelType,
 			ChannelUserID:  linked.ChannelUserID,

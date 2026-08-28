@@ -50,7 +50,7 @@ func (a *App) handleListWebPushSubscriptions(w http.ResponseWriter, r *http.Requ
 		httpx.Error(w, http.StatusBadRequest, "user_id required")
 		return
 	}
-	items, err := repo.ListWebPushSubscriptions(r.Context(), a.Config.DefaultTenantID, userID)
+	items, err := repo.ListWebPushSubscriptions(r.Context(), a.tenantID(r.Context()), userID)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -104,7 +104,7 @@ func (a *App) handleUpsertWebPushSubscription(w http.ResponseWriter, r *http.Req
 		return
 	}
 	sub, err := repo.UpsertWebPushSubscription(r.Context(), domain.WebPushSubscription{
-		TenantID:     a.Config.DefaultTenantID,
+		TenantID:     a.tenantID(r.Context()),
 		UserID:       strings.TrimSpace(body.UserID),
 		ACPSessionID: strings.TrimSpace(body.ACPSessionID),
 		Endpoint:     strings.TrimSpace(body.Endpoint),
@@ -136,7 +136,7 @@ func (a *App) handleRevokeWebPushSubscription(w http.ResponseWriter, r *http.Req
 		httpx.Error(w, http.StatusBadRequest, "user_id and endpoint required")
 		return
 	}
-	if err := repo.RevokeWebPushSubscription(r.Context(), a.Config.DefaultTenantID, strings.TrimSpace(body.UserID), strings.TrimSpace(body.Endpoint)); err != nil {
+	if err := repo.RevokeWebPushSubscription(r.Context(), a.tenantID(r.Context()), strings.TrimSpace(body.UserID), strings.TrimSpace(body.Endpoint)); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}

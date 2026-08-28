@@ -39,7 +39,9 @@ type lajuChannelContext struct {
 }
 
 func (a *App) forwardLajuInbound(ctx context.Context, evt domain.CanonicalInboundEvent, result services.InboundResult) {
-	if strings.TrimSpace(inboundWebhookURL(a.Config)) == "" {
+	// Skip when no laju instance is configured to receive this tenant's
+	// forwards (single-tenant env wiring or multi-tenant registry).
+	if _, _, ok := a.inboundTargetFor(ctx, evt.TenantID); !ok {
 		return
 	}
 	body, err := json.Marshal(lajuInboundPayload(evt, result))

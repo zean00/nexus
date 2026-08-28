@@ -33,6 +33,7 @@ type App struct {
 	Config             config.Config
 	Repo               ports.Repository
 	DB                 *db.PostgresRepository
+	Tenants            *TenantDirectory
 	Inbound            services.InboundService
 	Await              services.AwaitService
 	Artifacts          services.ArtifactService
@@ -415,6 +416,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	tenantDirectory := NewTenantDirectory(repo, cfg)
 	slackAdapter := slack.New(cfg.SlackSigningSecret, cfg.SlackBotToken)
 	whatsappAdapter := whatsapp.New(cfg.WhatsAppVerifyToken, cfg.WhatsAppAccessToken, cfg.WhatsAppAppSecret, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppAPIBaseURL)
 	whatsappWebAdapter := whatsappweb.New(cfg.WhatsAppWebBaseURL, cfg.WhatsAppWebAPIKey, cfg.WhatsAppWebSession, cfg.WhatsAppWebEngine, cfg.WhatsAppWebWebhookSecret, cfg.NexusPublicBaseURL)
@@ -501,9 +503,10 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 
 	app := &App{
-		Config: cfg,
-		Repo:   repo,
-		DB:     repo,
+		Config:  cfg,
+		Repo:    repo,
+		DB:      repo,
+		Tenants: tenantDirectory,
 		Inbound: services.InboundService{
 			Repo:                      repo,
 			Router:                    router,
@@ -543,6 +546,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 			Channels:             channels,
 			InboundWebhookURL:    inboundWebhookURL(cfg),
 			InboundWebhookToken:  inboundWebhookToken(cfg),
+			InboundTarget:        tenantDirectory.InboundTarget,
 			GroupContextLimit:    cfg.WhatsAppWebGroupContextLimit,
 			GroupContextMaxChars: cfg.WhatsAppWebGroupContextMaxChars,
 		},
@@ -644,7 +648,41 @@ func (a *App) GatewayHandler() http.Handler {
 	mux.HandleFunc("/webchat/auth/logout", a.handleWebChatAuthLogout)
 	mux.HandleFunc("/webchat/dev/session", a.handleWebChatDevSession)
 	mux.HandleFunc("/webchat/", a.handleWebChatScoped)
-	return tracex.Middleware("gateway", mux)
+	// Tenant-scoped gateway surface: /t/{tenantId}/<any gateway path>. Used by
+	// the console platform so each tenant's public URLs (webchat, channel
+	// webhooks) resolve to that tenant inside a shared nexus.
+	root := http.NewServeMux()
+	root.HandleFunc("/t/", func(w http.ResponseWriter, r *http.Request) {
+		a.serveTenantScoped(w, r, mux)
+	})
+	root.Handle("/", mux)
+	return tracex.Middleware("gateway", root)
+}
+
+func (a *App) serveTenantScoped(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	rest := strings.TrimPrefix(r.URL.Path, "/t/")
+	tenantID, subPath, _ := strings.Cut(rest, "/")
+	if tenantID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if a.Tenants == nil {
+		httpx.Error(w, http.StatusNotFound, "tenant registry unavailable")
+		return
+	}
+	rec, ok := a.Tenants.Resolve(r.Context(), tenantID)
+	if !ok {
+		httpx.Error(w, http.StatusNotFound, "tenant not found")
+		return
+	}
+	clone := r.Clone(r.Context())
+	clone.URL.Path = "/" + subPath
+	clone.RequestURI = clone.URL.Path
+	if clone.URL.RawQuery != "" {
+		clone.RequestURI += "?" + clone.URL.RawQuery
+	}
+	scope := tenantScope{tenantID: rec.TenantID, accountKey: rec.WebChatAccountKey, operator: false}
+	next.ServeHTTP(w, clone.WithContext(withTenantScope(r.Context(), scope)))
 }
 
 func (a *App) AdminHandler() http.Handler {
@@ -735,27 +773,46 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("/admin/whatsapp-web/session/delete", a.handleWhatsAppWebSessionDelete)
 	mux.HandleFunc("/admin/whatsapp-web/session/qr", a.handleWhatsAppWebSessionQR)
 	mux.HandleFunc("/admin/whatsapp-web/session/webhook/sync", a.handleWhatsAppWebWebhookSync)
+	mux.HandleFunc("/admin/tenants", a.handleTenantRegistry)
+	mux.HandleFunc("/admin/tenants/", a.handleTenantItem)
 	return tracex.Middleware("admin", a.adminAuthMiddleware(mux))
 }
 
 func (a *App) adminAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if a.adminAuthExempt(r.URL.Path) || strings.TrimSpace(a.Config.AdminBearerToken) == "" {
+		if a.adminAuthExempt(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		const prefix = "Bearer "
 		header := r.Header.Get("Authorization")
-		if !strings.HasPrefix(header, prefix) {
+		token := ""
+		if strings.HasPrefix(header, prefix) {
+			token = strings.TrimSpace(strings.TrimPrefix(header, prefix))
+		}
+		operatorToken := strings.TrimSpace(a.Config.AdminBearerToken)
+		// Dev mode: no operator token configured and no registered tenants →
+		// auth off (pre-multi-tenancy behavior).
+		if operatorToken == "" && (a.Tenants == nil || !a.Tenants.HasRegisteredTenants(r.Context())) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if token == "" {
 			httpx.Error(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
-		if subtle.ConstantTimeCompare([]byte(token), []byte(a.Config.AdminBearerToken)) != 1 {
-			httpx.Error(w, http.StatusUnauthorized, "unauthorized")
+		if operatorToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(operatorToken)) == 1 {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Tenant tokens authenticate as their tenant and are scoped to it.
+		if a.Tenants != nil {
+			if rec, ok := a.Tenants.ResolveByAdminToken(r.Context(), token); ok {
+				next.ServeHTTP(w, r.WithContext(withTenantScope(r.Context(), tenantScope{tenantID: rec.TenantID, operator: false})))
+				return
+			}
+		}
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized")
 	})
 }
 

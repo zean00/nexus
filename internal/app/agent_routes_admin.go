@@ -26,7 +26,7 @@ func (a *App) handleAgentRoutes(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "agent routing repository unavailable")
 		return
 	}
-	tenantID := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("tenant_id")), a.Config.DefaultTenantID)
+	tenantID := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("tenant_id")), a.tenantID(r.Context()))
 	switch r.Method {
 	case http.MethodGet:
 		limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
@@ -88,7 +88,7 @@ func (a *App) handleAgentEffectiveRoute(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusInternalServerError, "agent routing repository unavailable")
 		return
 	}
-	tenantID := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("tenant_id")), a.Config.DefaultTenantID)
+	tenantID := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("tenant_id")), a.tenantID(r.Context()))
 	channel := strings.TrimSpace(r.URL.Query().Get("channel_type"))
 	surface := strings.TrimSpace(r.URL.Query().Get("surface_key"))
 	owner := strings.TrimSpace(r.URL.Query().Get("owner_user_id"))

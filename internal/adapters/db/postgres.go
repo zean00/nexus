@@ -3962,3 +3962,68 @@ type pgconnCommandTag pgconn.CommandTag
 func (t pgconnCommandTag) RowsAffected() int64 {
 	return pgconn.CommandTag(t).RowsAffected()
 }
+
+const tenantColumns = `tenant_id, display_name, laju_base_url, laju_bearer_token, inbound_webhook_url, admin_token_hash, webchat_account_key, created_at, updated_at`
+
+func scanTenant(row pgx.Row) (domain.TenantRecord, error) {
+	var rec domain.TenantRecord
+	if err := row.Scan(&rec.TenantID, &rec.DisplayName, &rec.LajuBaseURL, &rec.LajuBearerToken, &rec.InboundWebhookURL, &rec.AdminTokenHash, &rec.WebChatAccountKey, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.TenantRecord{}, domain.ErrTenantNotFound
+		}
+		return domain.TenantRecord{}, err
+	}
+	return rec, nil
+}
+
+func (r *PostgresRepository) UpsertTenant(ctx context.Context, record domain.TenantRecord) error {
+	_, err := r.exec(ctx, `
+		insert into tenants (`+tenantColumns+`)
+		values ($1,$2,$3,$4,$5,$6,$7,now(),now())
+		on conflict (tenant_id) do update set
+			display_name = excluded.display_name,
+			laju_base_url = excluded.laju_base_url,
+			laju_bearer_token = excluded.laju_bearer_token,
+			inbound_webhook_url = excluded.inbound_webhook_url,
+			admin_token_hash = excluded.admin_token_hash,
+			webchat_account_key = excluded.webchat_account_key,
+			updated_at = now()
+	`, record.TenantID, record.DisplayName, record.LajuBaseURL, record.LajuBearerToken, record.InboundWebhookURL, record.AdminTokenHash, record.WebChatAccountKey)
+	return err
+}
+
+func (r *PostgresRepository) GetTenant(ctx context.Context, tenantID string) (domain.TenantRecord, error) {
+	return scanTenant(r.queryRow(ctx, `select `+tenantColumns+` from tenants where tenant_id=$1`, tenantID))
+}
+
+func (r *PostgresRepository) GetTenantByAdminTokenHash(ctx context.Context, tokenHash string) (domain.TenantRecord, error) {
+	return scanTenant(r.queryRow(ctx, `select `+tenantColumns+` from tenants where admin_token_hash=$1`, tokenHash))
+}
+
+func (r *PostgresRepository) ListTenants(ctx context.Context) ([]domain.TenantRecord, error) {
+	rows, err := r.query(ctx, `select `+tenantColumns+` from tenants order by tenant_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []domain.TenantRecord
+	for rows.Next() {
+		var rec domain.TenantRecord
+		if err := rows.Scan(&rec.TenantID, &rec.DisplayName, &rec.LajuBaseURL, &rec.LajuBearerToken, &rec.InboundWebhookURL, &rec.AdminTokenHash, &rec.WebChatAccountKey, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			return nil, err
+		}
+		records = append(records, rec)
+	}
+	return records, rows.Err()
+}
+
+func (r *PostgresRepository) DeleteTenant(ctx context.Context, tenantID string) error {
+	tag, err := r.exec(ctx, `delete from tenants where tenant_id=$1`, tenantID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrTenantNotFound
+	}
+	return nil
+}

@@ -16,15 +16,19 @@ import (
 )
 
 type WorkerService struct {
-	Repo                 ports.Repository
-	ACP                  ports.ACPBridge
-	Catalog              *AgentCatalog
-	Renderer             ports.Renderer
-	Channel              ports.ChannelAdapter
-	Renderers            map[string]ports.Renderer
-	Channels             map[string]ports.ChannelAdapter
-	InboundWebhookURL    string
-	InboundWebhookToken  string
+	Repo                ports.Repository
+	ACP                 ports.ACPBridge
+	Catalog             *AgentCatalog
+	Renderer            ports.Renderer
+	Channel             ports.ChannelAdapter
+	Renderers           map[string]ports.Renderer
+	Channels            map[string]ports.ChannelAdapter
+	InboundWebhookURL   string
+	InboundWebhookToken string
+	// InboundTarget resolves, per tenant, the laju URL and bearer token that
+	// inbound-forward events are delivered to. When set it takes precedence
+	// over the single-tenant InboundWebhookURL/Token fields.
+	InboundTarget        func(ctx context.Context, tenantID string) (url string, token string, ok bool)
 	GroupContextLimit    int
 	GroupContextMaxChars int
 	NotifySessionUpdate  func(sessionID string)
@@ -35,6 +39,22 @@ type deliveryPreparer interface {
 }
 
 const structuredDataContentType = "application/vnd.nexus.structured-data+json"
+
+// inboundTarget resolves the delivery target for a tenant's laju forwards,
+// preferring the per-tenant resolver over the legacy single-tenant fields.
+func (s WorkerService) inboundTarget(ctx context.Context, tenantID string) (string, string, error) {
+	if s.InboundTarget != nil {
+		url, token, ok := s.InboundTarget(ctx, tenantID)
+		if !ok || strings.TrimSpace(url) == "" {
+			return "", "", fmt.Errorf("no laju inbound target configured for tenant %q", tenantID)
+		}
+		return strings.TrimSpace(url), strings.TrimSpace(token), nil
+	}
+	if strings.TrimSpace(s.InboundWebhookURL) == "" {
+		return "", "", errors.New("inbound webhook url is not configured")
+	}
+	return strings.TrimSpace(s.InboundWebhookURL), strings.TrimSpace(s.InboundWebhookToken), nil
+}
 
 func (s WorkerService) withWhatsAppGroupContext(ctx context.Context, session domain.Session, message domain.Message) domain.Message {
 	if !strings.EqualFold(session.ChannelType, "whatsapp_web") || !strings.Contains(session.ChannelScopeKey, "@g.us") {
@@ -186,16 +206,17 @@ func (s WorkerService) processEvent(ctx context.Context, evt domain.OutboxEvent)
 }
 
 func (s WorkerService) processInboundWebhook(ctx context.Context, evt domain.OutboxEvent) error {
-	if strings.TrimSpace(s.InboundWebhookURL) == "" {
-		return errors.New("inbound webhook url is not configured")
+	url, token, err := s.inboundTarget(ctx, evt.TenantID)
+	if err != nil {
+		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSpace(s.InboundWebhookURL), bytes.NewReader(evt.PayloadJSON))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(evt.PayloadJSON))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if strings.TrimSpace(s.InboundWebhookToken) != "" {
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(s.InboundWebhookToken))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {

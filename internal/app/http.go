@@ -53,7 +53,7 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 		return
 	}
 	if batcher, ok := adapter.(ports.BatchInboundParser); ok {
-		events, err := batcher.ParseInboundBatch(r.Context(), r, body, a.Config.DefaultTenantID)
+		events, err := batcher.ParseInboundBatch(r.Context(), r, body, a.tenantID(r.Context()))
 		if err != nil {
 			httpx.Error(w, http.StatusBadRequest, err.Error())
 			return
@@ -73,7 +73,7 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 		})
 		return
 	}
-	evt, err := adapter.ParseInbound(r.Context(), r, body, a.Config.DefaultTenantID)
+	evt, err := adapter.ParseInbound(r.Context(), r, body, a.tenantID(r.Context()))
 	if err != nil {
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
@@ -90,15 +90,15 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 		return
 	}
 	if evt.Channel == "telegram" && !a.telegramUserAllowed(r.Context(), evt.Sender.ChannelUserID) {
-		if existing, err := a.Repo.GetTelegramUserAccess(r.Context(), a.Config.DefaultTenantID, evt.Sender.ChannelUserID); err == nil {
+		if existing, err := a.Repo.GetTelegramUserAccess(r.Context(), a.tenantID(r.Context()), evt.Sender.ChannelUserID); err == nil {
 			switch existing.Status {
 			case "pending":
 				httpx.Accepted(w, map[string]any{"status": "pairing_pending"}, webhookActorMeta(evt))
 				return
 			case "denied":
-				if noticeSession, noticeErr := a.Repo.EnsureNotificationSession(r.Context(), a.Config.DefaultTenantID, "telegram", evt.Conversation.ChannelConversationID, evt.Sender.ChannelUserID); noticeErr == nil {
+				if noticeSession, noticeErr := a.Repo.EnsureNotificationSession(r.Context(), a.tenantID(r.Context()), "telegram", evt.Conversation.ChannelConversationID, evt.Sender.ChannelUserID); noticeErr == nil {
 					_ = a.Repo.EnqueueDelivery(r.Context(), telegramNoticeDeliveryWithKind(
-						a.Config.DefaultTenantID,
+						a.tenantID(r.Context()),
 						noticeSession.ID,
 						evt.Conversation.ChannelConversationID,
 						"delivery_denied_"+evt.ProviderEventID,
@@ -111,15 +111,15 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 				return
 			}
 		}
-		noticeSession, noticeErr := a.Repo.EnsureNotificationSession(r.Context(), a.Config.DefaultTenantID, "telegram", evt.Conversation.ChannelConversationID, evt.Sender.ChannelUserID)
+		noticeSession, noticeErr := a.Repo.EnsureNotificationSession(r.Context(), a.tenantID(r.Context()), "telegram", evt.Conversation.ChannelConversationID, evt.Sender.ChannelUserID)
 		if _, err := a.Repo.RequestTelegramAccess(r.Context(), domain.TelegramUserAccess{
-			TenantID:       a.Config.DefaultTenantID,
+			TenantID:       a.tenantID(r.Context()),
 			TelegramUserID: evt.Sender.ChannelUserID,
 			DisplayName:    evt.Sender.DisplayName,
 			AddedBy:        "self",
 		}); err == nil {
 			_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
-				a.Config.DefaultTenantID,
+				a.tenantID(r.Context()),
 				"audit_telegram_request_"+evt.ProviderEventID,
 				evt.Sender.ChannelUserID,
 				"telegram.access_requested",
@@ -127,7 +127,7 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 			))
 		}
 		_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
-			a.Config.DefaultTenantID,
+			a.tenantID(r.Context()),
 			"audit_telegram_deny_"+evt.ProviderEventID,
 			evt.Sender.ChannelUserID,
 			"telegram.allowlist_denied",
@@ -135,7 +135,7 @@ func (a *App) handleChannelWebhook(w http.ResponseWriter, r *http.Request, adapt
 		))
 		if noticeErr == nil {
 			_ = a.Repo.EnqueueDelivery(r.Context(), telegramNoticeDelivery(
-				a.Config.DefaultTenantID,
+				a.tenantID(r.Context()),
 				noticeSession.ID,
 				evt.Conversation.ChannelConversationID,
 				"delivery_pairing_"+evt.ProviderEventID,
@@ -378,7 +378,7 @@ func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	query := buildSessionListQuery(r, a.Config.DefaultTenantID, page)
+	query := buildSessionListQuery(r, a.tenantID(r.Context()), page)
 	sessions, err := a.Repo.ListSessions(r.Context(), query)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -399,7 +399,7 @@ func (a *App) handleListSessionsByACP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tenantID := firstNonEmptyString(queryString(r, "tenant_id"), a.Config.DefaultTenantID)
+	tenantID := firstNonEmptyString(queryString(r, "tenant_id"), a.tenantID(r.Context()))
 	repo, ok := a.Repo.(outboundPushACPSessionRepository)
 	if !ok {
 		httpx.Error(w, http.StatusInternalServerError, "acp_session_id lookup is not supported")
@@ -496,7 +496,7 @@ func (a *App) handleListCompatibleACPAgents(w http.ResponseWriter, r *http.Reque
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	httpx.OK(w, agents, acpCompatibleListMeta(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, refresh, agents))
+	httpx.OK(w, agents, acpCompatibleListMeta(r.Context(), a.Catalog, a.Repo, a.tenantID(r.Context()), refresh, agents))
 }
 
 func (a *App) handleValidateACPAgent(w http.ResponseWriter, r *http.Request) {
@@ -507,7 +507,7 @@ func (a *App) handleValidateACPAgent(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	httpx.OK(w, compat, acpValidateMeta(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, agentName, refresh, compat))
+	httpx.OK(w, compat, acpValidateMeta(r.Context(), a.Catalog, a.Repo, a.tenantID(r.Context()), agentName, refresh, compat))
 }
 
 func (a *App) handleListACPAgents(w http.ResponseWriter, r *http.Request) {
@@ -517,7 +517,7 @@ func (a *App) handleListACPAgents(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	httpx.OK(w, agents, acpListMeta(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, refresh, len(agents)))
+	httpx.OK(w, agents, acpListMeta(r.Context(), a.Catalog, a.Repo, a.tenantID(r.Context()), refresh, len(agents)))
 }
 
 func (a *App) handleACPAdminSummary(w http.ResponseWriter, r *http.Request) {
@@ -528,7 +528,7 @@ func (a *App) handleACPAdminSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	compat, compatibleCount := acpCompatibilitySnapshot(agents)
-	data, err := acpAdminSummaryData(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, a.Config.DefaultACPAgentName, agents, compat)
+	data, err := acpAdminSummaryData(r.Context(), a.Catalog, a.Repo, a.tenantID(r.Context()), a.Config.DefaultACPAgentName, agents, compat)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -544,7 +544,7 @@ func (a *App) handleListACPBridgeBlocks(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	query := buildAuditEventListQuery(r, a.Config.DefaultTenantID, page)
+	query := buildAuditEventListQuery(r, a.tenantID(r.Context()), page)
 	query.EventType = "worker.await_blocked_opencode_bridge"
 	events, err := a.Repo.ListAuditEvents(r.Context(), query)
 	if err != nil {
@@ -567,7 +567,7 @@ func (a *App) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	query := buildRunListQuery(r, a.Config.DefaultTenantID, page)
+	query := buildRunListQuery(r, a.tenantID(r.Context()), page)
 	runs, err := a.Repo.ListRuns(r.Context(), query)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -589,7 +589,7 @@ func (a *App) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	query := buildMessageListQuery(r, a.Config.DefaultTenantID, page)
+	query := buildMessageListQuery(r, a.tenantID(r.Context()), page)
 	messages, err := a.Repo.ListMessages(r.Context(), query)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -611,7 +611,7 @@ func (a *App) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	query := buildArtifactListQuery(r, a.Config.DefaultTenantID, page)
+	query := buildArtifactListQuery(r, a.tenantID(r.Context()), page)
 	artifacts, err := a.Repo.ListArtifacts(r.Context(), query)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -633,7 +633,7 @@ func (a *App) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	query := buildDeliveryListQuery(r, a.Config.DefaultTenantID, page)
+	query := buildDeliveryListQuery(r, a.tenantID(r.Context()), page)
 	deliveries, err := a.Repo.ListDeliveries(r.Context(), query)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -650,7 +650,7 @@ func (a *App) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
-	persisted, _ := persistentLifecycleCounts(r.Context(), a.Repo, a.Config.DefaultTenantID)
+	persisted, _ := persistentLifecycleCounts(r.Context(), a.Repo, a.tenantID(r.Context()))
 	data := map[string]any{
 		"runtime":   a.Runtime.Status(),
 		"health":    healthStatus(a.Catalog, a.Runtime, a.Config.DefaultACPAgentName, a.Config.WorkerPollInterval, a.Config.ReconcilerInterval),
@@ -660,7 +660,7 @@ func (a *App) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 	if status, ok := acpRuntimeStatus(a.ACP); ok {
 		data["acp_runtime"] = status
 	}
-	if summary, err := acpCompactSummary(r.Context(), a.Catalog, a.Repo, a.Config.DefaultTenantID, a.Config.DefaultACPAgentName); err == nil {
+	if summary, err := acpCompactSummary(r.Context(), a.Catalog, a.Repo, a.tenantID(r.Context()), a.Config.DefaultACPAgentName); err == nil {
 		data["acp"] = summary
 	}
 	if trust, err := a.trustSummary(r.Context()); err == nil {
@@ -672,7 +672,7 @@ func (a *App) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleRetentionStatus(w http.ResponseWriter, r *http.Request) {
 	tenantID := queryString(r, "tenant_id")
 	if tenantID == "" {
-		tenantID = a.Config.DefaultTenantID
+		tenantID = a.tenantID(r.Context())
 	}
 	override, effective, err := a.Retention.ResolvePolicy(r.Context(), tenantID)
 	if err != nil {
@@ -723,7 +723,7 @@ func (a *App) handleRunRetention(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
 		ID:            "audit_retention_run_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "retention",
 		AggregateID:   strings.TrimSpace(body.TenantID),
 		EventType:     "retention.run_completed",
@@ -801,7 +801,7 @@ func (a *App) handleListAwaits(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	query := buildAwaitListQuery(r, a.Config.DefaultTenantID, page)
+	query := buildAwaitListQuery(r, a.tenantID(r.Context()), page)
 	awaits, err := a.Repo.ListAwaits(r.Context(), query)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -823,7 +823,7 @@ func (a *App) handleListAuditEvents(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	query := buildAuditEventListQuery(r, a.Config.DefaultTenantID, page)
+	query := buildAuditEventListQuery(r, a.tenantID(r.Context()), page)
 	events, err := a.Repo.ListAuditEvents(r.Context(), query)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -847,7 +847,7 @@ func (a *App) handleListTelegramDenials(w http.ResponseWriter, r *http.Request) 
 	}
 	events, err := a.Repo.ListAuditEvents(r.Context(), domain.AuditEventListQuery{
 		CursorPage:    page,
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "telegram_user",
 		EventType:     "telegram.allowlist_denied",
 	})
@@ -856,7 +856,7 @@ func (a *App) handleListTelegramDenials(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	totalCount, err := a.Repo.CountAuditEvents(r.Context(), domain.AuditEventListQuery{
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "telegram_user",
 		EventType:     "telegram.allowlist_denied",
 	})
@@ -884,7 +884,7 @@ func (a *App) handleListTelegramFailures(w http.ResponseWriter, r *http.Request)
 	}
 	query := domain.AuditEventListQuery{
 		CursorPage:    page,
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "telegram_user",
 		EventType:     eventType,
 	}
@@ -990,7 +990,7 @@ func (a *App) handleListSurfaceSessions(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	items, err := a.Repo.ListSurfaceSessions(r.Context(), a.Config.DefaultTenantID, channelType, surfaceKey, ownerUserID, page.Limit)
+	items, err := a.Repo.ListSurfaceSessions(r.Context(), a.tenantID(r.Context()), channelType, surfaceKey, ownerUserID, page.Limit)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1021,13 +1021,13 @@ func (a *App) handleSwitchSurfaceSession(w http.ResponseWriter, r *http.Request)
 		httpx.Error(w, http.StatusBadRequest, "channel_type, surface_key, owner_user_id, and alias_or_id required")
 		return
 	}
-	session, err := a.Repo.SwitchActiveSession(r.Context(), a.Config.DefaultTenantID, body.ChannelType, body.SurfaceKey, body.OwnerUserID, body.AliasOrID)
+	session, err := a.Repo.SwitchActiveSession(r.Context(), a.tenantID(r.Context()), body.ChannelType, body.SurfaceKey, body.OwnerUserID, body.AliasOrID)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), newSurfaceSessionAuditEvent(
-		a.Config.DefaultTenantID,
+		a.tenantID(r.Context()),
 		"audit_surface_switch_"+session.ID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 		session.ID,
 		body.ChannelType,
@@ -1059,13 +1059,13 @@ func (a *App) handleCloseSurfaceSession(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusBadRequest, "channel_type, surface_key, and owner_user_id required")
 		return
 	}
-	session, err := a.Repo.CloseActiveSession(r.Context(), a.Config.DefaultTenantID, body.ChannelType, body.SurfaceKey, body.OwnerUserID)
+	session, err := a.Repo.CloseActiveSession(r.Context(), a.tenantID(r.Context()), body.ChannelType, body.SurfaceKey, body.OwnerUserID)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), newSurfaceSessionAuditEvent(
-		a.Config.DefaultTenantID,
+		a.tenantID(r.Context()),
 		"audit_surface_close_"+session.ID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 		session.ID,
 		body.ChannelType,
@@ -1101,14 +1101,14 @@ func (a *App) handleListTelegramUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := a.Repo.ListTelegramUserAccessPage(r.Context(), domain.TelegramUserAccessListQuery{
-		TenantID:   a.Config.DefaultTenantID,
+		TenantID:   a.tenantID(r.Context()),
 		CursorPage: page,
 	})
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	totalCount, err := a.Repo.CountTelegramUserAccess(r.Context(), a.Config.DefaultTenantID, "")
+	totalCount, err := a.Repo.CountTelegramUserAccess(r.Context(), a.tenantID(r.Context()), "")
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1150,7 +1150,7 @@ func (a *App) handleListTelegramRequests(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	items, err := a.Repo.ListTelegramUserAccessPage(r.Context(), domain.TelegramUserAccessListQuery{
-		TenantID:   a.Config.DefaultTenantID,
+		TenantID:   a.tenantID(r.Context()),
 		Status:     "pending",
 		CursorPage: page,
 	})
@@ -1158,7 +1158,7 @@ func (a *App) handleListTelegramRequests(w http.ResponseWriter, r *http.Request)
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	totalCount, err := a.Repo.CountTelegramUserAccess(r.Context(), a.Config.DefaultTenantID, "pending")
+	totalCount, err := a.Repo.CountTelegramUserAccess(r.Context(), a.tenantID(r.Context()), "pending")
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1185,7 +1185,7 @@ func (a *App) handleUpsertTelegramUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry := domain.TelegramUserAccess{
-		TenantID:       a.Config.DefaultTenantID,
+		TenantID:       a.tenantID(r.Context()),
 		TelegramUserID: body.TelegramUserID,
 		DisplayName:    body.DisplayName,
 		Allowed:        body.Allowed,
@@ -1194,7 +1194,7 @@ func (a *App) handleUpsertTelegramUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.Repo.UpsertTelegramUserAccess(r.Context(), entry); err != nil {
 		_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
-			a.Config.DefaultTenantID,
+			a.tenantID(r.Context()),
 			"audit_telegram_user_upsert_failed_"+body.TelegramUserID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 			body.TelegramUserID,
 			"admin.telegram_user_upsert_failed",
@@ -1209,7 +1209,7 @@ func (a *App) handleUpsertTelegramUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
-		a.Config.DefaultTenantID,
+		a.tenantID(r.Context()),
 		"audit_telegram_user_upsert_"+body.TelegramUserID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 		body.TelegramUserID,
 		"admin.telegram_user_upserted",
@@ -1233,9 +1233,9 @@ func (a *App) handleDeleteTelegramUser(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "telegram_user_id required")
 		return
 	}
-	if err := a.Repo.DeleteTelegramUserAccess(r.Context(), a.Config.DefaultTenantID, body.TelegramUserID); err != nil {
+	if err := a.Repo.DeleteTelegramUserAccess(r.Context(), a.tenantID(r.Context()), body.TelegramUserID); err != nil {
 		_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
-			a.Config.DefaultTenantID,
+			a.tenantID(r.Context()),
 			"audit_telegram_user_delete_failed_"+body.TelegramUserID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 			body.TelegramUserID,
 			"admin.telegram_user_delete_failed",
@@ -1245,7 +1245,7 @@ func (a *App) handleDeleteTelegramUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
-		a.Config.DefaultTenantID,
+		a.tenantID(r.Context()),
 		"audit_telegram_user_delete_"+body.TelegramUserID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 		body.TelegramUserID,
 		"admin.telegram_user_deleted",
@@ -1271,7 +1271,7 @@ func (a *App) handleResolveTelegramRequest(w http.ResponseWriter, r *http.Reques
 		httpx.Error(w, http.StatusBadRequest, "telegram_user_id and status=approved|denied required")
 		return
 	}
-	entry, err := a.Repo.ResolveTelegramAccessRequest(r.Context(), a.Config.DefaultTenantID, body.TelegramUserID, body.Status, body.AddedBy)
+	entry, err := a.Repo.ResolveTelegramAccessRequest(r.Context(), a.tenantID(r.Context()), body.TelegramUserID, body.Status, body.AddedBy)
 	if err != nil {
 		errorCode := "internal"
 		switch {
@@ -1285,7 +1285,7 @@ func (a *App) handleResolveTelegramRequest(w http.ResponseWriter, r *http.Reques
 			httpx.Error(w, http.StatusInternalServerError, err.Error())
 		}
 		_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
-			a.Config.DefaultTenantID,
+			a.tenantID(r.Context()),
 			"audit_telegram_request_resolve_failed_"+body.TelegramUserID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 			body.TelegramUserID,
 			"admin.telegram_request_resolve_failed",
@@ -1304,7 +1304,7 @@ func (a *App) handleResolveTelegramRequest(w http.ResponseWriter, r *http.Reques
 			specificFailureType = "admin.telegram_request_resolve_not_pending"
 		}
 		_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
-			a.Config.DefaultTenantID,
+			a.tenantID(r.Context()),
 			"audit_telegram_request_resolve_failed_"+errorCode+"_"+body.TelegramUserID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 			body.TelegramUserID,
 			specificFailureType,
@@ -1318,7 +1318,7 @@ func (a *App) handleResolveTelegramRequest(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
-		a.Config.DefaultTenantID,
+		a.tenantID(r.Context()),
 		"audit_telegram_request_resolve_"+body.TelegramUserID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 		body.TelegramUserID,
 		"admin.telegram_request_resolved",
@@ -1329,7 +1329,7 @@ func (a *App) handleResolveTelegramRequest(w http.ResponseWriter, r *http.Reques
 		specificEventType = "admin.telegram_request_approved"
 	}
 	_ = a.Repo.Audit(r.Context(), newTelegramUserAuditEvent(
-		a.Config.DefaultTenantID,
+		a.tenantID(r.Context()),
 		"audit_telegram_request_"+entry.Status+"_"+body.TelegramUserID+"_"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 		body.TelegramUserID,
 		specificEventType,
@@ -1339,9 +1339,9 @@ func (a *App) handleResolveTelegramRequest(w http.ResponseWriter, r *http.Reques
 	if entry.Status == "approved" {
 		text = "Your Telegram access request has been approved. You can now use the bot."
 	}
-	if noticeSession, err := a.Repo.EnsureNotificationSession(r.Context(), a.Config.DefaultTenantID, "telegram", entry.TelegramUserID, entry.TelegramUserID); err == nil {
+	if noticeSession, err := a.Repo.EnsureNotificationSession(r.Context(), a.tenantID(r.Context()), "telegram", entry.TelegramUserID, entry.TelegramUserID); err == nil {
 		_ = a.Repo.EnqueueDelivery(r.Context(), telegramNoticeDelivery(
-			a.Config.DefaultTenantID,
+			a.tenantID(r.Context()),
 			noticeSession.ID,
 			entry.TelegramUserID,
 			"delivery_telegram_request_resolve_"+body.TelegramUserID,
@@ -2177,7 +2177,7 @@ func telegramTrustSectionPage(r *http.Request, pendingLimit, decisionLimit, fail
 
 func (a *App) loadTelegramTrustSummaryPages(ctx context.Context, page telegramTrustSectionPages) (domain.PagedResult[domain.TelegramUserAccess], domain.PagedResult[domain.TelegramUserAccess], domain.PagedResult[domain.TelegramUserAccess], domain.PagedResult[domain.AuditEvent], domain.PagedResult[domain.AuditEvent], map[string]domain.PagedResult[domain.AuditEvent], error) {
 	pendingPage, err := a.Repo.ListTelegramUserAccessPage(ctx, domain.TelegramUserAccessListQuery{
-		TenantID: a.Config.DefaultTenantID,
+		TenantID: a.tenantID(ctx),
 		Status:   "pending",
 		CursorPage: domain.CursorPage{
 			Limit: page.PendingLimit,
@@ -2193,7 +2193,7 @@ func (a *App) loadTelegramTrustSummaryPages(ctx context.Context, page telegramTr
 	}
 	failures, err := a.Repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
 		CursorPage:    domain.CursorPage{Limit: page.FailureLimit, After: page.FailureAfter},
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(ctx),
 		AggregateType: "telegram_user",
 		EventType:     "admin.telegram_request_resolve_failed",
 	})
@@ -2202,7 +2202,7 @@ func (a *App) loadTelegramTrustSummaryPages(ctx context.Context, page telegramTr
 	}
 	resolutions, err := a.Repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
 		CursorPage:    domain.CursorPage{Limit: page.ResolutionLimit, After: page.ResolutionAfter},
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(ctx),
 		AggregateType: "telegram_user",
 		EventType:     "admin.telegram_request_resolved",
 	})
@@ -2227,7 +2227,7 @@ func (a *App) loadTelegramFailureBreakdownPages(ctx context.Context, page telegr
 		eventType, _ := telegramFailureEventType(kind)
 		items, err := a.Repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
 			CursorPage:    cursor,
-			TenantID:      a.Config.DefaultTenantID,
+			TenantID:      a.tenantID(ctx),
 			AggregateType: "telegram_user",
 			EventType:     eventType,
 		})
@@ -2241,7 +2241,7 @@ func (a *App) loadTelegramFailureBreakdownPages(ctx context.Context, page telegr
 
 func (a *App) loadTelegramDecisionPages(ctx context.Context, page domain.CursorPage) (domain.PagedResult[domain.TelegramUserAccess], domain.PagedResult[domain.TelegramUserAccess], error) {
 	approvedPage, err := a.Repo.ListTelegramUserAccessPage(ctx, domain.TelegramUserAccessListQuery{
-		TenantID: a.Config.DefaultTenantID,
+		TenantID: a.tenantID(ctx),
 		Status:   "approved",
 		CursorPage: domain.CursorPage{
 			Limit: page.Limit + 1,
@@ -2252,7 +2252,7 @@ func (a *App) loadTelegramDecisionPages(ctx context.Context, page domain.CursorP
 		return domain.PagedResult[domain.TelegramUserAccess]{}, domain.PagedResult[domain.TelegramUserAccess]{}, err
 	}
 	deniedPage, err := a.Repo.ListTelegramUserAccessPage(ctx, domain.TelegramUserAccessListQuery{
-		TenantID: a.Config.DefaultTenantID,
+		TenantID: a.tenantID(ctx),
 		Status:   "denied",
 		CursorPage: domain.CursorPage{
 			Limit: page.Limit + 1,
@@ -2266,20 +2266,20 @@ func (a *App) loadTelegramDecisionPages(ctx context.Context, page domain.CursorP
 }
 
 func (a *App) loadTelegramTrustSummaryCounts(ctx context.Context) (telegramTrustSummaryCounts, error) {
-	pending, err := a.Repo.CountTelegramUserAccess(ctx, a.Config.DefaultTenantID, "pending")
+	pending, err := a.Repo.CountTelegramUserAccess(ctx, a.tenantID(ctx), "pending")
 	if err != nil {
 		return telegramTrustSummaryCounts{}, err
 	}
-	approved, err := a.Repo.CountTelegramUserAccess(ctx, a.Config.DefaultTenantID, "approved")
+	approved, err := a.Repo.CountTelegramUserAccess(ctx, a.tenantID(ctx), "approved")
 	if err != nil {
 		return telegramTrustSummaryCounts{}, err
 	}
-	denied, err := a.Repo.CountTelegramUserAccess(ctx, a.Config.DefaultTenantID, "denied")
+	denied, err := a.Repo.CountTelegramUserAccess(ctx, a.tenantID(ctx), "denied")
 	if err != nil {
 		return telegramTrustSummaryCounts{}, err
 	}
 	failures, err := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(ctx),
 		AggregateType: "telegram_user",
 		EventType:     "admin.telegram_request_resolve_failed",
 	})
@@ -2287,7 +2287,7 @@ func (a *App) loadTelegramTrustSummaryCounts(ctx context.Context) (telegramTrust
 		return telegramTrustSummaryCounts{}, err
 	}
 	failureNotFound, err := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(ctx),
 		AggregateType: "telegram_user",
 		EventType:     "admin.telegram_request_resolve_not_found",
 	})
@@ -2295,7 +2295,7 @@ func (a *App) loadTelegramTrustSummaryCounts(ctx context.Context) (telegramTrust
 		return telegramTrustSummaryCounts{}, err
 	}
 	failureNotPending, err := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(ctx),
 		AggregateType: "telegram_user",
 		EventType:     "admin.telegram_request_resolve_not_pending",
 	})
@@ -2303,7 +2303,7 @@ func (a *App) loadTelegramTrustSummaryCounts(ctx context.Context) (telegramTrust
 		return telegramTrustSummaryCounts{}, err
 	}
 	failureInternal, err := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(ctx),
 		AggregateType: "telegram_user",
 		EventType:     "admin.telegram_request_resolve_internal_failed",
 	})
@@ -2311,7 +2311,7 @@ func (a *App) loadTelegramTrustSummaryCounts(ctx context.Context) (telegramTrust
 		return telegramTrustSummaryCounts{}, err
 	}
 	resolutions, err := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(ctx),
 		AggregateType: "telegram_user",
 		EventType:     "admin.telegram_request_resolved",
 	})
@@ -2380,13 +2380,13 @@ func buildTelegramTrustSummaryData(pendingPage, approvedPage, deniedPage domain.
 }
 
 func (a *App) loadTelegramUserAuditBundle(ctx context.Context, telegramUserID string) (domain.TelegramUserAccess, []domain.AuditEvent, error) {
-	match, err := a.Repo.GetTelegramUserAccess(ctx, a.Config.DefaultTenantID, telegramUserID)
+	match, err := a.Repo.GetTelegramUserAccess(ctx, a.tenantID(ctx), telegramUserID)
 	if err != nil {
 		return domain.TelegramUserAccess{}, nil, err
 	}
 	audit, err := a.Repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
 		CursorPage:    domain.CursorPage{Limit: 100},
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(ctx),
 		AggregateType: "telegram_user",
 		AggregateID:   telegramUserID,
 	})
@@ -2445,7 +2445,7 @@ func requiredQueryParam(w http.ResponseWriter, r *http.Request, key string) (str
 }
 
 func (a *App) telegramUserAllowed(ctx context.Context, userID string) bool {
-	allowed, err := a.Repo.IsTelegramUserAllowed(ctx, a.Config.DefaultTenantID, userID)
+	allowed, err := a.Repo.IsTelegramUserAllowed(ctx, a.tenantID(ctx), userID)
 	if err == nil {
 		if allowed {
 			return true

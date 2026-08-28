@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -1275,5 +1276,75 @@ func TestWorkerRetriesLajuInboundOutboxEventOnFailure(t *testing.T) {
 	}
 	if len(repo.markedOutboxFailed) != 1 || repo.markedOutboxFailed[0] != "outbox_inbound_webhook_evt_1" {
 		t.Fatalf("expected failed Laju forward to be requeued, got %+v", repo.markedOutboxFailed)
+	}
+}
+
+func TestWorkerForwardsLajuInboundPerTenant(t *testing.T) {
+	var mu sync.Mutex
+	hits := map[string][]string{} // server name -> auth headers
+	newServer := func(name string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			hits[name] = append(hits[name], r.Header.Get("Authorization")+" "+r.URL.Path)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		}))
+	}
+	alpha := newServer("alpha")
+	defer alpha.Close()
+	beta := newServer("beta")
+	defer beta.Close()
+
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{
+			{ID: "outbox_alpha", TenantID: "tenant_alpha", EventType: "laju.inbound.forward", AggregateID: "evt_a", PayloadJSON: []byte(`{"tenantId":"tenant_alpha","body":"hi"}`)},
+			{ID: "outbox_beta", TenantID: "tenant_beta", EventType: "laju.inbound.forward", AggregateID: "evt_b", PayloadJSON: []byte(`{"tenantId":"tenant_beta","body":"ho"}`)},
+		},
+	}
+	worker := WorkerService{
+		Repo: repo,
+		InboundTarget: func(_ context.Context, tenantID string) (string, string, bool) {
+			switch tenantID {
+			case "tenant_alpha":
+				return alpha.URL + "/api/integrations/nexus/inbound", "alpha-laju-token", true
+			case "tenant_beta":
+				return beta.URL + "/api/integrations/nexus/inbound", "beta-laju-token", true
+			}
+			return "", "", false
+		},
+	}
+	if err := worker.ProcessOnce(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(hits["alpha"]) != 1 || hits["alpha"][0] != "Bearer alpha-laju-token /api/integrations/nexus/inbound" {
+		t.Fatalf("alpha hits: %+v", hits["alpha"])
+	}
+	if len(hits["beta"]) != 1 || hits["beta"][0] != "Bearer beta-laju-token /api/integrations/nexus/inbound" {
+		t.Fatalf("beta hits: %+v", hits["beta"])
+	}
+	if len(repo.markedOutboxFailed) != 0 {
+		t.Fatalf("expected both forwards to succeed, failures: %+v", repo.markedOutboxFailed)
+	}
+}
+
+func TestWorkerFailsLajuInboundForUnknownTenant(t *testing.T) {
+	repo := &workerRepo{
+		outboxEvents: []domain.OutboxEvent{
+			{ID: "outbox_ghost", TenantID: "tenant_ghost", EventType: "laju.inbound.forward", AggregateID: "evt_g", PayloadJSON: []byte(`{"tenantId":"tenant_ghost"}`)},
+		},
+	}
+	worker := WorkerService{
+		Repo: repo,
+		InboundTarget: func(_ context.Context, _ string) (string, string, bool) {
+			return "", "", false
+		},
+	}
+	if err := worker.ProcessOnce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.markedOutboxFailed) != 1 || repo.markedOutboxFailed[0] != "outbox_ghost" {
+		t.Fatalf("expected unknown-tenant forward to fail, got %+v", repo.markedOutboxFailed)
 	}
 }

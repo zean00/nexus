@@ -161,7 +161,7 @@ func (a *App) enqueueOutboundPush(ctx context.Context, req outboundPushRequest, 
 	}
 	tenantID := firstNonEmptyString(req.TenantID, req.CustomerID)
 	if tenantID == "" {
-		tenantID = a.Config.DefaultTenantID
+		tenantID = a.tenantID(ctx)
 	}
 	sessions, channels, err := a.resolveOutboundPushSessions(ctx, tenantID, req)
 	if err != nil {

@@ -57,7 +57,7 @@ func (a *App) handleAdminIdentityLinkCode(w http.ResponseWriter, r *http.Request
 	now := time.Now().UTC()
 	challenge := domain.StepUpChallenge{
 		ID:                    "link_" + randomToken(8),
-		TenantID:              a.Config.DefaultTenantID,
+		TenantID:              a.tenantID(r.Context()),
 		UserID:                user.ID,
 		Purpose:               "link",
 		ChannelType:           channel,
@@ -77,7 +77,7 @@ func (a *App) handleAdminIdentityLinkCode(w http.ResponseWriter, r *http.Request
 	if a.Repo != nil {
 		_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
 			ID:            "audit_trust_link_code_" + randomToken(6),
-			TenantID:      a.Config.DefaultTenantID,
+			TenantID:      a.tenantID(r.Context()),
 			AggregateType: "user",
 			AggregateID:   user.ID,
 			EventType:     "trust.link_code_issued",
@@ -158,7 +158,7 @@ func (a *App) handleAdminIdentityLinkStatus(w http.ResponseWriter, r *http.Reque
 		httpx.Error(w, status, err.Error())
 		return
 	}
-	links, err := a.Identity.ListLinkedIdentitiesForUser(r.Context(), a.Config.DefaultTenantID, user.ID)
+	links, err := a.Identity.ListLinkedIdentitiesForUser(r.Context(), a.tenantID(r.Context()), user.ID)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -181,13 +181,13 @@ func (a *App) handleAdminIdentityLinkStatus(w http.ResponseWriter, r *http.Reque
 
 func (a *App) adminIdentityUser(r *http.Request, userID, email string) (domain.User, error) {
 	if userID != "" {
-		return a.Identity.GetUser(r.Context(), a.Config.DefaultTenantID, userID)
+		return a.Identity.GetUser(r.Context(), a.tenantID(r.Context()), userID)
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" || !strings.Contains(email, "@") {
 		return domain.User{}, domain.ErrIdentityUserNotFound
 	}
-	return a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, email)
+	return a.Identity.EnsureUserByEmail(r.Context(), a.tenantID(r.Context()), email)
 }
 
 func normalizeAdminIdentityChannel(channel string) string {

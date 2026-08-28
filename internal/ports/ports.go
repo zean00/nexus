@@ -188,6 +188,16 @@ type Router interface {
 	Route(ctx context.Context, evt domain.CanonicalInboundEvent, session domain.Session) (domain.RouteDecision, error)
 }
 
+// TenantRegistry persists the tenant registry (migration 017). Lookups by
+// admin token take the sha256 hex hash so plaintext tokens never hit SQL.
+type TenantRegistry interface {
+	UpsertTenant(ctx context.Context, record domain.TenantRecord) error
+	GetTenant(ctx context.Context, tenantID string) (domain.TenantRecord, error)
+	GetTenantByAdminTokenHash(ctx context.Context, tokenHash string) (domain.TenantRecord, error)
+	ListTenants(ctx context.Context) ([]domain.TenantRecord, error)
+	DeleteTenant(ctx context.Context, tenantID string) error
+}
+
 type Renderer interface {
 	RenderRunEvent(ctx context.Context, session domain.Session, evt domain.RunEvent) ([]domain.OutboundDelivery, error)
 }

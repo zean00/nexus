@@ -68,7 +68,7 @@ func (a *App) handleTrustSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleListTrustPolicies(w http.ResponseWriter, r *http.Request) {
-	items, err := a.Repo.ListTrustPolicies(r.Context(), a.Config.DefaultTenantID, 200)
+	items, err := a.Repo.ListTrustPolicies(r.Context(), a.tenantID(r.Context()), 200)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -85,7 +85,7 @@ func (a *App) handleUpsertTrustPolicy(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &body) {
 		return
 	}
-	body.TenantID = a.Config.DefaultTenantID
+	body.TenantID = a.tenantID(r.Context())
 	body.AgentProfileID = strings.TrimSpace(body.AgentProfileID)
 	body.UpdatedAt = time.Now().UTC()
 	if body.AgentProfileID == "" {
@@ -109,14 +109,14 @@ func (a *App) handleUpsertTrustPolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleListTrustUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := a.Repo.ListUsers(r.Context(), a.Config.DefaultTenantID, 200)
+	users, err := a.Repo.ListUsers(r.Context(), a.tenantID(r.Context()), 200)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	items := make([]map[string]any, 0, len(users))
 	for _, user := range users {
-		identities, err := a.Repo.ListLinkedIdentitiesForUser(r.Context(), a.Config.DefaultTenantID, user.ID)
+		identities, err := a.Repo.ListLinkedIdentitiesForUser(r.Context(), a.tenantID(r.Context()), user.ID)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
@@ -136,18 +136,18 @@ func (a *App) handleTrustUserDetail(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "missing user_id")
 		return
 	}
-	user, err := a.Identity.GetUser(r.Context(), a.Config.DefaultTenantID, userID)
+	user, err := a.Identity.GetUser(r.Context(), a.tenantID(r.Context()), userID)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, err.Error())
 		return
 	}
-	identities, err := a.Repo.ListLinkedIdentitiesForUser(r.Context(), a.Config.DefaultTenantID, userID)
+	identities, err := a.Repo.ListLinkedIdentitiesForUser(r.Context(), a.tenantID(r.Context()), userID)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	events, err := a.Repo.ListAuditEvents(r.Context(), domain.AuditEventListQuery{
-		TenantID:    a.Config.DefaultTenantID,
+		TenantID:    a.tenantID(r.Context()),
 		AggregateID: userID,
 		CursorPage:  domain.CursorPage{Limit: 50},
 	})
@@ -181,13 +181,13 @@ func (a *App) handleTrustRevokeLink(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "missing link identity")
 		return
 	}
-	if err := a.Repo.DeleteLinkedIdentity(r.Context(), a.Config.DefaultTenantID, channelType, channelUserID); err != nil {
+	if err := a.Repo.DeleteLinkedIdentity(r.Context(), a.tenantID(r.Context()), channelType, channelUserID); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
-		ID:            trustAdminAuditID("identity_unlinked", a.Config.DefaultTenantID, channelType, channelUserID, time.Now().UTC().Format(time.RFC3339Nano)),
-		TenantID:      a.Config.DefaultTenantID,
+		ID:            trustAdminAuditID("identity_unlinked", a.tenantID(r.Context()), channelType, channelUserID, time.Now().UTC().Format(time.RFC3339Nano)),
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "linked_identity",
 		AggregateID:   channelType + ":" + channelUserID,
 		EventType:     "trust.identity_unlinked",
@@ -199,7 +199,7 @@ func (a *App) handleTrustRevokeLink(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleTrustEvents(w http.ResponseWriter, r *http.Request) {
 	query := domain.AuditEventListQuery{
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(r.Context()),
 		CursorPage:    domain.CursorPage{Limit: 100},
 		AggregateType: queryString(r, "aggregate_type"),
 	}
@@ -212,7 +212,7 @@ func (a *App) handleTrustEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleWhatsAppPolicySummary(w http.ResponseWriter, r *http.Request) {
-	tenantID := a.Config.DefaultTenantID
+	tenantID := a.tenantID(r.Context())
 	total, err := a.Repo.CountWhatsAppContacts(r.Context(), domain.WhatsAppPolicyListQuery{TenantID: tenantID})
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -243,7 +243,7 @@ func (a *App) handleWhatsAppPolicyContacts(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	query := domain.WhatsAppPolicyListQuery{
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(r.Context()),
 		ConsentStatus: queryString(r, "consent_status"),
 		WindowState:   queryString(r, "window_state"),
 		Contains:      queryString(r, "contains"),
@@ -290,13 +290,13 @@ func (a *App) handleWhatsAppConsentUpdate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	now := time.Now().UTC()
-	if err := a.Repo.SetWhatsAppConsentStatus(r.Context(), a.Config.DefaultTenantID, body.ChannelUserID, body.ConsentStatus, now); err != nil {
+	if err := a.Repo.SetWhatsAppConsentStatus(r.Context(), a.tenantID(r.Context()), body.ChannelUserID, body.ConsentStatus, now); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
-		ID:            trustAdminAuditID("whatsapp_consent", a.Config.DefaultTenantID, body.ChannelUserID, body.ConsentStatus, now.Format(time.RFC3339Nano)),
-		TenantID:      a.Config.DefaultTenantID,
+		ID:            trustAdminAuditID("whatsapp_consent", a.tenantID(r.Context()), body.ChannelUserID, body.ConsentStatus, now.Format(time.RFC3339Nano)),
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "whatsapp_contact",
 		AggregateID:   body.ChannelUserID,
 		EventType:     "admin.whatsapp_consent_updated",
@@ -307,20 +307,20 @@ func (a *App) handleWhatsAppConsentUpdate(w http.ResponseWriter, r *http.Request
 }
 
 func (a *App) trustSummary(ctx context.Context) (map[string]any, error) {
-	users, err := a.Repo.ListUsers(ctx, a.Config.DefaultTenantID, 500)
+	users, err := a.Repo.ListUsers(ctx, a.tenantID(ctx), 500)
 	if err != nil {
 		return nil, err
 	}
-	policies, err := a.Repo.ListTrustPolicies(ctx, a.Config.DefaultTenantID, 200)
+	policies, err := a.Repo.ListTrustPolicies(ctx, a.tenantID(ctx), 200)
 	if err != nil {
 		return nil, err
 	}
-	linkedByChannel, err := a.Repo.CountLinkedIdentitiesByChannel(ctx, a.Config.DefaultTenantID)
+	linkedByChannel, err := a.Repo.CountLinkedIdentitiesByChannel(ctx, a.tenantID(ctx))
 	if err != nil {
 		return nil, err
 	}
-	blockedCount, _ := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{TenantID: a.Config.DefaultTenantID, EventType: "trust.approval_blocked"})
-	stepUpFailures, _ := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{TenantID: a.Config.DefaultTenantID, EventType: "trust.step_up_rejected"})
+	blockedCount, _ := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{TenantID: a.tenantID(ctx), EventType: "trust.approval_blocked"})
+	stepUpFailures, _ := a.Repo.CountAuditEvents(ctx, domain.AuditEventListQuery{TenantID: a.tenantID(ctx), EventType: "trust.step_up_rejected"})
 	return map[string]any{
 		"user_count":                   len(users),
 		"policy_count":                 len(policies),
@@ -382,7 +382,7 @@ func (a *App) listWhatsAppPolicyEvents(ctx context.Context, page domain.CursorPa
 	items := make([]domain.AuditEvent, 0, page.Limit)
 	for _, eventType := range eventTypes {
 		result, err := a.Repo.ListAuditEvents(ctx, domain.AuditEventListQuery{
-			TenantID:      a.Config.DefaultTenantID,
+			TenantID:      a.tenantID(ctx),
 			AggregateType: "whatsapp_contact",
 			EventType:     eventType,
 			CursorPage:    page,

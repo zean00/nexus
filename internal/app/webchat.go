@@ -228,7 +228,7 @@ func (a *App) handleWebChatAuthRequest(w http.ResponseWriter, r *http.Request) {
 	linkToken := randomToken(24)
 	challenge := domain.WebAuthChallenge{
 		ID:            "webauth_" + randomToken(8),
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(r.Context()),
 		Email:         email,
 		OTPHash:       sha256Hex(otp),
 		LinkTokenHash: sha256Hex(linkToken),
@@ -354,7 +354,7 @@ func (a *App) handleWebChatAuthVerify(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if _, err := a.WebAuth.ConsumeWebAuthChallengeByOTP(r.Context(), a.Config.DefaultTenantID, email, sha256Hex(strings.TrimSpace(body.Code)), time.Now().UTC()); err != nil {
+	if _, err := a.WebAuth.ConsumeWebAuthChallengeByOTP(r.Context(), a.tenantID(r.Context()), email, sha256Hex(strings.TrimSpace(body.Code)), time.Now().UTC()); err != nil {
 		httpx.Error(w, http.StatusUnauthorized, err.Error())
 		return
 	}
@@ -377,7 +377,7 @@ func (a *App) handleWebChatAuthCallback(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusBadRequest, "missing token")
 		return
 	}
-	challenge, err := a.WebAuth.ConsumeWebAuthChallengeByLink(r.Context(), a.Config.DefaultTenantID, sha256Hex(token), time.Now().UTC())
+	challenge, err := a.WebAuth.ConsumeWebAuthChallengeByLink(r.Context(), a.tenantID(r.Context()), sha256Hex(token), time.Now().UTC())
 	if err != nil {
 		httpx.Error(w, http.StatusUnauthorized, err.Error())
 		return
@@ -488,7 +488,7 @@ func (a *App) handleWebChatArtifact(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "artifact lookup unavailable")
 		return
 	}
-	artifact, err := repo.GetArtifactForSession(r.Context(), a.Config.DefaultTenantID, session.ID, artifactID)
+	artifact, err := repo.GetArtifactForSession(r.Context(), a.tenantID(r.Context()), session.ID, artifactID)
 	if errors.Is(err, domain.ErrArtifactNotFound) && a.webChatHistoryScope() != "session" {
 		artifact, err = a.findWebChatScopedArtifact(r.Context(), authSession, session, artifactID)
 	}
@@ -515,7 +515,7 @@ func (a *App) findWebChatScopedArtifact(ctx context.Context, authSession domain.
 		return domain.Artifact{}, err
 	}
 	artifacts, err := a.Repo.ListArtifacts(ctx, domain.ArtifactListQuery{
-		TenantID:          a.Config.DefaultTenantID,
+		TenantID:          a.tenantID(ctx),
 		SessionIDs:        filters.SessionIDs,
 		OwnerUserID:       filters.OwnerUserID,
 		ChannelIdentities: filters.ChannelIdentities,
@@ -562,8 +562,8 @@ func (a *App) handleWebChatEvents(w http.ResponseWriter, r *http.Request) {
 				httpx.Error(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			notifyCh = a.WebChatHub.SubscribeUser(a.Config.DefaultTenantID, filters.UserID)
-			defer a.WebChatHub.UnsubscribeUser(a.Config.DefaultTenantID, filters.UserID, notifyCh)
+			notifyCh = a.WebChatHub.SubscribeUser(a.tenantID(r.Context()), filters.UserID)
+			defer a.WebChatHub.UnsubscribeUser(a.tenantID(r.Context()), filters.UserID, notifyCh)
 		}
 	}
 	payload, _ := json.Marshal(map[string]any{
@@ -643,7 +643,7 @@ func (a *App) handleWebChatMessage(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	evt := buildWebChatMessageEvent(a.Config.DefaultTenantID, a.Config.WebChatAccountKey, authSession, identity, surfaceKey, ownerUserID, text, artifacts, replyTo)
+	evt := buildWebChatMessageEvent(a.tenantID(r.Context()), a.webChatAccountKey(r.Context()), authSession, identity, surfaceKey, ownerUserID, text, artifacts, replyTo)
 	result, err := a.Inbound.Handle(r.Context(), evt)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
@@ -685,7 +685,7 @@ func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	evt := domain.CanonicalInboundEvent{
-		TenantID: a.Config.DefaultTenantID,
+		TenantID: a.tenantID(r.Context()),
 		Channel:  "webchat",
 		Sender: domain.Sender{
 			ChannelUserID:     authSession.Email,
@@ -702,7 +702,7 @@ func (a *App) handleWebChatAwaitRespond(w http.ResponseWriter, r *http.Request) 
 	}
 	evt = domain.CanonicalInboundEvent{
 		EventID:         "webchat_await_" + randomToken(8),
-		TenantID:        a.Config.DefaultTenantID,
+		TenantID:        a.tenantID(r.Context()),
 		Channel:         "webchat",
 		Interaction:     "await_response",
 		ProviderEventID: "webchat_await_" + randomToken(4),
@@ -813,7 +813,7 @@ func (a *App) handleWebChatIdentityPhone(w http.ResponseWriter, r *http.Request)
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.tenantID(r.Context()), authSession.Email)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -826,18 +826,18 @@ func (a *App) handleWebChatIdentityPhone(w http.ResponseWriter, r *http.Request)
 	if addedAt.IsZero() || addedAt.Equal(time.Unix(0, 0).UTC()) {
 		addedAt = time.Now().UTC()
 	}
-	if err := a.Identity.UpdateUserPhone(r.Context(), a.Config.DefaultTenantID, user.ID, rawPhone, normalizedPhone, false, addedAt); err != nil {
+	if err := a.Identity.UpdateUserPhone(r.Context(), a.tenantID(r.Context()), user.ID, rawPhone, normalizedPhone, false, addedAt); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	user, err = a.Identity.GetUser(r.Context(), a.Config.DefaultTenantID, user.ID)
+	user, err = a.Identity.GetUser(r.Context(), a.tenantID(r.Context()), user.ID)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
-		ID:            trustAdminAuditID(strings.TrimPrefix(eventType, "trust."), a.Config.DefaultTenantID, user.ID, normalizedPhone, time.Now().UTC().Format(time.RFC3339Nano)),
-		TenantID:      a.Config.DefaultTenantID,
+		ID:            trustAdminAuditID(strings.TrimPrefix(eventType, "trust."), a.tenantID(r.Context()), user.ID, normalizedPhone, time.Now().UTC().Format(time.RFC3339Nano)),
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "user",
 		AggregateID:   user.ID,
 		EventType:     eventType,
@@ -867,18 +867,18 @@ func (a *App) handleWebChatIdentityPhoneDelete(w http.ResponseWriter, r *http.Re
 		httpx.Error(w, http.StatusForbidden, err.Error())
 		return
 	}
-	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.tenantID(r.Context()), authSession.Email)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := a.Identity.ClearUserPhone(r.Context(), a.Config.DefaultTenantID, user.ID); err != nil {
+	if err := a.Identity.ClearUserPhone(r.Context(), a.tenantID(r.Context()), user.ID); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
-		ID:            trustAdminAuditID("phone_removed", a.Config.DefaultTenantID, user.ID, time.Now().UTC().Format(time.RFC3339Nano)),
-		TenantID:      a.Config.DefaultTenantID,
+		ID:            trustAdminAuditID("phone_removed", a.tenantID(r.Context()), user.ID, time.Now().UTC().Format(time.RFC3339Nano)),
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "user",
 		AggregateID:   user.ID,
 		EventType:     "trust.phone_removed",
@@ -915,7 +915,7 @@ func (a *App) handleWebChatIdentityLinkCode(w http.ResponseWriter, r *http.Reque
 		httpx.Error(w, http.StatusBadRequest, "unsupported channel")
 		return
 	}
-	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.tenantID(r.Context()), authSession.Email)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -923,7 +923,7 @@ func (a *App) handleWebChatIdentityLinkCode(w http.ResponseWriter, r *http.Reque
 	code := randomDigits(8)
 	challenge := domain.StepUpChallenge{
 		ID:          "link_" + randomToken(8),
-		TenantID:    a.Config.DefaultTenantID,
+		TenantID:    a.tenantID(r.Context()),
 		UserID:      user.ID,
 		Purpose:     "link",
 		ChannelType: channel,
@@ -941,7 +941,7 @@ func (a *App) handleWebChatIdentityLinkCode(w http.ResponseWriter, r *http.Reque
 	}
 	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
 		ID:            "audit_trust_link_code_" + randomToken(6),
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "user",
 		AggregateID:   user.ID,
 		EventType:     "trust.link_code_issued",
@@ -977,12 +977,12 @@ func (a *App) handleWebChatIdentityUnlink(w http.ResponseWriter, r *http.Request
 	if !decodeJSONBody(w, r, &body) {
 		return
 	}
-	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.tenantID(r.Context()), authSession.Email)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	identity, err := a.Identity.GetLinkedIdentity(r.Context(), a.Config.DefaultTenantID, strings.ToLower(strings.TrimSpace(body.Channel)), strings.TrimSpace(body.ChannelUserID))
+	identity, err := a.Identity.GetLinkedIdentity(r.Context(), a.tenantID(r.Context()), strings.ToLower(strings.TrimSpace(body.Channel)), strings.TrimSpace(body.ChannelUserID))
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, err.Error())
 		return
@@ -991,13 +991,13 @@ func (a *App) handleWebChatIdentityUnlink(w http.ResponseWriter, r *http.Request
 		httpx.Error(w, http.StatusForbidden, "identity not owned by current user")
 		return
 	}
-	if err := a.Identity.DeleteLinkedIdentity(r.Context(), a.Config.DefaultTenantID, identity.ChannelType, identity.ChannelUserID); err != nil {
+	if err := a.Identity.DeleteLinkedIdentity(r.Context(), a.tenantID(r.Context()), identity.ChannelType, identity.ChannelUserID); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
 		ID:            "audit_trust_unlink_" + randomToken(6),
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "user",
 		AggregateID:   user.ID,
 		EventType:     "trust.identity_unlinked",
@@ -1021,7 +1021,7 @@ func (a *App) handleWebChatStepUpRequest(w http.ResponseWriter, r *http.Request)
 		httpx.Error(w, http.StatusForbidden, err.Error())
 		return
 	}
-	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.tenantID(r.Context()), authSession.Email)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1029,7 +1029,7 @@ func (a *App) handleWebChatStepUpRequest(w http.ResponseWriter, r *http.Request)
 	code := randomDigits(6)
 	challenge := domain.StepUpChallenge{
 		ID:        "stepup_" + randomToken(8),
-		TenantID:  a.Config.DefaultTenantID,
+		TenantID:  a.tenantID(r.Context()),
 		UserID:    user.ID,
 		Purpose:   "step_up",
 		CodeHash:  sha256Hex(code),
@@ -1051,7 +1051,7 @@ func (a *App) handleWebChatStepUpRequest(w http.ResponseWriter, r *http.Request)
 	}
 	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
 		ID:            "audit_trust_stepup_request_" + randomToken(6),
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "user",
 		AggregateID:   user.ID,
 		EventType:     "trust.step_up_requested",
@@ -1081,15 +1081,15 @@ func (a *App) handleWebChatStepUpVerify(w http.ResponseWriter, r *http.Request) 
 	if !decodeJSONBody(w, r, &body) {
 		return
 	}
-	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.Config.DefaultTenantID, authSession.Email)
+	user, err := a.Identity.EnsureUserByEmail(r.Context(), a.tenantID(r.Context()), authSession.Email)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if _, err := a.Identity.ConsumeStepUpChallenge(r.Context(), a.Config.DefaultTenantID, user.ID, "step_up", "", sha256Hex(strings.TrimSpace(body.Code)), "", time.Now().UTC()); err != nil {
+	if _, err := a.Identity.ConsumeStepUpChallenge(r.Context(), a.tenantID(r.Context()), user.ID, "step_up", "", sha256Hex(strings.TrimSpace(body.Code)), "", time.Now().UTC()); err != nil {
 		_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
 			ID:            "audit_trust_stepup_rejected_" + randomToken(6),
-			TenantID:      a.Config.DefaultTenantID,
+			TenantID:      a.tenantID(r.Context()),
 			AggregateType: "user",
 			AggregateID:   user.ID,
 			EventType:     "trust.step_up_rejected",
@@ -1099,13 +1099,13 @@ func (a *App) handleWebChatStepUpVerify(w http.ResponseWriter, r *http.Request) 
 		httpx.Error(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	if err := a.Identity.MarkUserStepUp(r.Context(), a.Config.DefaultTenantID, user.ID, time.Now().UTC()); err != nil {
+	if err := a.Identity.MarkUserStepUp(r.Context(), a.tenantID(r.Context()), user.ID, time.Now().UTC()); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = a.Repo.Audit(r.Context(), domain.AuditEvent{
 		ID:            "audit_trust_stepup_verified_" + randomToken(6),
-		TenantID:      a.Config.DefaultTenantID,
+		TenantID:      a.tenantID(r.Context()),
 		AggregateType: "user",
 		AggregateID:   user.ID,
 		EventType:     "trust.step_up_verified",
@@ -1135,7 +1135,7 @@ func (a *App) handleWebChatNewChat(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	session, err := a.Repo.CreateVirtualSession(r.Context(), a.Config.DefaultTenantID, "webchat", surfaceKey, ownerUserID, a.webChatAgentProfileID(identity), "")
+	session, err := a.Repo.CreateVirtualSession(r.Context(), a.tenantID(r.Context()), "webchat", surfaceKey, ownerUserID, a.webChatAgentProfileID(identity), "")
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1163,7 +1163,7 @@ func (a *App) handleWebChatCloseChat(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	session, err := a.Repo.CloseActiveSession(r.Context(), a.Config.DefaultTenantID, "webchat", surfaceKey, ownerUserID)
+	session, err := a.Repo.CloseActiveSession(r.Context(), a.tenantID(r.Context()), "webchat", surfaceKey, ownerUserID)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1174,7 +1174,7 @@ func (a *App) handleWebChatCloseChat(w http.ResponseWriter, r *http.Request) {
 func (a *App) createWebChatAuthSession(ctx context.Context, email string) (domain.WebAuthSession, error) {
 	session := domain.WebAuthSession{
 		ID:         "websess_" + randomToken(16),
-		TenantID:   a.Config.DefaultTenantID,
+		TenantID:   a.tenantID(ctx),
 		Email:      email,
 		ExpiresAt:  time.Now().UTC().Add(time.Duration(a.Config.WebChatSessionHours) * time.Hour),
 		LastSeenAt: time.Now().UTC(),
@@ -1184,12 +1184,12 @@ func (a *App) createWebChatAuthSession(ctx context.Context, email string) (domai
 }
 
 func (a *App) currentWebChatIdentityState(ctx context.Context, authSession domain.WebAuthSession) (domain.User, []domain.LinkedIdentity, bool, error) {
-	user, err := a.Identity.EnsureUserByEmail(ctx, a.Config.DefaultTenantID, authSession.Email)
+	user, err := a.Identity.EnsureUserByEmail(ctx, a.tenantID(ctx), authSession.Email)
 	if err != nil {
 		return domain.User{}, nil, false, err
 	}
 	if err := a.Identity.UpsertLinkedIdentity(ctx, domain.LinkedIdentity{
-		TenantID:       a.Config.DefaultTenantID,
+		TenantID:       a.tenantID(ctx),
 		UserID:         user.ID,
 		ChannelType:    "webchat",
 		ChannelUserID:  authSession.Email,
@@ -1200,7 +1200,7 @@ func (a *App) currentWebChatIdentityState(ctx context.Context, authSession domai
 		return domain.User{}, nil, false, err
 	}
 	if err := a.Identity.UpsertLinkedIdentity(ctx, domain.LinkedIdentity{
-		TenantID:       a.Config.DefaultTenantID,
+		TenantID:       a.tenantID(ctx),
 		UserID:         user.ID,
 		ChannelType:    "email",
 		ChannelUserID:  authSession.Email,
@@ -1210,11 +1210,11 @@ func (a *App) currentWebChatIdentityState(ctx context.Context, authSession domai
 	}); err != nil {
 		return domain.User{}, nil, false, err
 	}
-	identities, err := a.Identity.ListLinkedIdentitiesForUser(ctx, a.Config.DefaultTenantID, user.ID)
+	identities, err := a.Identity.ListLinkedIdentitiesForUser(ctx, a.tenantID(ctx), user.ID)
 	if err != nil {
 		return domain.User{}, nil, false, err
 	}
-	recent, err := a.Identity.HasRecentStepUp(ctx, a.Config.DefaultTenantID, user.ID, time.Now().UTC().Add(-time.Duration(a.Config.StepUpWindowMinutes)*time.Minute))
+	recent, err := a.Identity.HasRecentStepUp(ctx, a.tenantID(ctx), user.ID, time.Now().UTC().Add(-time.Duration(a.Config.StepUpWindowMinutes)*time.Minute))
 	if err != nil {
 		return domain.User{}, nil, false, err
 	}
@@ -1245,7 +1245,7 @@ func (a *App) resolveWebChatSession(ctx context.Context, authSession domain.WebA
 	agentProfileID := a.webChatAgentProfileID(identity)
 	session, _, err := a.Repo.ResolveSession(ctx, domain.CanonicalInboundEvent{
 		EventID:  "webchat_bootstrap_" + authSession.ID,
-		TenantID: a.Config.DefaultTenantID,
+		TenantID: a.tenantID(ctx),
 		Channel:  "webchat",
 		Sender: domain.Sender{
 			ChannelUserID: ownerUserID,
@@ -1305,7 +1305,7 @@ func (a *App) webChatSurface(ctx context.Context, authSession domain.WebAuthSess
 	}
 	userID := ""
 	if a.Identity != nil {
-		user, err := a.Identity.EnsureUserByEmail(ctx, a.Config.DefaultTenantID, authSession.Email)
+		user, err := a.Identity.EnsureUserByEmail(ctx, a.tenantID(ctx), authSession.Email)
 		if err != nil {
 			return "", "", err
 		}
@@ -1386,7 +1386,7 @@ func (a *App) loadWebChatState(ctx context.Context, authSession domain.WebAuthSe
 		return domain.Session{}, nil, err
 	}
 	messages, err := a.Repo.ListMessages(ctx, domain.MessageListQuery{
-		TenantID:          a.Config.DefaultTenantID,
+		TenantID:          a.tenantID(ctx),
 		SessionIDs:        filters.SessionIDs,
 		OwnerUserID:       filters.OwnerUserID,
 		ChannelIdentities: filters.ChannelIdentities,
@@ -1396,7 +1396,7 @@ func (a *App) loadWebChatState(ctx context.Context, authSession domain.WebAuthSe
 		return domain.Session{}, nil, err
 	}
 	artifacts, err := a.Repo.ListArtifacts(ctx, domain.ArtifactListQuery{
-		TenantID:          a.Config.DefaultTenantID,
+		TenantID:          a.tenantID(ctx),
 		SessionIDs:        filters.SessionIDs,
 		OwnerUserID:       filters.OwnerUserID,
 		ChannelIdentities: filters.ChannelIdentities,
@@ -1406,7 +1406,7 @@ func (a *App) loadWebChatState(ctx context.Context, authSession domain.WebAuthSe
 		return domain.Session{}, nil, err
 	}
 	awaits, err := a.Repo.ListAwaits(ctx, domain.AwaitListQuery{
-		TenantID:          a.Config.DefaultTenantID,
+		TenantID:          a.tenantID(ctx),
 		Status:            "pending",
 		SessionIDs:        filters.SessionIDs,
 		OwnerUserID:       filters.OwnerUserID,
@@ -1467,7 +1467,7 @@ func (a *App) webChatHistoryFilters(ctx context.Context, authSession domain.WebA
 	}
 	userID := strings.TrimSpace(authSession.Email)
 	if a.Identity != nil {
-		user, err := a.Identity.EnsureUserByEmail(ctx, a.Config.DefaultTenantID, authSession.Email)
+		user, err := a.Identity.EnsureUserByEmail(ctx, a.tenantID(ctx), authSession.Email)
 		if err != nil {
 			return filters, err
 		}
@@ -1482,7 +1482,7 @@ func (a *App) webChatHistoryFilters(ctx context.Context, authSession domain.WebA
 	if a.Identity == nil {
 		return filters, nil
 	}
-	identities, err := a.Identity.ListLinkedIdentitiesForUser(ctx, a.Config.DefaultTenantID, userID)
+	identities, err := a.Identity.ListLinkedIdentitiesForUser(ctx, a.tenantID(ctx), userID)
 	if err != nil {
 		return filters, err
 	}
@@ -1665,13 +1665,13 @@ func webChatItemMeta(sessionID, channelType, activeSessionID string) map[string]
 
 func (a *App) buildWebChatActivity(ctx context.Context, authSession domain.WebAuthSession, session domain.Session, items []domain.WebChatItem) *domain.WebChatActivity {
 	if a.webChatHistoryScope() == "session" {
-		return buildWebChatActivity(a.Repo, ctx, a.Config.DefaultTenantID, session.ID, items)
+		return buildWebChatActivity(a.Repo, ctx, a.tenantID(ctx), session.ID, items)
 	}
 	filters, err := a.webChatHistoryFilters(ctx, authSession, session)
 	if err != nil {
-		return buildWebChatActivity(a.Repo, ctx, a.Config.DefaultTenantID, session.ID, items)
+		return buildWebChatActivity(a.Repo, ctx, a.tenantID(ctx), session.ID, items)
 	}
-	return buildScopedWebChatActivity(a.Repo, ctx, a.Config.DefaultTenantID, filters, items)
+	return buildScopedWebChatActivity(a.Repo, ctx, a.tenantID(ctx), filters, items)
 }
 
 func buildWebChatActivity(repo ports.Repository, ctx context.Context, tenantID, sessionID string, items []domain.WebChatItem) *domain.WebChatActivity {
